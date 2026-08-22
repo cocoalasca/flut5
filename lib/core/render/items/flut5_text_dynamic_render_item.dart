@@ -1,0 +1,518 @@
+import 'dart:ui' as ui;
+import 'package:flutter/material.dart';
+import 'package:flut5/text/flut5_text_cache.dart';
+import '../flut5_render_item.dart';
+import '../../flut5_shadow.dart';
+
+class TextDynamicRenderItem extends Flut5RenderItem {
+  /// Shared paint for GPU tinting — reconfigured in place each draw to avoid
+  /// per-frame allocations. Its `filterQuality` is stamped from
+  /// [Flut5TextCache.textBlitQuality] in [execute].
+  static final Paint _tintPaint = Paint();
+
+  /// Untinted blit paint used inside a gradient layer — white glyph pixels
+  /// land on the offscreen as-is to act as the srcIn mask. `filterQuality`
+  /// is stamped from [Flut5TextCache.textBlitQuality] in [execute].
+  static final Paint _maskPaint = Paint();
+
+  /// Gradient overlay paint. Its `shader` and `blendMode` are set per draw.
+  static final Paint _gradientOverlayPaint = Paint();
+
+  /// Layer paint used for `saveLayer` in the gradient path. Carries the
+  /// user's blend/maskFilter/imageFilter so they behave identically to the
+  /// solid-color path.
+  static final Paint _layerPaint = Paint();
+
+  static Gradient? _cachedFillGradient;
+  static Rect? _cachedFillBounds;
+  static ui.Shader? _cachedFillShader;
+
+  static Gradient? _cachedStrokeGradient;
+  static Rect? _cachedStrokeBounds;
+  static ui.Shader? _cachedStrokeShader;
+
+  final String text;
+  final double x;
+  final double y;
+  final double? maxWidth;
+  final double? maxHeight;
+
+  final String fontFamily;
+  final double fontSize;
+  final FontWeight fontWeight;
+  final FontStyle fontStyle;
+  final TextAlign textAlign;
+  final double? textLeading;
+  final double? letterSpacing;
+
+  final Paint? fillPaint;
+  final Paint? strokePaint;
+
+  /// When non-null, the shader is built against the full text block bounds at
+  /// draw time rather than using the pre-baked shader in [fillPaint].
+  final Gradient? fillGradient;
+
+  /// When non-null, the shader is built against the full text block bounds at
+  /// draw time rather than using the pre-baked shader in [strokePaint].
+  final Gradient? strokeGradient;
+
+  /// Drop shadow drawn beneath the text, or `null` for none.
+  final Flut5ShadowSpec? shadow;
+
+  TextDynamicRenderItem({
+    required this.text,
+    required this.x,
+    required this.y,
+    this.maxWidth,
+    this.maxHeight,
+    required this.fontFamily,
+    required this.fontSize,
+    required this.fontWeight,
+    required this.fontStyle,
+    required this.textAlign,
+    required this.textLeading,
+    this.letterSpacing,
+    this.fillPaint,
+    this.strokePaint,
+    this.fillGradient,
+    this.strokeGradient,
+    this.shadow,
+  });
+
+  Rect _lineInkBounds(
+    Flut5TextCache cache,
+    Flut5TextLine line,
+    double lineHeight,
+    int paintingStyle,
+    double strokeWidth,
+  ) {
+    double left = 0.0;
+    double right = line.width;
+    var hasInk = false;
+
+    for (int i = 0; i < line.glyphs.length; i++) {
+      final cached = cache.getOrCreate(
+        text: line.glyphs[i],
+        fontFamily: fontFamily,
+        fontSize: fontSize,
+        fontWeight: fontWeight,
+        fontStyle: fontStyle,
+        textLeading: null,
+        align: TextAlign.left,
+        paintingStyle: paintingStyle,
+        strokeWidth: strokeWidth,
+      );
+      final glyphLeft = line.offsets[i] - cached.leftPad;
+      final glyphRight = glyphLeft + cached.drawWidth;
+      if (!hasInk) {
+        left = glyphLeft < 0.0 ? glyphLeft : 0.0;
+        right = glyphRight > line.width ? glyphRight : line.width;
+        hasInk = true;
+      } else {
+        if (glyphLeft < left) left = glyphLeft;
+        if (glyphRight > right) right = glyphRight;
+      }
+    }
+
+    return Rect.fromLTWH(left, 0, right - left, lineHeight);
+  }
+
+  Rect _lineVisualBounds(
+    Flut5TextCache cache,
+    Flut5TextLine line,
+    double lineStartX,
+    double lineHeight, {
+    required bool includeFill,
+    required bool includeStroke,
+  }) {
+    Rect? bounds;
+
+    if (includeFill) {
+      bounds = _lineInkBounds(
+        cache,
+        line,
+        lineHeight,
+        0,
+        0.0,
+      ).shift(Offset(lineStartX, 0));
+    }
+
+    if (includeStroke && strokePaint != null) {
+      final strokeBounds = _lineInkBounds(
+        cache,
+        line,
+        lineHeight,
+        1,
+        strokePaint!.strokeWidth,
+      ).shift(Offset(lineStartX, 0));
+      bounds = bounds == null
+          ? strokeBounds
+          : bounds.expandToInclude(strokeBounds);
+    }
+
+    return bounds ?? Rect.fromLTWH(lineStartX, 0, line.width, lineHeight);
+  }
+
+  double _alignedX(double originalX, double lineWidth) {
+    if (textAlign == TextAlign.center) return originalX - lineWidth / 2;
+    if (textAlign == TextAlign.right || textAlign == TextAlign.end) {
+      return originalX - lineWidth;
+    }
+    return originalX;
+  }
+
+  /// Approximate text block bounds used for scroll-mode container sizing.
+  /// Avoids glyph measurement: width/height are estimated from the character
+  /// count and [fontSize] (or the explicit [maxWidth]/[maxHeight]). Memoized —
+  /// items are immutable once queued. See [Flut5RenderItem.bounds].
+  @override
+  late final Rect? bounds = _computeBounds();
+
+  Rect _computeBounds() {
+    final lines = text.split('\n');
+    int longest = 0;
+    for (final line in lines) {
+      if (line.length > longest) longest = line.length;
+    }
+    final width = maxWidth ?? (longest * fontSize * 0.55);
+    final height = maxHeight ?? (lines.length * fontSize * 1.3);
+    return Rect.fromLTWH(_alignedX(x, width), y, width, height);
+  }
+
+  /// Blits one laid-out line: a flat loop over the line's drawable glyphs
+  /// with pre-baked offsets — one cache fetch per glyph, no measurement.
+  void _drawGlyphs(
+    Canvas canvas,
+    Flut5TextCache cache,
+    Flut5TextLine line,
+    double startX,
+    double y,
+    Paint paint,
+    int paintingStyle,
+    double strokeWidth,
+  ) {
+    for (int i = 0; i < line.glyphs.length; i++) {
+      final cached = cache.getOrCreate(
+        text: line.glyphs[i],
+        fontFamily: fontFamily,
+        fontSize: fontSize,
+        fontWeight: fontWeight,
+        fontStyle: fontStyle,
+        textLeading: null,
+        align: TextAlign.left,
+        paintingStyle: paintingStyle,
+        strokeWidth: strokeWidth,
+      );
+      final dst = Rect.fromLTWH(
+        startX + line.offsets[i] - cached.leftPad,
+        y,
+        cached.drawWidth,
+        cached.height,
+      );
+      canvas.drawImageRect(cached.image, cached.srcRect, dst, paint);
+    }
+  }
+
+  @override
+  void execute(Canvas canvas) {
+    if (text.isEmpty) return;
+
+    final cache = Flut5TextCache.instance;
+    final FilterQuality glyphQuality = cache.textBlitQuality;
+    _tintPaint.filterQuality = glyphQuality;
+    _maskPaint.filterQuality = glyphQuality;
+
+    // Line height: composition-time value.
+    // If textLeading is set, compute from fontSize * multiplier.
+    // Otherwise, use the font's default line height from the metrics cache —
+    // a texture-cache fetch here would consume a texture slot per font size.
+    final double lineHeight;
+    if (textLeading != null) {
+      lineHeight = fontSize * textLeading!;
+    } else {
+      lineHeight = cache.measureLineHeight(
+        fontFamily: fontFamily,
+        fontSize: fontSize,
+        fontWeight: fontWeight,
+        fontStyle: fontStyle,
+      );
+    }
+
+    // Cached layout: letter spacing and kerning are baked into each line's
+    // glyph offsets, so a hit skips all per-frame measurement.
+    final lines = cache
+        .getOrCreateLayout(
+          text: text,
+          fontFamily: fontFamily,
+          fontSize: fontSize,
+          fontWeight: fontWeight,
+          fontStyle: fontStyle,
+          letterSpacing: letterSpacing ?? 0.0,
+          maxWidth: maxWidth,
+        )
+        .lines;
+
+    if (lines.isEmpty) return;
+
+    // When auto-bounds gradients are active, compute a size-only rect so the
+    // cache key is position-independent. gradientOriginX tracks where that
+    // (0,0) local space sits on the canvas for the translate below.
+    Rect? gradientBounds;
+    double gradientOriginX = 0;
+    if (fillGradient != null || strokeGradient != null) {
+      Rect? visualBounds;
+      for (final line in lines) {
+        if (!line.hasChars) continue;
+        final lineStartX = _alignedX(x, line.width);
+        final lineBounds = _lineVisualBounds(
+          cache,
+          line,
+          lineStartX,
+          lineHeight,
+          includeFill: fillGradient != null,
+          includeStroke: strokeGradient != null,
+        );
+        visualBounds = visualBounds == null
+            ? lineBounds
+            : visualBounds.expandToInclude(lineBounds);
+      }
+      if (visualBounds != null) {
+        gradientOriginX = visualBounds.left;
+        gradientBounds = Rect.fromLTWH(
+          0,
+          0,
+          visualBounds.width,
+          lineHeight * lines.length,
+        );
+      }
+    }
+
+    // ── Phase 2: Render ────────────────────────────────────────────────
+
+    final bool clip = maxHeight != null;
+    if (clip) {
+      canvas.save();
+      canvas.clipRect(
+        Rect.fromLTWH(x, y, maxWidth ?? double.infinity, maxHeight!),
+      );
+    }
+
+    double cursorY = y;
+
+    // ── Shadow pass (under every line) ──
+    // All line shadows draw before any glyphs, so a lower line's blurred
+    // shadow can never land on top of the previous line's text — matching the
+    // static TextRenderItem (whole block shadowed beneath everything) and CSS.
+    // Re-blits each line's glyphs recolored to the shadow color and blurred,
+    // reusing the raster the text itself draws (fill when filled, else
+    // stroke), so no new cache entry is created and an outline-only text
+    // casts an outline shadow. One save/translate wraps the whole pass.
+    final shadowSpec = shadow;
+    if (shadowSpec != null) {
+      final bool shadowStroke = fillPaint == null && strokePaint != null;
+      canvas.save();
+      canvas.translate(shadowSpec.offset.dx, shadowSpec.offset.dy);
+      for (final line in lines) {
+        if (maxHeight != null && (cursorY - y + lineHeight) > maxHeight!) break;
+        if (line.glyphs.isEmpty) {
+          cursorY += lineHeight;
+          continue;
+        }
+        _drawGlyphs(
+          canvas,
+          cache,
+          line,
+          _alignedX(x, line.width),
+          cursorY,
+          shadowSpec.textTintPaint,
+          shadowStroke ? 1 : 0,
+          shadowStroke ? strokePaint!.strokeWidth : 0.0,
+        );
+        cursorY += lineHeight;
+      }
+      canvas.restore();
+      cursorY = y;
+    }
+
+    for (final line in lines) {
+      if (maxHeight != null && (cursorY - y + lineHeight) > maxHeight!) break;
+      if (line.glyphs.isEmpty) {
+        // Empty or whitespace-only line — nothing to blit, just advance.
+        cursorY += lineHeight;
+        continue;
+      }
+
+      final double lineStartX = _alignedX(x, line.width);
+
+      // ── Stroke pass (bottom) ──
+      if (strokePaint != null) {
+        if (strokePaint!.shader != null || strokeGradient != null) {
+          final localInkBounds = _lineInkBounds(
+            cache,
+            line,
+            lineHeight,
+            1,
+            strokePaint!.strokeWidth,
+          );
+          final lineBounds = localInkBounds.shift(Offset(lineStartX, cursorY));
+          _layerPaint
+            ..colorFilter = null
+            ..blendMode = strokePaint!.blendMode
+            ..maskFilter = strokePaint!.maskFilter
+            ..imageFilter = strokePaint!.imageFilter;
+          canvas.saveLayer(lineBounds, _layerPaint);
+
+          _drawGlyphs(
+            canvas,
+            cache,
+            line,
+            lineStartX,
+            cursorY,
+            _maskPaint,
+            1,
+            strokePaint!.strokeWidth,
+          );
+
+          if (strokeGradient != null) {
+            if (!identical(_cachedStrokeGradient, strokeGradient) ||
+                _cachedStrokeBounds != gradientBounds) {
+              _cachedStrokeShader = strokeGradient!.createShader(
+                gradientBounds!,
+              );
+              _cachedStrokeGradient = strokeGradient;
+              _cachedStrokeBounds = gradientBounds;
+            }
+            _gradientOverlayPaint
+              ..shader = _cachedStrokeShader
+              ..blendMode = ui.BlendMode.srcIn;
+            canvas.save();
+            canvas.translate(gradientOriginX, y);
+            canvas.drawRect(
+              Rect.fromLTWH(
+                lineBounds.left - gradientOriginX,
+                cursorY - y,
+                lineBounds.width,
+                lineBounds.height,
+              ),
+              _gradientOverlayPaint,
+            );
+            canvas.restore();
+          } else {
+            _gradientOverlayPaint
+              ..shader = strokePaint!.shader
+              ..blendMode = ui.BlendMode.srcIn;
+            canvas.drawRect(lineBounds, _gradientOverlayPaint);
+          }
+          canvas.restore();
+        } else {
+          _tintPaint
+            ..colorFilter = ColorFilter.mode(
+              strokePaint!.color,
+              ui.BlendMode.srcIn,
+            )
+            ..blendMode = strokePaint!.blendMode
+            ..maskFilter = strokePaint!.maskFilter
+            ..imageFilter = strokePaint!.imageFilter;
+
+          _drawGlyphs(
+            canvas,
+            cache,
+            line,
+            lineStartX,
+            cursorY,
+            _tintPaint,
+            1,
+            strokePaint!.strokeWidth,
+          );
+        }
+      }
+
+      // ── Fill pass (top) ──
+      if (fillPaint != null) {
+        if (fillPaint!.shader != null || fillGradient != null) {
+          final localInkBounds = _lineInkBounds(
+            cache,
+            line,
+            lineHeight,
+            0,
+            0.0,
+          );
+          final lineBounds = localInkBounds.shift(Offset(lineStartX, cursorY));
+          _layerPaint
+            ..colorFilter = null
+            ..blendMode = fillPaint!.blendMode
+            ..maskFilter = fillPaint!.maskFilter
+            ..imageFilter = fillPaint!.imageFilter;
+          canvas.saveLayer(lineBounds, _layerPaint);
+
+          _drawGlyphs(
+            canvas,
+            cache,
+            line,
+            lineStartX,
+            cursorY,
+            _maskPaint,
+            0,
+            0.0,
+          );
+
+          if (fillGradient != null) {
+            if (!identical(_cachedFillGradient, fillGradient) ||
+                _cachedFillBounds != gradientBounds) {
+              _cachedFillShader = fillGradient!.createShader(gradientBounds!);
+              _cachedFillGradient = fillGradient;
+              _cachedFillBounds = gradientBounds;
+            }
+            _gradientOverlayPaint
+              ..shader = _cachedFillShader
+              ..blendMode = ui.BlendMode.srcIn;
+            canvas.save();
+            canvas.translate(gradientOriginX, y);
+            canvas.drawRect(
+              Rect.fromLTWH(
+                lineBounds.left - gradientOriginX,
+                cursorY - y,
+                lineBounds.width,
+                lineBounds.height,
+              ),
+              _gradientOverlayPaint,
+            );
+            canvas.restore();
+          } else {
+            _gradientOverlayPaint
+              ..shader = fillPaint!.shader
+              ..blendMode = ui.BlendMode.srcIn;
+            canvas.drawRect(lineBounds, _gradientOverlayPaint);
+          }
+          canvas.restore();
+        } else {
+          _tintPaint
+            ..colorFilter = ColorFilter.mode(
+              fillPaint!.color,
+              ui.BlendMode.srcIn,
+            )
+            ..blendMode = fillPaint!.blendMode
+            ..maskFilter = fillPaint!.maskFilter
+            ..imageFilter = fillPaint!.imageFilter;
+
+          _drawGlyphs(
+            canvas,
+            cache,
+            line,
+            lineStartX,
+            cursorY,
+            _tintPaint,
+            0,
+            0.0,
+          );
+        }
+      }
+
+      cursorY += lineHeight;
+    }
+
+    if (clip) {
+      canvas.restore();
+    }
+  }
+}
