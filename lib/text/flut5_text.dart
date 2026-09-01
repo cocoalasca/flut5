@@ -59,7 +59,7 @@ abstract final class Flut5TextArg {
   /// A number setting the near-collinear simplify angle. Defaults to `0`.
   static const String simplifyThreshold = 'simplifyThreshold';
 
-  /// A number setting grid cell edge length. Defaults to `fontSize / 40`.
+  /// A number setting grid cell edge length. Defaults to `fontSize / 60`.
   static const String cellSize = 'cellSize';
 
   /// Keys understood by [Flut5Text.textToPaths].
@@ -991,7 +991,7 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
   /// logged once and ignored rather than throwing.
   ///
   /// `cellSize` is the cell edge length in pixels and defaults to
-  /// `fontSize / 40` — a fine grid at any font size. Halving it
+  /// `fontSize / 60` — a fine grid at any font size. Halving it
   /// quadruples the cell count, so treat this as a build-once call rather
   /// than a per-frame one.
   ///
