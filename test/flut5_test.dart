@@ -1222,13 +1222,13 @@ void main() {
       expect(states, containsAll(Flut5CellState.values));
     });
 
-    test('defaults cellSize to fontSize / 60', () {
+    test('defaults cellSize to 4px regardless of font size', () {
       final grid = buildEngine(solidSquare).textToGrid('x', 0, 0);
 
-      // fontSize 100 → 100/60 px cells over a 100px square → 60 cells across.
-      expect(grid.cellSize, closeTo(100 / 60, 0.001));
-      expect(grid.cols, 60);
-      expect(grid.rows, 60);
+      // 4px cells over a 100px square → 25 cells across.
+      expect(grid.cellSize, closeTo(4, 0.001));
+      expect(grid.cols, 25);
+      expect(grid.rows, 25);
     });
 
     test('honors letterSpacing when sizing the grid', () {
@@ -1421,8 +1421,8 @@ void main() {
         Flut5TextArg.font: 'not a font',
       });
 
-      // Falls back to fontSize / 60, and to the engine's loaded font.
-      expect(grid.cellSize, closeTo(100 / 60, 0.001));
+      // Falls back to the 4px default, and to the engine's loaded font.
+      expect(grid.cellSize, closeTo(4, 0.001));
       expect(grid.isEmpty, isFalse);
     });
 

@@ -639,13 +639,13 @@ class Flut5Font {
   /// Counters are handled by nonzero winding, so the hole in "O" comes back
   /// empty rather than filled.
   ///
-  /// [cellSize] is the cell edge length in pixels and defaults to
-  /// `fontSize / 60` — about 42 cells across cap height, fine enough to trace
-  /// curves smoothly at any font size. It comfortably holds open the counters
-  /// of `e` and `a` and keeps adjacent letters apart in a heavy face, which a
-  /// coarser grid closes up into a blob. Outline sampling density is derived
-  /// from it, so curves stay accurate to within half a cell however fine the
-  /// grid gets.
+  /// [cellSize] is the cell edge length in pixels and defaults to 4 — fixed
+  /// rather than font-relative, so on-screen cell density is the same at
+  /// every font size. Large text therefore samples into many more cells
+  /// (cost grows with glyph area); at small font sizes pass a smaller
+  /// [cellSize] to keep counters like `e` and `a` open. Outline sampling
+  /// density is derived from it, so curves stay accurate to within half a
+  /// cell however fine the grid gets.
   ///
   /// Cost scales with the cell count, which grows quadratically as
   /// [cellSize] shrinks. This is a build-once call, not a per-frame one.
@@ -657,9 +657,7 @@ class Flut5Font {
     double? cellSize,
     double letterSpacing = 0,
   }) {
-    final double cell = (cellSize == null || cellSize <= 0)
-        ? fontSize / 60
-        : cellSize;
+    final double cell = (cellSize == null || cellSize <= 0) ? 4.0 : cellSize;
     if (cell <= 0 || !cell.isFinite) return Flut5TextGrid.empty;
 
     // A polyline vertex every half cell — the sampler's pixel step is
