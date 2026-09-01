@@ -59,7 +59,7 @@ abstract final class Flut5TextArg {
   /// A number setting the near-collinear simplify angle. Defaults to `0`.
   static const String simplifyThreshold = 'simplifyThreshold';
 
-  /// A number setting grid cell edge length. Defaults to `fontSize / 20`.
+  /// A number setting grid cell edge length. Defaults to `fontSize / 40`.
   static const String cellSize = 'cellSize';
 
   /// Keys understood by [Flut5Text.textToPaths].
@@ -707,8 +707,8 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
   /// you had called `textFont(font)` afterwards.
   ///
   /// After this call [textToPaths], [textToPoints], and [textToContours] use
-  /// the loaded font automatically. Raster [text] still uses Flutter's
-  /// pubspec-registered font families.
+  /// the loaded font automatically. When loading from a path or bytes, raster
+  /// [text] still uses Flutter's pubspec-registered font families.
   ///
   /// ```dart
   /// // Simplest usage — font is active immediately:
@@ -724,8 +724,17 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
   /// flut5.textToPoints('Code', 10, 80);
   /// ```
   ///
-  /// Accepts either a Flutter asset path (`String`) or raw bytes (`Uint8List`).
-  /// Returns the parsed [Flut5Font] for reuse or inspection.
+  /// Accepts a pubspec-registered family name or a Flutter asset path
+  /// (`String`), or raw bytes (`Uint8List`). A `String` matching a preloaded
+  /// pubspec family (see [fonts]) resolves to that family and — like
+  /// [textFont] — also selects it for rasterized [text]; any other `String`
+  /// is treated as an asset path. Returns the parsed [Flut5Font] for reuse
+  /// or inspection.
+  ///
+  /// ```dart
+  /// // Any family declared in pubspec.yaml works by name:
+  /// await flut5.loadFontShapeData('Roboto');
+  /// ```
   ///
   /// **Variable fonts** are supported (TrueType `gvar`-based; CFF2/OTF
   /// variable fonts are not). When the loaded font ships an `fvar` table,
@@ -743,39 +752,51 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
     if (source is Uint8List) {
       bytes = source;
     } else if (source is String) {
+      // A pubspec family name wins over an asset path — family names never
+      // contain '/', so a string that is both is not a case that arises.
+      final registered = environment.fonts[source];
+      if (registered != null) {
+        _fontFamily = source;
+        _loadedFont = registered.font;
+        return registered.font;
+      }
       final data = await rootBundle.load(source);
       bytes = data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
     } else {
       throw ArgumentError(
-        'loadFontShapeData() expects a String asset path or Uint8List bytes.',
+        'loadFontShapeData() expects a String (pubspec family name or asset '
+        'path) or Uint8List bytes.',
       );
     }
     _loadedFont = Flut5Font.fromBytes(bytes);
     return _loadedFont!;
   }
 
-  /// Loads a font file and sets it as the active outline font — alias for
+  /// Loads a font and sets it as the active outline font — alias for
   /// [loadFontShapeData] that matches the p5.js name.
   ///
-  /// The loaded outline font is active immediately without a separate
-  /// [textFont] call:
+  /// Accepts a pubspec-registered family name, a font asset path, or raw
+  /// bytes. The font is active immediately without a separate [textFont]
+  /// call:
   ///
   /// ```dart
   /// @override
   /// Future<void> preload() async {
-  ///   await loadFont('assets/fonts/Roboto.ttf');
+  ///   await loadFont('Roboto');                  // pubspec family name
+  ///   await loadFont('assets/fonts/Mono.ttf');   // or a font file
   /// }
   ///
   /// @override
   /// void draw() {
   ///   textSize(48);
-  ///   textToPoints('Hello', 50, 100);  // also uses the loaded font
+  ///   textToPoints('Hello', 50, 100);  // uses the loaded font
   /// }
   /// ```
   ///
-  /// Note: unlike p5.js, rasterized [text] rendering uses Flutter fonts
-  /// declared in `pubspec.yaml`. Pass the family name string to [textFont] to
-  /// choose the raster family used by [text].
+  /// Note: rasterized [text] rendering uses Flutter fonts declared in
+  /// `pubspec.yaml`. Loading by family name selects that family for [text]
+  /// too; a font loaded from a path or bytes affects only the outline APIs,
+  /// so pass a family name to [textFont] to choose the raster family.
   Future<Flut5Font> loadFont(dynamic source) => loadFontShapeData(source);
 
   /// Returns raw path commands for [content] positioned at baseline ([x], [y]).
@@ -970,7 +991,7 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
   /// logged once and ignored rather than throwing.
   ///
   /// `cellSize` is the cell edge length in pixels and defaults to
-  /// `fontSize / 20` — chunky but legible at any font size. Halving it
+  /// `fontSize / 40` — a fine grid at any font size. Halving it
   /// quadruples the cell count, so treat this as a build-once call rather
   /// than a per-frame one.
   ///
@@ -1057,4 +1078,41 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
     }
     return maxWidth;
   }
+
+  /// Returns the ascent of the current font at the current [textSize] — how
+  /// far the font rises above the baseline, in pixels.
+  ///
+  /// Matches p5.js `textAscent()`. Uses the raster pipeline's font (the
+  /// [textFont] family), so it also locates the baseline of rasterized
+  /// [text]: `text()` treats `y` as the top of the line box, and the baseline
+  /// sits [textAscent] below it. That converts between raster text and the
+  /// baseline-anchored outline APIs ([textToPaths], [textToPoints],
+  /// [textToGrid]):
+  ///
+  /// ```dart
+  /// final grid = textToGrid('H', 0, 0);  // sampled with baseline at y = 0
+  /// text('H', 0, -textAscent());         // raster baseline lands at y = 0
+  /// ```
+  double textAscent() => _textCache
+      .measureAscentDescent(
+        fontFamily: _fontFamily,
+        fontSize: _fontSize,
+        fontWeight: _fontWeight,
+        fontStyle: _fontStyle,
+      )
+      .$1;
+
+  /// Returns the descent of the current font at the current [textSize] — how
+  /// far the font extends below the baseline, in pixels.
+  ///
+  /// Matches p5.js `textDescent()`. See [textAscent] for the baseline
+  /// relationship to rasterized [text].
+  double textDescent() => _textCache
+      .measureAscentDescent(
+        fontFamily: _fontFamily,
+        fontSize: _fontSize,
+        fontWeight: _fontWeight,
+        fontStyle: _fontStyle,
+      )
+      .$2;
 }

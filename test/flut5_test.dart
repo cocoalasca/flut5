@@ -934,6 +934,48 @@ void main() {
       );
     });
 
+    test('loadFont resolves a pubspec family name from the preloaded map',
+        () async {
+      final glyph = Flut5Glyph(
+        commands: const [
+          MoveToCommand(0, 0),
+          LineToCommand(100, 0),
+          LineToCommand(100, 100),
+          LineToCommand(0, 100),
+          CloseCommand(),
+        ],
+        xMin: 0,
+        yMin: 0,
+        xMax: 100,
+        yMax: 100,
+      );
+      final font = Flut5Font.internal(
+        unitsPerEm: 100,
+        numGlyphs: 2,
+        numberOfHMetrics: 2,
+        charToGlyph: const {120: 1},
+        glyphs: [Flut5Glyph.empty, glyph],
+        advanceWidths: const [0, 200],
+        lsbs: const [0, 0],
+      );
+      final engine = Flut5Engine();
+      engine.environment = engine.environment.withFonts({
+        'SketchFont': Flut5FontData(
+          name: 'SketchFont',
+          asset: 'assets/fonts/SketchFont.ttf',
+          font: font,
+        ),
+      });
+
+      final loaded = await engine.loadFont('SketchFont');
+
+      expect(identical(loaded, font), isTrue);
+      engine.textSize(50);
+      final commands = engine.textToPaths('x', 10, 20);
+      expect(commands, hasLength(5));
+      expect(commands[0], isA<MoveToCommand>());
+    });
+
     test('outline APIs apply letterSpacing between glyphs', () {
       // 100 upem square glyph, 200 upem advance. At textSize 50 the scale is
       // 0.5 → 50px wide glyph, 100px advance.
@@ -1180,13 +1222,13 @@ void main() {
       expect(states, containsAll(Flut5CellState.values));
     });
 
-    test('defaults cellSize to fontSize / 20', () {
+    test('defaults cellSize to fontSize / 40', () {
       final grid = buildEngine(solidSquare).textToGrid('x', 0, 0);
 
-      // fontSize 100 → 5px cells over a 100px square → 20 cells across.
-      expect(grid.cellSize, closeTo(5, 0.001));
-      expect(grid.cols, 20);
-      expect(grid.rows, 20);
+      // fontSize 100 → 2.5px cells over a 100px square → 40 cells across.
+      expect(grid.cellSize, closeTo(2.5, 0.001));
+      expect(grid.cols, 40);
+      expect(grid.rows, 40);
     });
 
     test('honors letterSpacing when sizing the grid', () {
@@ -1379,8 +1421,8 @@ void main() {
         Flut5TextArg.font: 'not a font',
       });
 
-      // Falls back to fontSize / 20, and to the engine's loaded font.
-      expect(grid.cellSize, closeTo(100 / 20, 0.001));
+      // Falls back to fontSize / 40, and to the engine's loaded font.
+      expect(grid.cellSize, closeTo(100 / 40, 0.001));
       expect(grid.isEmpty, isFalse);
     });
 
@@ -2228,6 +2270,23 @@ void main() {
       // Dragging up moves content up → negative offsetY.
       expect(frame(touchEngine).dy, lessThan(0));
       touchEngine.events.dispose();
+    });
+  });
+
+  group('Text metrics', () {
+    test('textAscent/textDescent report font metrics at the current size', () {
+      TestWidgetsFlutterBinding.ensureInitialized();
+      final engine = Flut5Engine();
+      engine.textSize(100);
+
+      // The FlutterTest environment font has ascent 0.75em, descent 0.25em.
+      expect(engine.textAscent(), closeTo(75, 0.001));
+      expect(engine.textDescent(), closeTo(25, 0.001));
+
+      // Scales linearly with textSize.
+      engine.textSize(200);
+      expect(engine.textAscent(), closeTo(150, 0.001));
+      expect(engine.textDescent(), closeTo(50, 0.001));
     });
   });
 }

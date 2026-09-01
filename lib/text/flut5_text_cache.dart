@@ -357,6 +357,12 @@ class Flut5TextCache {
   final HashMap<(String, double, FontWeight, FontStyle), double>
       _lineHeightCache = HashMap();
 
+  /// Lightweight ascent/descent cache — one record per font style tuple.
+  /// Used by [measureAscentDescent] so [Flut5Text.textAscent] and
+  /// [Flut5Text.textDescent] never rasterize a texture just to read metrics.
+  final HashMap<(String, double, FontWeight, FontStyle), (double, double)>
+      _ascentDescentCache = HashMap();
+
   /// Cached word-wrap layouts for the dynamic text pipeline. A hit makes
   /// per-frame layout a single hash read instead of re-tokenizing and
   /// re-measuring every glyph.
@@ -734,6 +740,42 @@ class Flut5TextCache {
     return height;
   }
 
+  /// Returns the font's `(ascent, descent)` in pixels for the given style.
+  ///
+  /// Both come from the first line's [LineMetrics] of a reference-glyph
+  /// layout — font-wide values independent of which glyphs a string uses.
+  /// Cached per style tuple, like [measureLineHeight].
+  (double, double) measureAscentDescent({
+    required String fontFamily,
+    required double fontSize,
+    required FontWeight fontWeight,
+    required FontStyle fontStyle,
+  }) {
+    final key = (fontFamily, fontSize, fontWeight, fontStyle);
+    final cached = _ascentDescentCache[key];
+    if (cached != null) return cached;
+
+    final painter = TextPainter(
+      text: TextSpan(
+        text: 'M',
+        style: TextStyle(
+          fontFamily: fontFamily,
+          fontSize: fontSize,
+          fontWeight: fontWeight,
+          fontStyle: fontStyle,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+
+    final metrics = painter.computeLineMetrics().first;
+    final result = (metrics.ascent, metrics.descent);
+    painter.dispose();
+
+    _ascentDescentCache[key] = result;
+    return result;
+  }
+
   /// Returns the cached word-wrap layout for [text], computing it on miss.
   ///
   /// Letter spacing and kerning are baked into each line's glyph offsets, so
@@ -1052,6 +1094,7 @@ class Flut5TextCache {
     _kernCache.clear();
     _widthCache.clear();
     _lineHeightCache.clear();
+    _ascentDescentCache.clear();
     _layoutCache.clear();
     _textureLimitWarned = false;
     _layoutLimitWarned = false;

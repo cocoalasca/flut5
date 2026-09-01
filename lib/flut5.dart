@@ -47,6 +47,7 @@ export 'core/flut5_clip.dart';
 export 'core/flut5_transform.dart';
 export 'core/render/flut5_render_queue.dart';
 export 'core/flut5_console.dart';
+export 'core/flut5_update_tree.dart';
 export 'image/flut5_image.dart';
 export 'image/flut5_image_mixin.dart';
 export 'ui/flut5_ui_element.dart';
@@ -716,6 +717,8 @@ abstract class Flut5 with Flut5EventMixin {
     Map<String, dynamic>? args,
   }) => flut5.textToGrid(content, x, y, args: args);
   double textWidth(String content) => flut5.textWidth(content);
+  double textAscent() => flut5.textAscent();
+  double textDescent() => flut5.textDescent();
 
   // ── Image ────────────────────────────────────────────────────────────────
   Future<Flut5Image> loadImage(dynamic source) => flut5.loadImage(source);

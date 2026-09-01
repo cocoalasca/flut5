@@ -640,11 +640,12 @@ class Flut5Font {
   /// empty rather than filled.
   ///
   /// [cellSize] is the cell edge length in pixels and defaults to
-  /// `fontSize / 20` — about 14 cells across cap height, chunky but legible
-  /// at any font size. That is enough to hold open the counters of `e` and `a`
-  /// and to keep adjacent letters apart in a heavy face, which a coarser grid
-  /// closes up into a blob. Outline sampling density is derived from it, so
-  /// curves stay accurate to within half a cell however fine the grid gets.
+  /// `fontSize / 40` — about 28 cells across cap height, fine enough to trace
+  /// curves smoothly at any font size. It comfortably holds open the counters
+  /// of `e` and `a` and keeps adjacent letters apart in a heavy face, which a
+  /// coarser grid closes up into a blob. Outline sampling density is derived
+  /// from it, so curves stay accurate to within half a cell however fine the
+  /// grid gets.
   ///
   /// Cost scales with the cell count, which grows quadratically as
   /// [cellSize] shrinks. This is a build-once call, not a per-frame one.
@@ -657,7 +658,7 @@ class Flut5Font {
     double letterSpacing = 0,
   }) {
     final double cell = (cellSize == null || cellSize <= 0)
-        ? fontSize / 20
+        ? fontSize / 40
         : cellSize;
     if (cell <= 0 || !cell.isFinite) return Flut5TextGrid.empty;
 
