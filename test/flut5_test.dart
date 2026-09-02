@@ -8,6 +8,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 
 import 'package:flut5/flut5.dart';
+import 'package:vector_math/vector_math_64.dart' show Vector3;
 import 'package:flut5/text/flut5_font_variation.dart';
 import 'package:flut5/text/flut5_gvar_decoder.dart';
 
@@ -1721,6 +1722,91 @@ void main() {
   });
 
   // ── Simplex noise (default) ──────────────────────────────────────────
+
+  group('dist / distSq', () {
+    test('measures a 3-4-5 triangle', () {
+      final engine = Flut5Engine();
+      expect(engine.dist(0, 0, 3, 4), closeTo(5, 1e-12));
+      expect(engine.distSq(0, 0, 3, 4), closeTo(25, 1e-12));
+    });
+
+    test('is symmetric and sign-independent', () {
+      final engine = Flut5Engine();
+      expect(
+        engine.dist(10, 20, -5, 8),
+        closeTo(engine.dist(-5, 8, 10, 20), 1e-12),
+      );
+      expect(engine.dist(-3, -4, 0, 0), closeTo(5, 1e-12));
+    });
+
+    test('coincident points measure zero', () {
+      final engine = Flut5Engine();
+      expect(engine.dist(7, -2, 7, -2), 0);
+      expect(engine.distSq(7, -2, 7, -2), 0);
+    });
+
+    test('distSq orders the same as dist, without the root', () {
+      final engine = Flut5Engine();
+      final near = engine.dist(0, 0, 2, 2);
+      final far = engine.dist(0, 0, 9, 1);
+      expect(near, lessThan(far));
+      expect(engine.distSq(0, 0, 2, 2), lessThan(engine.distSq(0, 0, 9, 1)));
+      expect(engine.distSq(0, 0, 9, 1), closeTo(far * far, 1e-9));
+    });
+
+    test('agrees with Flut5Vector.dist on the z = 0 plane', () {
+      final engine = Flut5Engine();
+      final a = Flut5Vector(12, -3);
+      final b = Flut5Vector(-4, 9);
+      expect(engine.dist(a.x, a.y, b.x, b.y), closeTo(a.dist(b), 1e-12));
+      expect(engine.dist(a, b), closeTo(a.dist(b), 1e-12));
+    });
+
+    test('the two-vector form measures in 3-D', () {
+      final engine = Flut5Engine();
+      final a = Flut5Vector(0, 0, 0);
+      final b = Flut5Vector(3, 4, 12);
+      // 3-4-12 is a Pythagorean quadruple: sqrt(9 + 16 + 144) == 13.
+      expect(engine.dist(a, b), closeTo(13, 1e-12));
+      expect(engine.distSq(a, b), closeTo(169, 1e-12));
+      // The number form only ever sees x and y, so it drops the z leg.
+      expect(engine.dist(a.x, a.y, b.x, b.y), closeTo(5, 1e-12));
+    });
+
+    test('accepts a bare Vector3, not just Flut5Vector', () {
+      final engine = Flut5Engine();
+      expect(engine.dist(Vector3(0, 0, 0), Vector3(0, 3, 4)), closeTo(5, 1e-12));
+    });
+
+    test('int arguments are accepted in the number form', () {
+      final engine = Flut5Engine();
+      expect(engine.dist(0, 0, 3, 4), closeTo(5, 1e-12));
+      expect(engine.distSq(0, 0, 3, 4), closeTo(25, 1e-12));
+    });
+
+    test('a shape that is neither form throws with both spellings named', () {
+      final engine = Flut5Engine();
+      final v = Flut5Vector(1, 2);
+
+      // Two numbers, no second point.
+      expect(
+        () => engine.dist(1, 2),
+        throwsA(
+          isA<ArgumentError>().having(
+            (e) => e.message,
+            'message',
+            allOf(contains('dist(x1, y1, x2, y2)'), contains('dist(v1, v2)')),
+          ),
+        ),
+      );
+      // Vectors *and* trailing coordinates.
+      expect(() => engine.dist(v, v, 3, 4), throwsArgumentError);
+      expect(() => engine.distSq(v, v, 3, 4), throwsArgumentError);
+      // Mixed shapes.
+      expect(() => engine.dist(v, 2, 3, 4), throwsArgumentError);
+      expect(() => engine.distSq(1, 2), throwsArgumentError);
+    });
+  });
 
   group('Simplex noise (default mode)', () {
     test('returns values in [-1, 1] for 1-D inputs', () {

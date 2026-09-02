@@ -211,7 +211,7 @@ class _Flut5CanvasState extends State<Flut5Canvas>
   void didUpdateWidget(Flut5Canvas oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.sketch != widget.sketch) {
-      oldWidget.sketch.dispose();
+      _disposeSketch(oldWidget.sketch);
       _painter = Flut5Painter(sketch: widget.sketch, repaint: _repaint);
       _trailPainter = _TrailPainter(widget.sketch.flut5);
       _setupScheduled = false;
@@ -233,8 +233,21 @@ class _Flut5CanvasState extends State<Flut5Canvas>
     _ticker.dispose();
     _keyboardFocusNode.dispose();
     _repaint.dispose();
-    widget.sketch.dispose();
+    _disposeSketch(widget.sketch);
     super.dispose();
+  }
+
+  /// Tears [sketch] down: its own `dispose()` first, so a user override runs,
+  /// then [Flut5.disposeFlut5] directly.
+  ///
+  /// A sketch that mixes in [ChangeNotifier] (as [Flut5ChangeNotifier] asks it
+  /// to) inherits `ChangeNotifier.dispose`, which overrides `Flut5.dispose`
+  /// and does not chain to it — so the engine teardown would never run.
+  /// `disposeFlut5` is idempotent, so the ordinary path pays nothing for the
+  /// second call.
+  void _disposeSketch(Flut5Sketch sketch) {
+    sketch.dispose();
+    sketch.disposeFlut5();
   }
 
   /// Ticker callback. When [Flut5Engine.frameRateCap] is null the tick is

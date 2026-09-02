@@ -22,6 +22,24 @@ class _EmitSketch extends Flut5Sketch {
   }
 }
 
+/// The pattern the mixin exists for: a sketch that is itself a [Listenable].
+class _NotifierSketch extends Flut5Sketch
+    with ChangeNotifier, Flut5ChangeNotifier {
+  _NotifierSketch(this.onDraw);
+
+  final void Function(_NotifierSketch sketch) onDraw;
+
+  int frames = 0;
+  int score = 0;
+
+  @override
+  void draw() {
+    frames++;
+    background(const Color(0xFF000000));
+    onDraw(this);
+  }
+}
+
 Widget _host(Flut5Sketch sketch, Widget readout) => MaterialApp(
   home: Scaffold(
     body: Stack(
@@ -237,6 +255,130 @@ void main() {
     });
   });
 
+  group('Flut5ChangeNotifier', () {
+    testWidgets('notifyListeners() from draw() publishes without throwing', (
+      tester,
+    ) async {
+      final rendered = <int>[];
+      final sketch = _NotifierSketch((s) {
+        s.score++;
+        s.notifyListeners();
+      });
+
+      await run(
+        tester,
+        sketch,
+        readout: ListenableBuilder(
+          listenable: sketch,
+          builder: (_, _) {
+            rendered.add(sketch.score);
+            return Text('score ${sketch.score}');
+          },
+        ),
+        frames: 12,
+      );
+
+      expect(tester.takeException(), isNull);
+      // 0 from the initial build, then one rebuild per drawn frame, in order
+      // and with no gaps — the widget never got stuck.
+      expect(rendered.length, greaterThan(3));
+      expect(rendered, List<int>.generate(rendered.length, (i) => i));
+      expect(find.text('score ${rendered.last}'), findsOneWidget);
+    });
+
+    testWidgets('repeat calls in one frame coalesce to one notification', (
+      tester,
+    ) async {
+      var notifications = 0;
+      final sketch = _NotifierSketch((s) {
+        if (s.frames != 2) return;
+        s.notifyListeners();
+        s.notifyListeners();
+        s.notifyListeners();
+      });
+      sketch.addListener(() => notifications++);
+
+      await run(tester, sketch);
+
+      expect(notifications, 1);
+    });
+
+    testWidgets('the notification is pending until the frame ends', (
+      tester,
+    ) async {
+      bool? pendingInDraw;
+      SchedulerPhase? phase;
+      final sketch = _NotifierSketch((s) {
+        if (s.frames != 2) return;
+        s.notifyListeners();
+        pendingInDraw = s.hasPendingNotification;
+      });
+      sketch.addListener(
+        () => phase = SchedulerBinding.instance.schedulerPhase,
+      );
+
+      await run(tester, sketch);
+
+      expect(pendingInDraw, isTrue);
+      expect(phase, SchedulerPhase.postFrameCallbacks);
+      expect(sketch.hasPendingNotification, isFalse, reason: 'the frame ended');
+    });
+
+    testWidgets('a call from outside the frame notifies immediately', (
+      tester,
+    ) async {
+      final controller = _Controller();
+      var notifications = 0;
+      controller.addListener(() => notifications++);
+
+      controller.bump();
+
+      expect(notifications, 1);
+      expect(controller.hasPendingNotification, isFalse);
+    });
+
+    testWidgets('disposing drops a notification queued earlier in the frame', (
+      tester,
+    ) async {
+      final controller = _Controller();
+      var notifications = 0;
+      controller.addListener(() => notifications++);
+
+      await run(
+        tester,
+        _EmitSketch((sketch) {
+          if (sketch.frames != 2) return;
+          controller.bump();
+          controller.dispose();
+        }),
+      );
+
+      expect(tester.takeException(), isNull);
+      expect(notifications, 0);
+    });
+
+    testWidgets('the engine is still torn down when the canvas unmounts', (
+      tester,
+    ) async {
+      // ChangeNotifier.dispose() overrides Flut5.dispose() and does not chain
+      // to it, so the canvas has to reach the engine teardown by another
+      // route. `Flut5Engine.current` is the visible half of that teardown.
+      final sketch = _NotifierSketch((_) {});
+      await run(tester, sketch, frames: 3);
+      expect(Flut5Engine.current, isNotNull);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+
+      expect(tester.takeException(), isNull);
+      expect(
+        Flut5Engine.current,
+        isNull,
+        reason: 'disposeFlut5() must run even though ChangeNotifier '
+            'shadowed dispose()',
+      );
+    });
+  });
+
   group('the hazard this exists for', () {
     testWidgets('a plain ValueNotifier written from draw() throws', (
       tester,
@@ -259,4 +401,10 @@ void main() {
       expect(find.text('raw 0'), findsOneWidget);
     });
   });
+}
+
+/// A hand-rolled controller — the other half of the mixin's audience, where
+/// there is no [Flut5] in the picture at all.
+class _Controller extends ChangeNotifier with Flut5ChangeNotifier {
+  void bump() => notifyListeners();
 }

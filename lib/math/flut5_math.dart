@@ -1,5 +1,7 @@
 import 'dart:math' as math;
 
+import 'package:vector_math/vector_math_64.dart' show Vector3;
+
 /// A mixin that provides mathematical utilities for the Flut5 Engine.
 mixin Flut5Math {
   /// Re-maps a number from one range to another.
@@ -21,6 +23,62 @@ mixin Flut5Math {
   /// Linearly interpolates between [start] and [stop] by [amt] (0.0–1.0).
   double lerp(double start, double stop, double amt) {
     return start + (stop - start) * amt;
+  }
+
+  /// Returns the Euclidean distance between two points.
+  ///
+  /// Takes either form, mirroring p5:
+  ///
+  /// ```dart
+  /// dist(x1, y1, x2, y2);   // two 2-D points, as numbers
+  /// dist(v1, v2);           // two vectors — 3-D, z included
+  /// ```
+  ///
+  /// ```dart
+  /// if (dist(mouseX, mouseY, cx, cy) < radius) { /* inside */ }
+  /// ```
+  ///
+  /// The vector form measures in 3-D, matching `Flut5Vector.dist`; the number
+  /// form is flat by construction. Because the two shapes cannot be told
+  /// apart at compile time, the first two arguments are typed [Object] and
+  /// checked on the way in — anything that is neither four numbers nor two
+  /// [Vector3]s throws an [ArgumentError].
+  ///
+  /// Comparing distances is cheaper through [distSq], which skips the square
+  /// root.
+  double dist(Object a, Object b, [num? x2, num? y2]) {
+    if (a is Vector3 && b is Vector3) {
+      if (x2 != null || y2 != null) _badDistArgs('dist', a, b, x2, y2);
+      return a.distanceTo(b);
+    }
+    if (a is num && b is num && x2 != null && y2 != null) {
+      final dx = x2 - a;
+      final dy = y2 - b;
+      return math.sqrt(dx * dx + dy * dy);
+    }
+    _badDistArgs('dist', a, b, x2, y2);
+  }
+
+  /// Returns the *squared* distance between two points.
+  ///
+  /// Takes the same two forms as [dist] and orders results identically, but
+  /// skips the square root — so it is the one to reach for in per-frame
+  /// comparisons. Square the threshold rather than rooting the distance:
+  ///
+  /// ```dart
+  /// if (distSq(mouseX, mouseY, cx, cy) < radius * radius) { /* inside */ }
+  /// ```
+  double distSq(Object a, Object b, [num? x2, num? y2]) {
+    if (a is Vector3 && b is Vector3) {
+      if (x2 != null || y2 != null) _badDistArgs('distSq', a, b, x2, y2);
+      return a.distanceToSquared(b);
+    }
+    if (a is num && b is num && x2 != null && y2 != null) {
+      final dx = (x2 - a).toDouble();
+      final dy = (y2 - b).toDouble();
+      return dx * dx + dy * dy;
+    }
+    _badDistArgs('distSq', a, b, x2, y2);
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -94,4 +152,16 @@ mixin Flut5Math {
     _rng = null;
     _gaussianSpare = null;
   }
+}
+
+/// Reports a call to [Flut5Math.dist] / [Flut5Math.distSq] that matched
+/// neither accepted shape. Returns [Never], so callers need no fallthrough.
+Never _badDistArgs(String name, Object a, Object b, num? x2, num? y2) {
+  final got = [a, b, ?x2, ?y2].join(', ');
+  throw ArgumentError(
+    '$name takes either four numbers or two vectors:\n'
+    '  $name(x1, y1, x2, y2)  — two 2-D points\n'
+    '  $name(v1, v2)          — two vectors, measured in 3-D\n'
+    'Got $name($got).',
+  );
 }

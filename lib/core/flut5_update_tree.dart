@@ -17,8 +17,9 @@ import 'package:flutter/scheduler.dart';
 /// * In release the assert is compiled out and the rebuild simply lands one
 ///   frame late.
 ///
-/// [updateTree] and [Flut5ValueNotifier] both push the write out of the paint
-/// step and into the end of the frame, where the tree is writable again.
+/// [updateTree], [Flut5ValueNotifier] and [Flut5ChangeNotifier] all push the
+/// write out of the paint step and into the end of the frame, where the tree
+/// is writable again.
 
 /// True while the framework is inside the part of the frame that builds, lays
 /// out and paints the widget tree — the window in which dirtying the tree is
@@ -197,6 +198,98 @@ class Flut5ValueNotifier<T> extends ValueNotifier<T> {
     // notify through a disposed notifier.
     _disposed = true;
     _pendingWrite = _unset;
+    super.dispose();
+  }
+}
+
+/// Makes [ChangeNotifier.notifyListeners] safe to call from inside `draw()`.
+///
+/// Same fix as [Flut5ValueNotifier], applied one level down: instead of a
+/// notifier that holds a *value*, this holds the *notification*. Mix it onto
+/// anything that is already a [ChangeNotifier] and every `notifyListeners()`
+/// raised during the paint step is published at the end of the frame instead,
+/// where the widget tree is writable again.
+///
+/// On a sketch — the sketch itself becomes the [Listenable]:
+///
+/// ```dart
+/// class Game extends Flut5Sketch with ChangeNotifier, Flut5ChangeNotifier {
+///   int score = 0;
+///
+///   @override
+///   void draw() {
+///     if (hit) {
+///       score++;
+///       notifyListeners();   // safe, no updateTree() needed
+///     }
+///   }
+/// }
+///
+/// // In the widget, unchanged — it is an ordinary Listenable:
+/// ListenableBuilder(
+///   listenable: sketch,
+///   builder: (context, _) => Text('${sketch.score}'),
+/// )
+/// ```
+///
+/// [ChangeNotifier] is a `mixin class`, so it goes in the `with` clause ahead
+/// of this one; the order matters, because [Flut5ChangeNotifier] overrides
+/// `notifyListeners` and must be applied last.
+///
+/// On a controller you already own, there is nothing to reorder:
+///
+/// ```dart
+/// class ButtonController extends ChangeNotifier with Flut5ChangeNotifier {}
+/// ```
+///
+/// Notifications raised within one frame are **coalesced**: however many
+/// `notifyListeners()` calls a frame makes, listeners are called once, at the
+/// end of it. Fields the listener reads are plain fields, so it sees whatever
+/// they hold when it finally runs — the last value of the frame, matching
+/// `Flut5ValueNotifier`'s coalescing.
+///
+/// Called from outside `draw()` — a pointer callback, a timer, `setup()` — it
+/// behaves exactly like [ChangeNotifier]: published immediately, no deferral,
+/// no latency.
+///
+/// To push a single value rather than a "something changed" signal, prefer
+/// [Flut5ValueNotifier]; it adds read-your-writes semantics this mixin cannot
+/// offer, since the fields behind a [ChangeNotifier] are written directly.
+mixin Flut5ChangeNotifier on ChangeNotifier {
+  bool _notifyQueued = false;
+  bool _notifierDisposed = false;
+
+  /// Whether a `notifyListeners()` made during `draw()` is still waiting for
+  /// the frame to end. Listeners have not been called for it yet.
+  bool get hasPendingNotification => _notifyQueued;
+
+  @override
+  void notifyListeners() {
+    if (!_treeIsLocked) {
+      // Writable right now: notify immediately, and drop any queued
+      // notification — this one covers it.
+      _notifyQueued = false;
+      super.notifyListeners();
+      return;
+    }
+    // Inside draw(). Queue one publish for the frame however many calls land.
+    if (_notifyQueued) return;
+    _notifyQueued = true;
+    _deferToFrameEnd(_publishNotification);
+  }
+
+  void _publishNotification() {
+    if (_notifierDisposed || !_notifyQueued) return;
+    _notifyQueued = false;
+    super.notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    // A queued publish outlives the frame it was made in; make sure it cannot
+    // notify through a disposed notifier.
+    _notifierDisposed = true;
+    _notifyQueued = false;
     super.dispose();
   }
 }

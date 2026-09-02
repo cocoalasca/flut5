@@ -159,7 +159,29 @@ abstract class Flut5 with Flut5EventMixin {
     if (listenEvents) this.listenEvents(flut5);
   }
 
-  void dispose() {
+  bool _disposed = false;
+
+  /// Tears this instance down. [Flut5Canvas] calls it on the sketch it hosts;
+  /// override it to release your own resources, and call `super.dispose()`.
+  ///
+  /// The teardown itself lives in [disposeFlut5] — see there for why.
+  @mustCallSuper
+  void dispose() => disposeFlut5();
+
+  /// The engine-side teardown behind [dispose], under a name no mixin
+  /// shadows, and safe to call more than once.
+  ///
+  /// [ChangeNotifier] is a `mixin class` that declares its own `dispose()`
+  /// without chaining to `super`, so a sketch written as
+  /// `extends Flut5Sketch with ChangeNotifier` (see [Flut5ChangeNotifier])
+  /// inherits *that* `dispose` in place of this class's — the engine, event
+  /// subscriptions and cursor would silently never be released. [Flut5Canvas]
+  /// therefore calls [dispose] (so a user's own override still runs) and then
+  /// this, which the mixin cannot intercept. On the ordinary path [dispose]
+  /// has already reached it and the second call returns immediately.
+  void disposeFlut5() {
+    if (_disposed) return;
+    _disposed = true;
     disposeEvents();
     if (_ownsEngine) {
       if (identical(Flut5Engine.current, flut5)) Flut5Engine.current = null;
@@ -485,6 +507,10 @@ abstract class Flut5 with Flut5EventMixin {
   ) => flut5.map(value, start1, stop1, start2, stop2);
   double lerp(double start, double stop, double amt) =>
       flut5.lerp(start, stop, amt);
+  double dist(Object a, Object b, [num? x2, num? y2]) =>
+      flut5.dist(a, b, x2, y2);
+  double distSq(Object a, Object b, [num? x2, num? y2]) =>
+      flut5.distSq(a, b, x2, y2);
   double random([num? min, num? max]) => flut5.random(min, max);
   T randomChoice<T>(List<T> items) => flut5.randomChoice(items);
   double randomGaussian([double mean = 0.0, double sd = 1.0]) =>
