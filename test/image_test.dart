@@ -58,6 +58,17 @@ class _ImageSketch extends Flut5Sketch {
   void paint(Flut5Image img) => image(img, 7, 9);
 }
 
+class _ImageOnlySketch extends Flut5Sketch {
+  _ImageOnlySketch(this.tile);
+  final Flut5Image tile;
+
+  @override
+  void draw() {
+    image(tile, 0, 0);
+    image(tile, 8, 0);
+  }
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -337,6 +348,44 @@ void main() {
   });
 
   group('image() atlas batching', () {
+    test('painter displays an image-only frame with an unflushed atlas', () async {
+      final tile = testImage(8, 8);
+      final previousEngine = Flut5Engine.current;
+      final sketch = _ImageOnlySketch(tile)..isReady = true;
+      final e = sketch.flut5;
+      // First paint is off the capture tick: inspect the foreground directly.
+      e.frameSnapshotInterval = 2;
+      e.adaptiveSnapshotThrottle = false;
+      addTearDown(() {
+        tile.dispose();
+        sketch.dispose();
+        Flut5Engine.current = previousEngine;
+      });
+      final recorder = ui.PictureRecorder();
+      Flut5Painter(sketch: sketch).paint(Canvas(recorder), const Size(16, 8));
+      final picture = recorder.endRecording();
+      final output = await picture.toImage(16, 8);
+      final pixels = (await output.toByteData())!;
+      expect(pixelAt(pixels, 16, 4, 4).toARGB32(), Colors.red.toARGB32());
+      expect(pixelAt(pixels, 16, 12, 4).toARGB32(), Colors.red.toARGB32());
+      expect(e.renderQueue.isEmpty, isTrue);
+      output.dispose();
+      picture.dispose();
+    });
+
+    test('pending images make the queue nonempty before any flush', () {
+      final e = engine();
+      final tile = testImage(32, 32);
+      addTearDown(tile.dispose);
+      expect(e.renderQueue.isEmpty, isTrue);
+      e.image(tile, 0, 0);
+      expect(e.renderQueue.isEmpty, isFalse);
+      e.image(tile, 40, 0);
+      expect(e.renderQueue.isEmpty, isFalse);
+      e.renderQueue.clear();
+      expect(e.renderQueue.isEmpty, isTrue);
+    });
+
     List<Flut5RenderItem> itemsOf(Flut5Engine e) {
       e.renderQueue.flushPending();
       return e.renderQueue.items;

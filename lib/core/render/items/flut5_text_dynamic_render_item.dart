@@ -79,6 +79,14 @@ class TextDynamicRenderItem extends Flut5RenderItem {
     this.shadow,
   });
 
+  // With no wrapping, spacing changes offsets and alignment but never line
+  // breaks. Reuse the zero-spacing layout and keep the exact animated value
+  // in composition. Wrapped text retains the spacing-dependent layout path.
+  double get _compositionSpacing => maxWidth == null ? letterSpacing ?? 0 : 0;
+
+  double _lineWidth(Flut5TextLine line) =>
+      line.widthWithSpacing(_compositionSpacing);
+
   Rect _lineInkBounds(
     Flut5TextCache cache,
     Flut5TextLine line,
@@ -87,7 +95,9 @@ class TextDynamicRenderItem extends Flut5RenderItem {
     double strokeWidth,
   ) {
     double left = 0.0;
-    double right = line.width;
+    final lineWidth = _lineWidth(line);
+    final spacing = _compositionSpacing;
+    double right = lineWidth;
     var hasInk = false;
 
     for (int i = 0; i < line.glyphs.length; i++) {
@@ -102,11 +112,11 @@ class TextDynamicRenderItem extends Flut5RenderItem {
         paintingStyle: paintingStyle,
         strokeWidth: strokeWidth,
       );
-      final glyphLeft = line.offsets[i] - cached.leftPad;
+      final glyphLeft = line.offsetWithSpacing(i, spacing) - cached.leftPad;
       final glyphRight = glyphLeft + cached.drawWidth;
       if (!hasInk) {
         left = glyphLeft < 0.0 ? glyphLeft : 0.0;
-        right = glyphRight > line.width ? glyphRight : line.width;
+        right = glyphRight > lineWidth ? glyphRight : lineWidth;
         hasInk = true;
       } else {
         if (glyphLeft < left) left = glyphLeft;
@@ -150,7 +160,7 @@ class TextDynamicRenderItem extends Flut5RenderItem {
           : bounds.expandToInclude(strokeBounds);
     }
 
-    return bounds ?? Rect.fromLTWH(lineStartX, 0, line.width, lineHeight);
+    return bounds ?? Rect.fromLTWH(lineStartX, 0, _lineWidth(line), lineHeight);
   }
 
   double _alignedX(double originalX, double lineWidth) {
@@ -191,6 +201,7 @@ class TextDynamicRenderItem extends Flut5RenderItem {
     int paintingStyle,
     double strokeWidth,
   ) {
+    final spacing = _compositionSpacing;
     for (int i = 0; i < line.glyphs.length; i++) {
       final cached = cache.getOrCreate(
         text: line.glyphs[i],
@@ -204,7 +215,7 @@ class TextDynamicRenderItem extends Flut5RenderItem {
         strokeWidth: strokeWidth,
       );
       final dst = Rect.fromLTWH(
-        startX + line.offsets[i] - cached.leftPad,
+        startX + line.offsetWithSpacing(i, spacing) - cached.leftPad,
         y,
         cached.drawWidth,
         cached.height,
@@ -238,8 +249,8 @@ class TextDynamicRenderItem extends Flut5RenderItem {
       );
     }
 
-    // Cached layout: letter spacing and kerning are baked into each line's
-    // glyph offsets, so a hit skips all per-frame measurement.
+    // Unwrapped layouts exclude animated spacing from the cache key.
+    // Wrapped layouts still bake it in because it determines line breaks.
     final lines = cache
         .getOrCreateLayout(
           text: text,
@@ -247,7 +258,7 @@ class TextDynamicRenderItem extends Flut5RenderItem {
           fontSize: fontSize,
           fontWeight: fontWeight,
           fontStyle: fontStyle,
-          letterSpacing: letterSpacing ?? 0.0,
+          letterSpacing: maxWidth == null ? 0.0 : letterSpacing ?? 0.0,
           maxWidth: maxWidth,
         )
         .lines;
@@ -263,7 +274,7 @@ class TextDynamicRenderItem extends Flut5RenderItem {
       Rect? visualBounds;
       for (final line in lines) {
         if (!line.hasChars) continue;
-        final lineStartX = _alignedX(x, line.width);
+        final lineStartX = _alignedX(x, _lineWidth(line));
         final lineBounds = _lineVisualBounds(
           cache,
           line,
@@ -322,7 +333,7 @@ class TextDynamicRenderItem extends Flut5RenderItem {
           canvas,
           cache,
           line,
-          _alignedX(x, line.width),
+          _alignedX(x, _lineWidth(line)),
           cursorY,
           shadowSpec.textTintPaint,
           shadowStroke ? 1 : 0,
@@ -342,7 +353,7 @@ class TextDynamicRenderItem extends Flut5RenderItem {
         continue;
       }
 
-      final double lineStartX = _alignedX(x, line.width);
+      final double lineStartX = _alignedX(x, _lineWidth(line));
 
       // ── Stroke pass (bottom) ──
       if (strokePaint != null) {

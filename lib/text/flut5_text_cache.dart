@@ -26,7 +26,37 @@ class Flut5TextLine {
   /// the cursor but carry no width.
   final bool hasChars;
 
-  Flut5TextLine(this.glyphs, this.offsets, this.width, this.hasChars);
+  // Source character positions include whitespace, unlike the drawable
+  // glyph list. They let unwrapped text apply spacing without retaining a
+  // different layout for every animation value.
+  final Int32List? _spacingIndices;
+  final int _spacingGaps;
+
+  Flut5TextLine(this.glyphs, this.offsets, this.width, this.hasChars)
+    : _spacingIndices = null,
+      _spacingGaps = 0;
+
+  Flut5TextLine._(
+    this.glyphs,
+    this.offsets,
+    this.width,
+    this.hasChars,
+    this._spacingIndices,
+    this._spacingGaps,
+  );
+
+  /// Internal: width after adding composition-time spacing to this layout.
+  double widthWithSpacing(double spacing) => spacing == 0 || _spacingGaps == 0
+      ? width
+      : width + _spacingGaps * spacing;
+
+  /// Internal: glyph offset after adding composition-time spacing.
+  double offsetWithSpacing(int index, double spacing) {
+    final position = _spacingIndices?[index] ?? 0;
+    return spacing == 0 || position == 0
+        ? offsets[index]
+        : offsets[index] + position * spacing;
+  }
 }
 
 /// Cached word-wrap layout for one (text, style, spacing, maxWidth) tuple.
@@ -926,21 +956,25 @@ class Flut5TextCache {
     final lines = <Flut5TextLine>[];
     var glyphs = <String>[];
     var offsets = <double>[];
+    var spacingIndices = maxWidth == null ? <int>[] : null;
     double penX = 0.0;
     int lineCharCount = 0;
     String? lastChar;
 
     void flush() {
       lines.add(
-        Flut5TextLine(
+        Flut5TextLine._(
           glyphs,
           Float64List.fromList(offsets),
           penX,
           lineCharCount > 0,
+          spacingIndices == null ? null : Int32List.fromList(spacingIndices!),
+          lineCharCount > 0 ? lineCharCount - 1 : 0,
         ),
       );
       glyphs = <String>[];
       offsets = <double>[];
+      spacingIndices = maxWidth == null ? <int>[] : null;
       penX = 0.0;
       lineCharCount = 0;
       lastChar = null;
@@ -999,6 +1033,7 @@ class Flut5TextCache {
             if (!tokenIsWhitespace) {
               glyphs.add(tokenChars[t]);
               offsets.add(penX);
+              spacingIndices?.add(lineCharCount + t);
             }
             penX += tokenAdvances[t];
             if (t < tokenChars.length - 1) penX += tokenGaps[t];

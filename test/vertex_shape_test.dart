@@ -1,7 +1,21 @@
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:flut5/flut5.dart';
+
+class _RecordingGradient extends LinearGradient {
+  _RecordingGradient() : super(colors: [Colors.red, Colors.blue]);
+
+  final shaderRects = <Rect>[];
+
+  @override
+  ui.Shader createShader(Rect rect, {TextDirection? textDirection}) {
+    shaderRects.add(rect);
+    return super.createShader(rect, textDirection: textDirection);
+  }
+}
 
 /// Pins the behavior of the beginShape/vertex/endShape pipeline over the
 /// flattened vertex storage: geometry must land in the render queue as the
@@ -13,6 +27,42 @@ void main() {
     final items = engine.renderQueue.items;
     expect(items, hasLength(1));
     return items.single;
+  }
+
+  for (final useFill in [true, false]) {
+    for (final explicitRect in [true, false]) {
+      test('vertex ${useFill ? 'fill' : 'stroke'} gradient keeps '
+          '${explicitRect ? 'explicit' : 'automatic'} bounds', () {
+        final engine = Flut5Engine();
+        final gradient = _RecordingGradient();
+        if (useFill) {
+          if (explicitRect) {
+            engine.fill(gradient, 0, 0, 100, 100);
+          } else {
+            engine.fill(gradient);
+          }
+        } else {
+          if (explicitRect) {
+            engine.stroke(gradient, 0, 0, 100, 100);
+          } else {
+            engine.stroke(gradient);
+          }
+        }
+        engine.beginShape();
+        engine.vertex(10, 20);
+        engine.vertex(60, 20);
+        engine.vertex(60, 70);
+        engine.vertex(10, 70);
+        engine.endShape(close: true);
+        expect(singleItem(engine).bounds, const Rect.fromLTRB(10, 20, 60, 70));
+        expect(
+          gradient.shaderRects.last,
+          explicitRect
+              ? const Rect.fromLTWH(0, 0, 100, 100)
+              : const Rect.fromLTRB(10, 20, 60, 70),
+        );
+      });
+    }
   }
 
   test('polygon mode builds a closed path with the vertex bounds', () {

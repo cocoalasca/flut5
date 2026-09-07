@@ -376,10 +376,12 @@ mixin Flut5Vertex on Flut5Stroke, Flut5Fill {
       return;
     }
 
-    // Build gradient shader against the vertex bounding box; falls back to
-    // the normal snapshot (and canvas-size rect) for solid colors or when the
-    // user has set an explicit gradient rect.
-    final bounds = _computeVertexBounds();
+    // Only auto-sized gradients consume vertex bounds. Solid paints and
+    // explicit gradient rects reuse their snapshots without scanning vertices.
+    final needsBounds =
+        (fillGradient != null && fillGradientRect == null) ||
+        (strokeGradient != null && strokeGradientRect == null);
+    final bounds = needsBounds ? _computeVertexBounds() : Rect.zero;
     final Paint? fill = snapshotFillPaintForShape(bounds);
     final Paint? stroke = snapshotStrokePaintForShape(bounds);
 

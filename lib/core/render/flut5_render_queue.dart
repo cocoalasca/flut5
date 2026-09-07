@@ -433,6 +433,7 @@ class Flut5RenderQueue {
       _items.isEmpty &&
       _pointCount == 0 &&
       _lineCount == 0 &&
+      _atlasCount == 0 &&
       !_pendingShapeHasContent;
 
   /// Append a point to the auto-batch buffer. Consecutive calls with the same
