@@ -1,50 +1,47 @@
 import 'package:flutter/material.dart';
+
 import 'flut5_ui_element.dart';
 
 MainAxisAlignment _parseJustify(String justify) => switch (justify) {
-      'end' => MainAxisAlignment.end,
-      'center' => MainAxisAlignment.center,
-      'spaceBetween' => MainAxisAlignment.spaceBetween,
-      'spaceAround' => MainAxisAlignment.spaceAround,
-      'spaceEvenly' => MainAxisAlignment.spaceEvenly,
-      _ => MainAxisAlignment.start,
-    };
+  'end' => MainAxisAlignment.end,
+  'center' => MainAxisAlignment.center,
+  'spaceBetween' => MainAxisAlignment.spaceBetween,
+  'spaceAround' => MainAxisAlignment.spaceAround,
+  'spaceEvenly' => MainAxisAlignment.spaceEvenly,
+  _ => MainAxisAlignment.start,
+};
 
 CrossAxisAlignment _parseAlign(String align) => switch (align) {
-      'end' => CrossAxisAlignment.end,
-      'center' => CrossAxisAlignment.center,
-      'stretch' => CrossAxisAlignment.stretch,
-      'baseline' => CrossAxisAlignment.baseline,
-      _ => CrossAxisAlignment.start,
-    };
+  'end' => CrossAxisAlignment.end,
+  'center' => CrossAxisAlignment.center,
+  'stretch' => CrossAxisAlignment.stretch,
+  'baseline' => CrossAxisAlignment.baseline,
+  _ => CrossAxisAlignment.start,
+};
 
-base class Flut5Container extends Flut5UIElement {
-  String direction;
-  double gap;
-  String align;
-  String justify;
+base class Flut5Container({
+  var String direction = 'row',
+  var double gap = 0,
+  var String align = 'start',
+  var String justify = 'start',
+  required super.removeElement,
+  required final Function(Flut5UIElement) detachElement,
+}) extends Flut5UIElement {
   SizedBox? _cachedSpacer;
 
   /// Unified children list — holds either [Widget] or [Flut5UIElement], in insertion order.
   final List<Object> _items = [];
 
-  final Function(Flut5UIElement) detachElement;
-
-  Flut5Container({
-    this.direction = 'row',
-    this.gap = 0,
-    this.align = 'start',
-    this.justify = 'start',
-    required super.removeElement,
-    required this.detachElement,
-  });
-
   @override
   void style(dynamic props, [dynamic value]) {
     super.style(props, value);
-    final resolved = props is String ? {props: value} : props as Map<String, dynamic>;
-    if (resolved.containsKey('align') && resolved['align'] != null) align = resolved['align'] as String;
-    if (resolved.containsKey('justify') && resolved['justify'] != null) justify = resolved['justify'] as String;
+    final resolved = props is String
+        ? {props: value}
+        : props as Map<String, dynamic>;
+    if (resolved.containsKey('align') && resolved['align'] != null)
+      align = resolved['align'] as String;
+    if (resolved.containsKey('justify') && resolved['justify'] != null)
+      justify = resolved['justify'] as String;
     if (resolved.containsKey('gap') && resolved['gap'] != null) {
       gap = (resolved['gap'] as num).toDouble();
       _cachedSpacer = null;
@@ -102,7 +99,8 @@ base class Flut5Container extends Flut5UIElement {
   /// property changes rebuild only that child — not the entire container.
   List<Widget> _resolveItems(BuildContext context) {
     return _items.map((item) {
-      if (item is Flut5UIElement) return item.buildInteractiveListenable(context);
+      if (item is Flut5UIElement)
+        return item.buildInteractiveListenable(context);
       return item as Widget;
     }).toList();
   }
@@ -118,7 +116,7 @@ base class Flut5Container extends Flut5UIElement {
       for (int i = 0; i < resolved.length; i++) ...[
         resolved[i],
         if (i < resolved.length - 1) spacer,
-      ]
+      ],
     ];
   }
 

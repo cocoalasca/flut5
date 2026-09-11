@@ -49,34 +49,25 @@ enum Flut5CellState {
 ///   flut5.square(cell.anchorX, cell.anchorY, cell.size);
 /// }
 /// ```
-final class Flut5TextCell {
+final class const Flut5TextCell({
   /// Column index within the grid, 0 being the leftmost.
-  final int col;
+  required final int col,
 
   /// Row index within the grid, 0 being the top.
-  final int row;
+  required final int row,
 
   /// Whether this cell is empty, interior, or crossed by an outline.
-  final Flut5CellState state;
+  required final Flut5CellState state,
 
   /// Left edge of the cell in screen space — the x of [anchor].
-  final double anchorX;
+  required final double anchorX,
 
   /// Top edge of the cell in screen space — the y of [anchor].
-  final double anchorY;
+  required final double anchorY,
 
   /// Edge length of the cell in pixels — uniform across the whole grid.
-  final double size;
-
-  const Flut5TextCell({
-    required this.col,
-    required this.row,
-    required this.state,
-    required this.anchorX,
-    required this.anchorY,
-    required this.size,
-  });
-
+  required final double size,
+}) {
   /// Whether the cell carries any of the glyph — shorthand for
   /// `state.isFilled`, so it covers [Flut5CellState.interior] and
   /// [Flut5CellState.edge] alike.
@@ -142,26 +133,19 @@ final class Flut5TextCell {
 ///   }
 /// }
 /// ```
-class Flut5TextGrid {
+class const Flut5TextGrid({
   /// Cell states indexed `[row][col]`, row 0 being the top of the box.
-  final List<List<Flut5CellState>> states;
+  required final List<List<Flut5CellState>> states,
 
   /// Left edge of column 0 in screen space.
-  final double x;
+  required final double x,
 
   /// Top edge of row 0 in screen space.
-  final double y;
+  required final double y,
 
   /// Edge length of one cell in pixels.
-  final double cellSize;
-
-  const Flut5TextGrid({
-    required this.states,
-    required this.x,
-    required this.y,
-    required this.cellSize,
-  });
-
+  required final double cellSize,
+}) {
   /// A grid with no cells, returned when the text has no drawable outline.
   static const Flut5TextGrid empty = Flut5TextGrid(
     states: [],

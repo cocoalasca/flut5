@@ -17,16 +17,9 @@ import 'package:flutter/foundation.dart';
 /// stacked scroll containers under the same cursor will both receive the same
 /// sample — an accepted edge case.
 @immutable
-final class Flut5WheelSample {
-  final double dx;
-  final double dy;
-  final double x;
-  final double y;
-
-  const Flut5WheelSample({
-    required this.dx,
-    required this.dy,
-    required this.x,
-    required this.y,
-  });
-}
+final class const Flut5WheelSample({
+  required final double dx,
+  required final double dy,
+  required final double x,
+  required final double y,
+});

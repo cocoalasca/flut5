@@ -1,20 +1,16 @@
 import 'package:flutter/material.dart';
+
 import 'flut5_ui_element.dart';
 import 'flut5_style_builder.dart';
 
-base class Flut5Slider extends Flut5UIElement {
-  double min;
-  double max;
-  double value;
+base class Flut5Slider(
+  var double min,
+  var double max, {
+  var double value = 0.0,
+  required super.removeElement,
+}) extends Flut5UIElement {
   Axis _direction = Axis.horizontal;
   Function(double)? _onChanged;
-
-  Flut5Slider(
-    this.min,
-    this.max, {
-    this.value = 0.0,
-    required super.removeElement,
-  });
 
   /// Sets the slider orientation. Defaults to [Axis.horizontal].
   void direction(Axis axis) {
@@ -48,23 +44,27 @@ base class Flut5Slider extends Flut5UIElement {
   Widget buildContent(BuildContext context) {
     final style = effectiveStyleMap();
     final theme = _buildSliderTheme(context, style);
-    return SliderTheme(
-      data: theme,
-      child: super.buildContent(context),
-    );
+    return SliderTheme(data: theme, child: super.buildContent(context));
   }
 
-  SliderThemeData _buildSliderTheme(BuildContext context, Map<String, dynamic> style) {
+  SliderThemeData _buildSliderTheme(
+    BuildContext context,
+    Map<String, dynamic> style,
+  ) {
     final base = SliderTheme.of(context);
 
     final thumbRadius = (style['thumbSize'] as num?)?.toDouble();
     final shadows = resolveShadows(style['thumbShadow']);
     final thumbBorderColor = style['thumbBorderColor'] as Color?;
-    final thumbBorderWeight = (style['thumbBorderWeight'] as num?)?.toDouble() ?? 1.5;
+    final thumbBorderWeight =
+        (style['thumbBorderWeight'] as num?)?.toDouble() ?? 1.5;
 
     final thumbBorderRadius = (style['thumbBorderRadius'] as num?)?.toDouble();
-    final needsThumbShape = thumbRadius != null || shadows != null ||
-        thumbBorderColor != null || thumbBorderRadius != null;
+    final needsThumbShape =
+        thumbRadius != null ||
+        shadows != null ||
+        thumbBorderColor != null ||
+        thumbBorderRadius != null;
     final thumbShape = needsThumbShape
         ? _CustomRoundThumbShape(
             enabledThumbRadius: thumbRadius ?? 10.0,
@@ -76,17 +76,26 @@ base class Flut5Slider extends Flut5UIElement {
         : null;
 
     final trackBorderColor = style['trackBorderColor'] as Color?;
-    final trackBorderWeight = (style['trackBorderWeight'] as num?)?.toDouble() ?? 1.0;
+    final trackBorderWeight =
+        (style['trackBorderWeight'] as num?)?.toDouble() ?? 1.0;
     final trackShadows = resolveShadows(style['shadow']);
     final trackBorderRadius = (style['trackBorderRadius'] as num?)?.toDouble();
     final rawTrackColor = style['trackColor'];
     final trackGradient = resolveLinearGradient(rawTrackColor);
-    final trackSolidColor = trackGradient == null && rawTrackColor is Color ? rawTrackColor : null;
+    final trackSolidColor = trackGradient == null && rawTrackColor is Color
+        ? rawTrackColor
+        : null;
     final rawActiveColor = style['activeTrackColor'];
     final activeGradient = resolveLinearGradient(rawActiveColor);
-    final activeSolidColor = activeGradient == null && rawActiveColor is Color ? rawActiveColor : null;
-    final needsTrackShape = trackBorderColor != null || trackShadows != null ||
-        trackBorderRadius != null || trackGradient != null || activeGradient != null;
+    final activeSolidColor = activeGradient == null && rawActiveColor is Color
+        ? rawActiveColor
+        : null;
+    final needsTrackShape =
+        trackBorderColor != null ||
+        trackShadows != null ||
+        trackBorderRadius != null ||
+        trackGradient != null ||
+        activeGradient != null;
     final trackShape = needsTrackShape
         ? _CustomRoundedRectTrackShape(
             borderColor: trackBorderColor,
@@ -134,20 +143,13 @@ base class Flut5Slider extends Flut5UIElement {
 /// Round (or rounded-rect) thumb shape with optional shadows and border stroke.
 /// When [borderRadius] is set the thumb is painted as a rounded rectangle
 /// instead of a circle — [enabledThumbRadius] controls half the side length.
-class _CustomRoundThumbShape extends RoundSliderThumbShape {
-  final List<BoxShadow>? shadows;
-  final Color? borderColor;
-  final double borderWeight;
-  final double? borderRadius;
-
-  const _CustomRoundThumbShape({
-    super.enabledThumbRadius = 10.0,
-    this.shadows,
-    this.borderColor,
-    this.borderWeight = 1.5,
-    this.borderRadius,
-  });
-
+class const _CustomRoundThumbShape({
+  super.enabledThumbRadius = 10.0,
+  final List<BoxShadow>? shadows,
+  final Color? borderColor,
+  final double borderWeight = 1.5,
+  final double? borderRadius,
+}) extends RoundSliderThumbShape {
   @override
   void paint(
     PaintingContext context,
@@ -167,7 +169,10 @@ class _CustomRoundThumbShape extends RoundSliderThumbShape {
       // Rounded-rect thumb: paint entirely manually so we control the shape.
       final size = enabledThumbRadius * 2;
       final rect = Rect.fromCenter(center: center, width: size, height: size);
-      final rrect = RRect.fromRectAndRadius(rect, Radius.circular(borderRadius!));
+      final rrect = RRect.fromRectAndRadius(
+        rect,
+        Radius.circular(borderRadius!),
+      );
       final canvas = context.canvas;
 
       // Shadows beneath. toPaint() converts blurRadius → sigma the CSS way,
@@ -244,23 +249,14 @@ class _CustomRoundThumbShape extends RoundSliderThumbShape {
 /// Both [gradient] (inactive) and [activeGradient] (progress) use the full track rect
 /// as shader bounds — stops are in track-space (0.0 = start, 1.0 = end of full track).
 /// [borderRadius] overrides the default fully-rounded corners (height / 2).
-class _CustomRoundedRectTrackShape extends RoundedRectSliderTrackShape {
-  final List<BoxShadow>? shadows;
-  final Color? borderColor;
-  final double borderWeight;
-  final double? borderRadius;
-  final LinearGradient? gradient;
-  final LinearGradient? activeGradient;
-
-  const _CustomRoundedRectTrackShape({
-    this.shadows,
-    this.borderColor,
-    this.borderWeight = 1.0,
-    this.borderRadius,
-    this.gradient,
-    this.activeGradient,
-  });
-
+class const _CustomRoundedRectTrackShape({
+  final List<BoxShadow>? shadows,
+  final Color? borderColor,
+  final double borderWeight = 1.0,
+  final double? borderRadius,
+  final LinearGradient? gradient,
+  final LinearGradient? activeGradient,
+}) extends RoundedRectSliderTrackShape {
   @override
   void paint(
     PaintingContext context,
@@ -299,11 +295,31 @@ class _CustomRoundedRectTrackShape extends RoundedRectSliderTrackShape {
 
     // Active rect (progress side), inactive rect (remaining side) — LTR/RTL aware.
     final activeRect = textDirection == TextDirection.ltr
-        ? Rect.fromLTRB(trackRect.left, trackRect.top, thumbCenter.dx, trackRect.bottom)
-        : Rect.fromLTRB(thumbCenter.dx, trackRect.top, trackRect.right, trackRect.bottom);
+        ? Rect.fromLTRB(
+            trackRect.left,
+            trackRect.top,
+            thumbCenter.dx,
+            trackRect.bottom,
+          )
+        : Rect.fromLTRB(
+            thumbCenter.dx,
+            trackRect.top,
+            trackRect.right,
+            trackRect.bottom,
+          );
     final inactiveRect = textDirection == TextDirection.ltr
-        ? Rect.fromLTRB(thumbCenter.dx, trackRect.top, trackRect.right, trackRect.bottom)
-        : Rect.fromLTRB(trackRect.left, trackRect.top, thumbCenter.dx, trackRect.bottom);
+        ? Rect.fromLTRB(
+            thumbCenter.dx,
+            trackRect.top,
+            trackRect.right,
+            trackRect.bottom,
+          )
+        : Rect.fromLTRB(
+            trackRect.left,
+            trackRect.top,
+            thumbCenter.dx,
+            trackRect.bottom,
+          );
 
     if (gradient != null || activeGradient != null) {
       // Gradient path: paint manually, clip to track shape.
@@ -315,16 +331,28 @@ class _CustomRoundedRectTrackShape extends RoundedRectSliderTrackShape {
 
       // Inactive background.
       if (gradient != null) {
-        canvas.drawRect(trackRect, Paint()..shader = gradient!.createShader(trackRect));
+        canvas.drawRect(
+          trackRect,
+          Paint()..shader = gradient!.createShader(trackRect),
+        );
       } else if (sliderTheme.inactiveTrackColor != null) {
-        canvas.drawRect(inactiveRect, Paint()..color = sliderTheme.inactiveTrackColor!);
+        canvas.drawRect(
+          inactiveRect,
+          Paint()..color = sliderTheme.inactiveTrackColor!,
+        );
       }
 
       // Active (progress) portion — gradient clipped to thumb position.
       if (activeGradient != null) {
-        canvas.drawRect(activeRect, Paint()..shader = activeGradient!.createShader(trackRect));
+        canvas.drawRect(
+          activeRect,
+          Paint()..shader = activeGradient!.createShader(trackRect),
+        );
       } else if (sliderTheme.activeTrackColor != null) {
-        canvas.drawRect(activeRect, Paint()..color = sliderTheme.activeTrackColor!);
+        canvas.drawRect(
+          activeRect,
+          Paint()..color = sliderTheme.activeTrackColor!,
+        );
       }
 
       canvas.restore();

@@ -6,11 +6,8 @@ import 'package:flut5/flut5.dart';
 
 /// A sketch whose `draw()` body is supplied by the test, so each case can
 /// exercise a different write pattern from inside the paint phase.
-class _EmitSketch extends Flut5Sketch {
-  _EmitSketch(this.onDraw);
-
-  final void Function(_EmitSketch sketch) onDraw;
-
+class _EmitSketch(final void Function(_EmitSketch sketch) onDraw)
+    extends Flut5Sketch {
   /// 1 on the first frame that actually drew.
   int frames = 0;
 
@@ -23,12 +20,9 @@ class _EmitSketch extends Flut5Sketch {
 }
 
 /// The pattern the mixin exists for: a sketch that is itself a [Listenable].
-class _NotifierSketch extends Flut5Sketch
+class _NotifierSketch(final void Function(_NotifierSketch sketch) onDraw)
+    extends Flut5Sketch
     with ChangeNotifier, Flut5ChangeNotifier {
-  _NotifierSketch(this.onDraw);
-
-  final void Function(_NotifierSketch sketch) onDraw;
-
   int frames = 0;
   int score = 0;
 
@@ -235,7 +229,14 @@ void main() {
 
       // Every deferred callback lands after the draw() that queued it, and
       // before the next frame's draw().
-      expect(calls, ['draw1', 'update1', 'draw2', 'update2', 'draw3', 'update3']);
+      expect(calls, [
+        'draw1',
+        'update1',
+        'draw2',
+        'update2',
+        'draw3',
+        'update3',
+      ]);
     });
 
     testWidgets('one bad callback does not swallow the rest', (tester) async {
@@ -373,7 +374,8 @@ void main() {
       expect(
         Flut5Engine.current,
         isNull,
-        reason: 'disposeFlut5() must run even though ChangeNotifier '
+        reason:
+            'disposeFlut5() must run even though ChangeNotifier '
             'shadowed dispose()',
       );
     });

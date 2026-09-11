@@ -1,10 +1,38 @@
 import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 import 'package:flut5/text/flut5_text_cache.dart';
+
 import '../flut5_render_item.dart';
 import '../../flut5_shadow.dart';
 
-class TextDynamicRenderItem extends Flut5RenderItem {
+class TextDynamicRenderItem({
+  required final String text,
+  required final double x,
+  required final double y,
+  final double? maxWidth,
+  final double? maxHeight,
+  required final String fontFamily,
+  required final double fontSize,
+  required final FontWeight fontWeight,
+  required final FontStyle fontStyle,
+  required final TextAlign textAlign,
+  required final double? textLeading,
+  final double? letterSpacing,
+  final Paint? fillPaint,
+  final Paint? strokePaint,
+
+  /// When non-null, the shader is built against the full text block bounds at
+  /// draw time rather than using the pre-baked shader in [fillPaint].
+  final Gradient? fillGradient,
+
+  /// When non-null, the shader is built against the full text block bounds at
+  /// draw time rather than using the pre-baked shader in [strokePaint].
+  final Gradient? strokeGradient,
+
+  /// Drop shadow drawn beneath the text, or `null` for none.
+  final Flut5ShadowSpec? shadow,
+}) extends Flut5RenderItem {
   /// Shared paint for GPU tinting — reconfigured in place each draw to avoid
   /// per-frame allocations. Its `filterQuality` is stamped from
   /// [Flut5TextCache.textBlitQuality] in [execute].
@@ -30,54 +58,6 @@ class TextDynamicRenderItem extends Flut5RenderItem {
   static Gradient? _cachedStrokeGradient;
   static Rect? _cachedStrokeBounds;
   static ui.Shader? _cachedStrokeShader;
-
-  final String text;
-  final double x;
-  final double y;
-  final double? maxWidth;
-  final double? maxHeight;
-
-  final String fontFamily;
-  final double fontSize;
-  final FontWeight fontWeight;
-  final FontStyle fontStyle;
-  final TextAlign textAlign;
-  final double? textLeading;
-  final double? letterSpacing;
-
-  final Paint? fillPaint;
-  final Paint? strokePaint;
-
-  /// When non-null, the shader is built against the full text block bounds at
-  /// draw time rather than using the pre-baked shader in [fillPaint].
-  final Gradient? fillGradient;
-
-  /// When non-null, the shader is built against the full text block bounds at
-  /// draw time rather than using the pre-baked shader in [strokePaint].
-  final Gradient? strokeGradient;
-
-  /// Drop shadow drawn beneath the text, or `null` for none.
-  final Flut5ShadowSpec? shadow;
-
-  TextDynamicRenderItem({
-    required this.text,
-    required this.x,
-    required this.y,
-    this.maxWidth,
-    this.maxHeight,
-    required this.fontFamily,
-    required this.fontSize,
-    required this.fontWeight,
-    required this.fontStyle,
-    required this.textAlign,
-    required this.textLeading,
-    this.letterSpacing,
-    this.fillPaint,
-    this.strokePaint,
-    this.fillGradient,
-    this.strokeGradient,
-    this.shadow,
-  });
 
   // With no wrapping, spacing changes offsets and alignment but never line
   // breaks. Reuse the zero-spacing layout and keep the exact animated value

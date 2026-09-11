@@ -15,26 +15,24 @@ import 'render/flut5_render_queue.dart';
 /// A shadow is realized as an offset, blurred copy drawn *beneath* each shape.
 /// Flutter's `Canvas.drawShadow` is intentionally not used: it is elevation-
 /// based and exposes no arbitrary offset / blur radius / spread / color.
-class Flut5ShadowSpec {
-  Flut5ShadowSpec(this.color, this.offset, this.blur, this.spread);
-
+class Flut5ShadowSpec(
   /// Shadow color (alpha included).
-  final Color color;
+  final Color color,
 
   /// Offset of the shadow from the shape, in logical pixels.
-  final Offset offset;
+  final Offset offset,
 
   /// Blur radius applied to the silhouette, in CSS `box-shadow` terms.
   /// Converted to a Gaussian sigma via [Shadow.convertRadiusToSigma]
   /// (exactly like Flutter's own [BoxShadow.toPaint]), so the same number
   /// gives the same softness as CSS. `0` keeps a hard edge.
-  final double blur;
+  final double blur,
 
   /// Outward growth of the silhouette before blurring, in logical pixels.
   /// Shapes approximate it by fattening the outline; text dilates the glyph
   /// raster. `0` disables it.
-  final double spread;
-
+  final double spread,
+) {
   /// CSS blur radius → Gaussian sigma, matching [BoxShadow.toPaint].
   double get _blurSigma => Shadow.convertRadiusToSigma(blur);
 

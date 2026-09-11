@@ -1,15 +1,11 @@
 import 'package:flutter/material.dart';
+
 import 'flut5_ui_element.dart';
 
-base class Flut5Label extends Flut5UIElement {
-  String text;
+base class Flut5Label(var String text, {required super.removeElement})
+    extends Flut5UIElement {
   TextStyle? textStyle;
   VoidCallback? _onPressed;
-
-  Flut5Label(
-    this.text, {
-    required super.removeElement,
-  });
 
   void setText(String newText) {
     text = newText;

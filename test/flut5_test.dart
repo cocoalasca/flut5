@@ -42,15 +42,28 @@ void main() {
       final queue = Flut5RenderQueue();
       // A shape spilling past the top-left into negative space…
       queue.enqueue(
-        RectRenderItem(const Rect.fromLTWH(-20, -30, 10, 10), null, fill(), null),
+        RectRenderItem(
+          const Rect.fromLTWH(-20, -30, 10, 10),
+          null,
+          fill(),
+          null,
+        ),
       );
       // …and another well past a 100×100 container's bottom-right.
       queue.enqueue(
-        RectRenderItem(const Rect.fromLTWH(140, 160, 10, 10), null, fill(), null),
+        RectRenderItem(
+          const Rect.fromLTWH(140, 160, 10, 10),
+          null,
+          fill(),
+          null,
+        ),
       );
       queue.flushPending();
 
-      expect(queue.contentBoundsFrom(0), const Rect.fromLTRB(-20, -30, 150, 170));
+      expect(
+        queue.contentBoundsFrom(0),
+        const Rect.fromLTRB(-20, -30, 150, 170),
+      );
     });
 
     test('is transform-aware and restores the matrix after pop', () {
@@ -63,9 +76,7 @@ void main() {
       );
       queue.enqueue(TransformRenderItem.pop());
       // …and content drawn back at the origin after the pop.
-      queue.enqueue(
-        CircleRenderItem(const Offset(2, 2), 2, fill(), null),
-      );
+      queue.enqueue(CircleRenderItem(const Offset(2, 2), 2, fill(), null));
       queue.flushPending();
 
       // Translated rect → (100,50)-(110,60); circle → (0,0)-(4,4).
@@ -84,7 +95,10 @@ void main() {
       );
       queue.flushPending();
 
-      expect(queue.contentBoundsFrom(slot), const Rect.fromLTRB(10, 10, 30, 30));
+      expect(
+        queue.contentBoundsFrom(slot),
+        const Rect.fromLTRB(10, 10, 30, 30),
+      );
     });
   });
 
@@ -378,8 +392,9 @@ void main() {
 
     test('root layout wraps at the canvas edge when no bounds are given', () {
       final engine = Flut5Engine();
-      engine.environment =
-          const SketchEnvironment().withSize(const Size(250, 400));
+      engine.environment = const SketchEnvironment().withSize(
+        const Size(250, 400),
+      );
       engine.layoutGap(10);
       engine.layoutWrap(Flut5LayoutWrap.wrap);
       engine.beginLayout();
@@ -450,7 +465,10 @@ void main() {
       engine.beginLayout(0, 0, 100, 100); // explicit bounds don't exempt it
       engine.endLayout();
       Flut5Console.flush();
-      expect(logs.where((m) => m.contains('outside a container')), hasLength(1));
+      expect(
+        logs.where((m) => m.contains('outside a container')),
+        hasLength(1),
+      );
 
       // Inside a container the same call is silent.
       logs.clear();
@@ -935,47 +953,49 @@ void main() {
       );
     });
 
-    test('loadFont resolves a pubspec family name from the preloaded map',
-        () async {
-      final glyph = Flut5Glyph(
-        commands: const [
-          MoveToCommand(0, 0),
-          LineToCommand(100, 0),
-          LineToCommand(100, 100),
-          LineToCommand(0, 100),
-          CloseCommand(),
-        ],
-        xMin: 0,
-        yMin: 0,
-        xMax: 100,
-        yMax: 100,
-      );
-      final font = Flut5Font.internal(
-        unitsPerEm: 100,
-        numGlyphs: 2,
-        numberOfHMetrics: 2,
-        charToGlyph: const {120: 1},
-        glyphs: [Flut5Glyph.empty, glyph],
-        advanceWidths: const [0, 200],
-        lsbs: const [0, 0],
-      );
-      final engine = Flut5Engine();
-      engine.environment = engine.environment.withFonts({
-        'SketchFont': Flut5FontData(
-          name: 'SketchFont',
-          asset: 'assets/fonts/SketchFont.ttf',
-          font: font,
-        ),
-      });
+    test(
+      'loadFont resolves a pubspec family name from the preloaded map',
+      () async {
+        final glyph = Flut5Glyph(
+          commands: const [
+            MoveToCommand(0, 0),
+            LineToCommand(100, 0),
+            LineToCommand(100, 100),
+            LineToCommand(0, 100),
+            CloseCommand(),
+          ],
+          xMin: 0,
+          yMin: 0,
+          xMax: 100,
+          yMax: 100,
+        );
+        final font = Flut5Font.internal(
+          unitsPerEm: 100,
+          numGlyphs: 2,
+          numberOfHMetrics: 2,
+          charToGlyph: const {120: 1},
+          glyphs: [Flut5Glyph.empty, glyph],
+          advanceWidths: const [0, 200],
+          lsbs: const [0, 0],
+        );
+        final engine = Flut5Engine();
+        engine.environment = engine.environment.withFonts({
+          'SketchFont': Flut5FontData(
+            name: 'SketchFont',
+            asset: 'assets/fonts/SketchFont.ttf',
+            font: font,
+          ),
+        });
 
-      final loaded = await engine.loadFont('SketchFont');
+        final loaded = await engine.loadFont('SketchFont');
 
-      expect(identical(loaded, font), isTrue);
-      engine.textSize(50);
-      final commands = engine.textToPaths('x', 10, 20);
-      expect(commands, hasLength(5));
-      expect(commands[0], isA<MoveToCommand>());
-    });
+        expect(identical(loaded, font), isTrue);
+        engine.textSize(50);
+        final commands = engine.textToPaths('x', 10, 20);
+        expect(commands, hasLength(5));
+        expect(commands[0], isA<MoveToCommand>());
+      },
+    );
 
     test('outline APIs apply letterSpacing between glyphs', () {
       // 100 upem square glyph, 200 upem advance. At textSize 50 the scale is
@@ -1021,7 +1041,10 @@ void main() {
           (cmds.whereType<MoveToCommand>().elementAt(1)).x;
 
       // No spacing: second glyph sits one advance (100px) after the first.
-      expect(secondGlyphOrigin(buildEngine(0).textToPaths('xx', 10, 20)), 110.0);
+      expect(
+        secondGlyphOrigin(buildEngine(0).textToPaths('xx', 10, 20)),
+        110.0,
+      );
       // 20px spacing is inserted once, between the two glyphs.
       expect(
         secondGlyphOrigin(buildEngine(20).textToPaths('xx', 10, 20)),
@@ -1091,7 +1114,8 @@ void main() {
     ];
 
     test('spans the outline bbox and classifies edge vs interior', () {
-      final grid = buildEngine(solidSquare).textToGrid('x', 0, 0, args: {Flut5TextArg.cellSize: 10});
+      final grid = buildEngine(solidSquare)
+          .textToGrid('x', 0, 0, args: {Flut5TextArg.cellSize: 10});
 
       // The glyph occupies x 0..100 and, after the baseline Y-flip, y -100..0.
       expect(grid.cols, 10);
@@ -1138,7 +1162,11 @@ void main() {
       // The hole's walls sit on cols/rows 3 and 7, so 4..6 is clean interior.
       for (int r = 4; r <= 6; r++) {
         for (int c = 4; c <= 6; c++) {
-          expect(grid[r][c], Flut5CellState.empty, reason: 'hole cell ($c, $r)');
+          expect(
+            grid[r][c],
+            Flut5CellState.empty,
+            reason: 'hole cell ($c, $r)',
+          );
         }
       }
       // The ring between outer wall and counter is still solid.
@@ -1235,14 +1263,20 @@ void main() {
     test('honors letterSpacing when sizing the grid', () {
       final tight = buildEngine(solidSquare)
           .textToGrid('xx', 0, 0, args: {Flut5TextArg.cellSize: 10});
-      final spaced = (buildEngine(solidSquare)..letterSpacing(20))
-          .textToGrid('xx', 0, 0, args: {Flut5TextArg.cellSize: 10});
+      final spaced = (buildEngine(solidSquare)..letterSpacing(20)).textToGrid(
+        'xx',
+        0,
+        0,
+        args: {Flut5TextArg.cellSize: 10},
+      );
       // The args map overrides engine state for this call only — previously
       // letterSpacing was ambient-only and had no per-call form.
-      final viaArgs = buildEngine(solidSquare).textToGrid('xx', 0, 0, args: {
-        Flut5TextArg.cellSize: 10,
-        Flut5TextArg.letterSpacing: 20,
-      });
+      final viaArgs = buildEngine(solidSquare).textToGrid(
+        'xx',
+        0,
+        0,
+        args: {Flut5TextArg.cellSize: 10, Flut5TextArg.letterSpacing: 20},
+      );
 
       // Advance 200 + glyph 100 = 300px wide; spacing adds one 20px gap.
       expect(tight.cols, 30);
@@ -1265,7 +1299,8 @@ void main() {
     });
 
     test('cellAt carries indices, geometry, and state together', () {
-      final grid = buildEngine(solidSquare).textToGrid('x', 0, 0, args: {Flut5TextArg.cellSize: 10});
+      final grid = buildEngine(solidSquare)
+          .textToGrid('x', 0, 0, args: {Flut5TextArg.cellSize: 10});
       final cell = grid.cellAt(3, 4);
 
       expect(cell.col, 3);
@@ -1295,7 +1330,8 @@ void main() {
     });
 
     test('allCells walks every cell row-major and round-trips indices', () {
-      final grid = buildEngine(solidSquare).textToGrid('x', 0, 0, args: {Flut5TextArg.cellSize: 10});
+      final grid = buildEngine(solidSquare)
+          .textToGrid('x', 0, 0, args: {Flut5TextArg.cellSize: 10});
       final cells = grid.allCells.toList();
 
       expect(cells, hasLength(grid.rows * grid.cols));
@@ -1396,31 +1432,40 @@ void main() {
     test('coerces int values, since a map has no double context', () {
       // `10` and `100` are int literals here — inside Map<String, dynamic>
       // they stay ints, so the read side must coerce rather than throw.
-      final grid = buildEngine().textToGrid('x', 0, 0, args: {
-        Flut5TextArg.cellSize: 10,
-        Flut5TextArg.fontSize: 100,
-      });
+      final grid = buildEngine().textToGrid(
+        'x',
+        0,
+        0,
+        args: {Flut5TextArg.cellSize: 10, Flut5TextArg.fontSize: 100},
+      );
 
       expect(grid.cellSize, 10.0);
       expect(grid.cols, 10);
     });
 
     test('ignores unknown and inapplicable keys instead of throwing', () {
-      final grid = buildEngine().textToGrid('x', 0, 0, args: {
-        Flut5TextArg.cellSize: 10,
-        'cellSise': 999, // typo
-        Flut5TextArg.sampleFactor: 4, // valid key, but not for textToGrid
-      });
+      final grid = buildEngine().textToGrid(
+        'x',
+        0,
+        0,
+        args: {
+          Flut5TextArg.cellSize: 10,
+          'cellSise': 999, // typo
+          Flut5TextArg.sampleFactor: 4, // valid key, but not for textToGrid
+        },
+      );
 
       expect(grid.cellSize, 10.0);
       expect(grid.cols, 10);
     });
 
     test('ignores wrong-typed values and falls back to the default', () {
-      final grid = buildEngine().textToGrid('x', 0, 0, args: {
-        Flut5TextArg.cellSize: 'ten',
-        Flut5TextArg.font: 'not a font',
-      });
+      final grid = buildEngine().textToGrid(
+        'x',
+        0,
+        0,
+        args: {Flut5TextArg.cellSize: 'ten', Flut5TextArg.font: 'not a font'},
+      );
 
       // Falls back to the 4px default, and to the engine's loaded font.
       expect(grid.cellSize, closeTo(4, 0.001));
@@ -1440,27 +1485,38 @@ void main() {
       final engine = buildEngine();
 
       // fontSize 50 → scale 0.5 → a 50px glyph over 10px cells.
-      final small = engine.textToGrid('x', 0, 0, args: {
-        Flut5TextArg.fontSize: 50,
-        Flut5TextArg.cellSize: 10,
-      });
+      final small = engine.textToGrid(
+        'x',
+        0,
+        0,
+        args: {Flut5TextArg.fontSize: 50, Flut5TextArg.cellSize: 10},
+      );
       expect(small.cols, 5);
 
       // The engine's own textSize is untouched.
-      final normal = engine.textToGrid('x', 0, 0, args: {
-        Flut5TextArg.cellSize: 10,
-      });
+      final normal = engine.textToGrid(
+        'x',
+        0,
+        0,
+        args: {Flut5TextArg.cellSize: 10},
+      );
       expect(normal.cols, 10);
     });
 
     test('sampleFactor and simplifyThreshold route through the map', () {
       final engine = buildEngine();
-      final sparse = engine.textToPoints('x', 0, 0, args: {
-        Flut5TextArg.sampleFactor: 0.1,
-      });
-      final dense = engine.textToPoints('x', 0, 0, args: {
-        Flut5TextArg.sampleFactor: 2.0,
-      });
+      final sparse = engine.textToPoints(
+        'x',
+        0,
+        0,
+        args: {Flut5TextArg.sampleFactor: 0.1},
+      );
+      final dense = engine.textToPoints(
+        'x',
+        0,
+        0,
+        args: {Flut5TextArg.sampleFactor: 2.0},
+      );
 
       expect(dense.length, greaterThan(sparse.length));
     });
@@ -1775,7 +1831,10 @@ void main() {
 
     test('accepts a bare Vector3, not just Flut5Vector', () {
       final engine = Flut5Engine();
-      expect(engine.dist(Vector3(0, 0, 0), Vector3(0, 3, 4)), closeTo(5, 1e-12));
+      expect(
+        engine.dist(Vector3(0, 0, 0), Vector3(0, 3, 4)),
+        closeTo(5, 1e-12),
+      );
     });
 
     test('int arguments are accepted in the number form', () {
@@ -2167,42 +2226,44 @@ void main() {
   });
 
   group('Wheel buffer and Flut5Touch.kind', () {
-    test('addPointerScroll accumulates a sample and emits on scrollStream',
-        () async {
-      final events = Flut5Event();
-      final scrollFuture = events.scrollStream.first;
+    test(
+      'addPointerScroll accumulates a sample and emits on scrollStream',
+      () async {
+        final events = Flut5Event();
+        final scrollFuture = events.scrollStream.first;
 
-      events.addPointerScroll(
-        const PointerScrollEvent(
-          position: Offset(50, 60),
-          scrollDelta: Offset(4, 12),
-        ),
-      );
-      events.addPointerScroll(
-        const PointerScrollEvent(
-          position: Offset(52, 64),
-          scrollDelta: Offset(1, 8),
-        ),
-      );
+        events.addPointerScroll(
+          const PointerScrollEvent(
+            position: Offset(50, 60),
+            scrollDelta: Offset(4, 12),
+          ),
+        );
+        events.addPointerScroll(
+          const PointerScrollEvent(
+            position: Offset(52, 64),
+            scrollDelta: Offset(1, 8),
+          ),
+        );
 
-      final sample = events.pendingWheel;
-      expect(sample, isNotNull);
-      // Deltas accumulate; position tracks the latest event.
-      expect(sample!.dx, 5);
-      expect(sample.dy, 20);
-      expect(sample.x, 52);
-      expect(sample.y, 64);
+        final sample = events.pendingWheel;
+        expect(sample, isNotNull);
+        // Deltas accumulate; position tracks the latest event.
+        expect(sample!.dx, 5);
+        expect(sample.dy, 20);
+        expect(sample.x, 52);
+        expect(sample.y, 64);
 
-      final emitted = await scrollFuture;
-      expect(emitted.location, const Offset(50, 60));
-      expect(emitted.scrollDelta.x, 4);
-      expect(emitted.scrollDelta.y, 12);
+        final emitted = await scrollFuture;
+        expect(emitted.location, const Offset(50, 60));
+        expect(emitted.scrollDelta.x, 4);
+        expect(emitted.scrollDelta.y, 12);
 
-      events.clearPendingWheel();
-      expect(events.pendingWheel, isNull);
+        events.clearPendingWheel();
+        expect(events.pendingWheel, isNull);
 
-      events.dispose();
-    });
+        events.dispose();
+      },
+    );
 
     test('Flut5Touch.kind defaults to touch and tracks the pointer device', () {
       final engine = Flut5Engine();
@@ -2250,9 +2311,9 @@ void main() {
     }
 
     PointerScrollEvent wheel(double dx, double dy) => PointerScrollEvent(
-          position: const Offset(50, 50),
-          scrollDelta: Offset(dx, dy),
-        );
+      position: const Offset(50, 50),
+      scrollDelta: Offset(dx, dy),
+    );
 
     test('wheel over a clamp container pans content opposite to the delta', () {
       final engine = Flut5Engine();
@@ -2310,8 +2371,9 @@ void main() {
       final mouseEngine = Flut5Engine();
       mouseEngine.containerOverflow(Flut5ContainerOverflow.scroll);
       mouseEngine.containerOverscrollMode(Flut5ContainerOverscroll.clamp);
-      mouseEngine
-          .containerOverscrollInput(Flut5ContainerOverscrollInput.scroll);
+      mouseEngine.containerOverscrollInput(
+        Flut5ContainerOverscrollInput.scroll,
+      );
 
       mouseEngine.events.addPointerDown(
         const PointerDownEvent(
@@ -2335,8 +2397,9 @@ void main() {
       final touchEngine = Flut5Engine();
       touchEngine.containerOverflow(Flut5ContainerOverflow.scroll);
       touchEngine.containerOverscrollMode(Flut5ContainerOverscroll.clamp);
-      touchEngine
-          .containerOverscrollInput(Flut5ContainerOverscrollInput.scroll);
+      touchEngine.containerOverscrollInput(
+        Flut5ContainerOverscrollInput.scroll,
+      );
 
       touchEngine.events.addPointerDown(
         const PointerDownEvent(
@@ -2472,25 +2535,21 @@ Future<_AlphaBounds> _renderAlphaBounds(
   return _AlphaBounds(minX, minY, maxX, maxY);
 }
 
-class _AlphaBounds {
-  final int minX;
-  final int minY;
-  final int maxX;
-  final int maxY;
-
-  const _AlphaBounds(this.minX, this.minY, this.maxX, this.maxY);
-
+class const _AlphaBounds(
+  final int minX,
+  final int minY,
+  final int maxX,
+  final int maxY,
+) {
   int get width => maxX - minX + 1;
 }
 
-class _Pixel {
-  final int red;
-  final int green;
-  final int blue;
-  final int alpha;
-
-  const _Pixel(this.red, this.green, this.blue, this.alpha);
-}
+class const _Pixel(
+  final int red,
+  final int green,
+  final int blue,
+  final int alpha,
+);
 
 Uint8List _type2CharString(List<int> numbers) {
   int encode(int value) {

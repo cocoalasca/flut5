@@ -1,9 +1,11 @@
 import 'dart:math' as math;
 import 'dart:ui' as ui;
+
 import 'package:flutter/foundation.dart'
     show kDebugMode, kIsWasm, kIsWeb, mapEquals, visibleForTesting;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
+
 import '../flut5.dart';
 
 /// Notifier used to manually trigger repaints of the Flut5 canvas.
@@ -21,13 +23,15 @@ class Flut5CanvasRepaintController extends ChangeNotifier {
 ///
 /// It sets up the [Ticker] loop, handles pointer events, and layers
 /// the custom UI elements defined by the sketch on top of the drawing canvas.
-class Flut5Canvas extends StatefulWidget {
+class const Flut5Canvas({
+  super.key,
+
   /// The user's implemented sketch containing the `setup` and `draw` logic.
-  final Flut5Sketch sketch;
+  required final Flut5Sketch sketch,
 
   /// Optional size constraints for the canvas. Defaults to infinite,
   /// causing it to fill the available space.
-  final Size size;
+  final Size size = Size.infinite,
 
   /// Flexible props map that flows from the parent widget into the sketch.
   /// Available as `props` inside [Flut5Sketch.setup] and [Flut5Sketch.draw].
@@ -40,7 +44,7 @@ class Flut5Canvas extends StatefulWidget {
   /// Comparison is [mapEquals], so a fresh `List`/closure literal in the map
   /// counts as a change on every parent rebuild.
   /// Null means no props are provided; the sketch will use an empty map.
-  final Map<String, dynamic>? props;
+  final Map<String, dynamic>? props,
 
   /// Flutter widgets drawn over the canvas, sized to it. Follows the
   /// [CustomPaint] convention: the painter renders behind, the child in front.
@@ -68,16 +72,8 @@ class Flut5Canvas extends StatefulWidget {
   ///   state it holds (an in-flight `AnimationController`, scroll position).
   /// * It sits inside the canvas's autofocused [KeyboardListener], so a
   ///   [TextField] here takes focus and silences the sketch's key events.
-  final Widget? child;
-
-  const Flut5Canvas({
-    super.key,
-    required this.sketch,
-    this.size = Size.infinite,
-    this.props,
-    this.child,
-  });
-
+  final Widget? child,
+}) extends StatefulWidget {
   @override
   State<Flut5Canvas> createState() => _Flut5CanvasState();
 
@@ -268,8 +264,7 @@ class _Flut5CanvasState extends State<Flut5Canvas>
     if (elapsed + _frameRateTolerance < _nextFrameTarget) return;
     final minInterval = Duration(microseconds: (1e6 / cap).round());
     final candidate = _nextFrameTarget + minInterval;
-    _nextFrameTarget =
-        candidate > elapsed ? candidate : elapsed + minInterval;
+    _nextFrameTarget = candidate > elapsed ? candidate : elapsed + minInterval;
     _repaint.refresh();
   }
 
@@ -545,17 +540,14 @@ class _Flut5CanvasState extends State<Flut5Canvas>
 /// The internal [CustomPainter] that executes the sketch's drawing commands.
 ///
 /// Listens to the repaint notifier to draw continuously each frame.
-class Flut5Painter extends CustomPainter {
-  final Flut5Sketch sketch;
-
+class Flut5Painter({required final Flut5Sketch sketch, super.repaint})
+    extends CustomPainter {
   /// Reused for [Canvas.drawImageRect] of the trail snapshot. Quality is
   /// resolved per blit by [Flut5Engine.effectiveFrameSnapshotFilterQuality]:
   /// bilinear at 1:1 and mild upscales (calm on rotating thin shapes),
   /// bicubic past ~1.4× where softness dominates, or the explicit
   /// [Flut5Engine.frameSnapshotFilterQuality] if one was assigned.
   static final Paint _blitPaint = Paint()..filterQuality = FilterQuality.low;
-
-  Flut5Painter({required this.sketch, super.repaint});
 
   /// Cached HUD text layout. [_paintSnapshotHud] rebuilds the [TextPainter]
   /// only when the rendered string actually changes — the HUD's numbers move
@@ -764,8 +756,7 @@ class Flut5Painter extends CustomPainter {
       // discards stale results if clearFrameSnapshot or a resolution change
       // happens mid-flight.)
       final interval = engine.effectiveFrameSnapshotInterval;
-      final intervalTicks =
-          interval <= 1 || engine.frameCount % interval == 0;
+      final intervalTicks = interval <= 1 || engine.frameCount % interval == 0;
       final willCapture = intervalTicks && !engine.isFrameSnapshotInFlight;
 
       if (willCapture) {
@@ -950,10 +941,10 @@ class Flut5Painter extends CustomPainter {
     final factorSuffix = activeFactor >= 1.0 && !factorCapped
         ? ''
         : factorCapped
-            ? ' f${activeFactor.toStringAsFixed(2)}'
-                ' → ${effectiveFactor.toStringAsFixed(2)}'
-                ' ${engine.frameSnapshotCapBinding ?? ''}'
-            : ' f${activeFactor.toStringAsFixed(2)}';
+        ? ' f${activeFactor.toStringAsFixed(2)}'
+              ' → ${effectiveFactor.toStringAsFixed(2)}'
+              ' ${engine.frameSnapshotCapBinding ?? ''}'
+        : ' f${activeFactor.toStringAsFixed(2)}';
 
     // Calibration line, shown only when a search is configured at all (floor
     // below ceiling). While running it reports where the climb has reached;
@@ -964,13 +955,13 @@ class Flut5Painter extends CustomPainter {
     final calibrationActive = ceiling > floor + 1e-6;
     final calibrationLine = engine.frameSnapshotCalibrating
         ? 'calibrating ${engine.frameSnapshotCalibratedFactor.toStringAsFixed(2)}'
-            ' ↗ ${ceiling.toStringAsFixed(2)}'
+              ' ↗ ${ceiling.toStringAsFixed(2)}'
         : 'calibrated ${engine.frameSnapshotCalibratedFactor.toStringAsFixed(2)}'
-            ' of ${floor.toStringAsFixed(2)}–${ceiling.toStringAsFixed(2)}'
-            // Why it stopped. A factor resting on the floor is ambiguous
-            // without this: "climbed and this was the best fit" and "never got
-            // off the floor because even that is over budget" look identical.
-            '${engine.frameSnapshotCalibrationOutcome == null ? '' : ' (${engine.frameSnapshotCalibrationOutcome})'}';
+              ' of ${floor.toStringAsFixed(2)}–${ceiling.toStringAsFixed(2)}'
+              // Why it stopped. A factor resting on the floor is ambiguous
+              // without this: "climbed and this was the best fit" and "never got
+              // off the floor because even that is over budget" look identical.
+              '${engine.frameSnapshotCalibrationOutcome == null ? '' : ' (${engine.frameSnapshotCalibrationOutcome})'}';
 
     final lines = <String>[
       'snapshot ${ms == null ? '—' : '${ms.toStringAsFixed(1)} ms'}'
@@ -1306,11 +1297,10 @@ class Flut5Painter extends CustomPainter {
 /// repaints only when the snapshot itself changes (via
 /// [Flut5Engine.trailRepaint]). Returns early when layered trails are off so
 /// the same widget tree works for both modes without an extra Stack swap.
-class _TrailPainter extends CustomPainter {
-  final Flut5Engine engine;
+class _TrailPainter(final Flut5Engine engine) extends CustomPainter {
   static final Paint _blitPaint = Paint()..filterQuality = FilterQuality.low;
 
-  _TrailPainter(this.engine) : super(repaint: engine.trailRepaint);
+  this : super(repaint: engine.trailRepaint);
 
   @override
   void paint(Canvas canvas, Size size) {

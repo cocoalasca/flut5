@@ -1,13 +1,12 @@
 import 'package:flutter/material.dart';
+
 import '../flut5_render_item.dart';
 
-class PointRenderItem extends Flut5RenderItem {
-  final Offset center;
-  final double radius;
-  final Paint? strokePaint;
-  
-  PointRenderItem(this.center, this.radius, this.strokePaint);
-
+class PointRenderItem(
+  final Offset center,
+  final double radius,
+  final Paint? strokePaint,
+) extends Flut5RenderItem {
   @override
   Rect? get bounds => Rect.fromCircle(center: center, radius: radius);
 

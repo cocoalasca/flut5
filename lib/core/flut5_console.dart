@@ -24,9 +24,7 @@ import 'package:flutter/foundation.dart';
 /// ```
 void printLater(String message) => Flut5Console.printLater(message);
 
-class Flut5Console {
-  Flut5Console._();
-
+class Flut5Console._() {
   static final Map<String, int> _queue = {};
 
   /// Queues [message] to be printed at the end of the current frame.

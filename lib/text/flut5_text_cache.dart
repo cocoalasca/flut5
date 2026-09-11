@@ -1,6 +1,7 @@
 import 'dart:collection';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
+
 import 'package:flutter/painting.dart';
 
 import '../core/flut5_console.dart';
@@ -11,39 +12,32 @@ import '../core/flut5_console.dart';
 /// letter spacing and kerning are already baked into [offsets], so drawing a
 /// line is a flat loop with no measurement work. Whitespace still contributes
 /// to [width] and to the offsets of the glyphs that follow it.
-class Flut5TextLine {
+class Flut5TextLine._(
   /// Drawable glyphs in draw order. Whitespace is excluded (never blitted).
-  final List<String> glyphs;
+  final List<String> glyphs,
 
   /// Pen x-offset of each glyph in [glyphs], relative to the line start.
-  final Float64List offsets;
+  final Float64List offsets,
 
   /// Full advance width of the line, including whitespace.
-  final double width;
+  final double width,
 
   /// Whether the source line had any characters at all. `false` only for
   /// truly empty lines (e.g. between consecutive `\n`), which still advance
   /// the cursor but carry no width.
-  final bool hasChars;
-
+  final bool hasChars,
+  final Int32List? _spacingIndices,
+  final int _spacingGaps,
+) {
   // Source character positions include whitespace, unlike the drawable
   // glyph list. They let unwrapped text apply spacing without retaining a
   // different layout for every animation value.
-  final Int32List? _spacingIndices;
-  final int _spacingGaps;
-
-  Flut5TextLine(this.glyphs, this.offsets, this.width, this.hasChars)
-    : _spacingIndices = null,
-      _spacingGaps = 0;
-
-  Flut5TextLine._(
-    this.glyphs,
-    this.offsets,
-    this.width,
-    this.hasChars,
-    this._spacingIndices,
-    this._spacingGaps,
-  );
+  Flut5TextLine(
+    List<String> glyphs,
+    Float64List offsets,
+    double width,
+    bool hasChars,
+  ) : this._(glyphs, offsets, width, hasChars, null, 0);
 
   /// Internal: width after adding composition-time spacing to this layout.
   double widthWithSpacing(double spacing) => spacing == 0 || _spacingGaps == 0
@@ -64,13 +58,9 @@ class Flut5TextLine {
 /// Deliberately stores no [Flut5CachedText] references — texture eviction in
 /// the main cache can never leave a stale image inside a layout. Glyph
 /// advances are font metrics, so they stay valid even after eviction.
-class Flut5TextLayout {
-  final List<Flut5TextLine> lines;
-
+class Flut5TextLayout(final List<Flut5TextLine> lines) {
   /// LRU bookkeeping — last [Flut5TextCache._accessTick] this layout was used.
   int _lastUsedTick = 0;
-
-  Flut5TextLayout(this.lines);
 }
 
 /// Composite key for cached layouts:
@@ -85,14 +75,16 @@ typedef _LayoutKey = (
   double?,
 );
 
-class Flut5CachedText {
-  final ui.Image image;
-  final double width; // advance width used for character spacing
-  final double height;
-  final double
-  drawWidth; // image logical width; wider than width when glyphs overhang right
-  final double
-  leftPad; // shift (logical px) to apply when drawing; non-zero for left overhang
+class Flut5CachedText(
+  final ui.Image image,
+  final double width,
+  final double height,
+  final double drawWidth,
+  final double leftPad,
+) {
+  // advance width used for character spacing
+  // image logical width; wider than width when glyphs overhang right
+  // shift (logical px) to apply when drawing; non-zero for left overhang
 
   /// Pre-computed source rect for `drawImageRect` — avoids per-frame allocation.
   late final Rect srcRect = Rect.fromLTWH(
@@ -110,13 +102,7 @@ class Flut5CachedText {
   /// LRU bookkeeping — last [Flut5TextCache._accessTick] this entry was used.
   int _lastUsedTick = 0;
 
-  Flut5CachedText(
-    this.image,
-    this.width,
-    this.height,
-    this.drawWidth,
-    this.leftPad,
-  ) : bytes = image.width * image.height * 4;
+  this : bytes = image.width * image.height * 4;
 
   void dispose() {
     image.dispose();
@@ -124,49 +110,37 @@ class Flut5CachedText {
 }
 
 /// Composite key for cached rasterized text images.
-class _TextCacheKey {
-  String text;
-  double? maxWidth;
-  double? maxHeight;
-  String fontFamily;
-  double fontSize;
-  FontWeight fontWeight;
-  FontStyle fontStyle;
-  double? textLeading;
-  double? letterSpacing;
-  int alignIndex;
-  int paintingStyle; // 0 = fill, 1 = stroke
-  double strokeWidth; // 0.0 for fill entries
-
-  _TextCacheKey(
-    this.text,
-    this.maxWidth,
-    this.maxHeight,
-    this.fontFamily,
-    this.fontSize,
-    this.fontWeight,
-    this.fontStyle,
-    this.textLeading,
-    this.letterSpacing,
-    this.alignIndex,
-    this.paintingStyle,
-    this.strokeWidth,
-  );
-
+class _TextCacheKey(
+  var String text,
+  var double? maxWidth,
+  var double? maxHeight,
+  var String fontFamily,
+  var double fontSize,
+  var FontWeight fontWeight,
+  var FontStyle fontStyle,
+  var double? textLeading,
+  var double? letterSpacing,
+  var int alignIndex,
+  var int paintingStyle,
+  var double strokeWidth,
+) {
+  // 0 = fill, 1 = stroke
   /// Creates a mutable instance for reuse as a lookup key.
   _TextCacheKey._mutable()
-    : text = '',
-      maxWidth = null,
-      maxHeight = null,
-      fontFamily = '',
-      fontSize = 0,
-      fontWeight = FontWeight.normal,
-      fontStyle = FontStyle.normal,
-      textLeading = null,
-      letterSpacing = null,
-      alignIndex = 0,
-      paintingStyle = 0,
-      strokeWidth = 0;
+    : this(
+        '',
+        null,
+        null,
+        '',
+        0,
+        FontWeight.normal,
+        FontStyle.normal,
+        null,
+        null,
+        0,
+        0,
+        0,
+      );
 
   /// Sets all fields in place — avoids allocating a new key for lookups.
   void _set(
@@ -199,18 +173,20 @@ class _TextCacheKey {
 
   /// Creates an immutable copy for map storage.
   _TextCacheKey._from(_TextCacheKey other)
-    : text = other.text,
-      maxWidth = other.maxWidth,
-      maxHeight = other.maxHeight,
-      fontFamily = other.fontFamily,
-      fontSize = other.fontSize,
-      fontWeight = other.fontWeight,
-      fontStyle = other.fontStyle,
-      textLeading = other.textLeading,
-      letterSpacing = other.letterSpacing,
-      alignIndex = other.alignIndex,
-      paintingStyle = other.paintingStyle,
-      strokeWidth = other.strokeWidth;
+    : this(
+        other.text,
+        other.maxWidth,
+        other.maxHeight,
+        other.fontFamily,
+        other.fontSize,
+        other.fontWeight,
+        other.fontStyle,
+        other.textLeading,
+        other.letterSpacing,
+        other.alignIndex,
+        other.paintingStyle,
+        other.strokeWidth,
+      );
 
   @override
   bool operator ==(Object other) =>
@@ -262,9 +238,7 @@ class _TextCacheKey {
 /// bounded by [growthLimit] and [maxCacheBytes]; past those, eviction resumes
 /// in amortized batches. Both transitions are reported once via
 /// [Flut5Console] with the quantization advice that removes the cause.
-class Flut5TextCache {
-  Flut5TextCache._();
-
+class Flut5TextCache._() {
   static final Flut5TextCache instance = Flut5TextCache._();
 
   int _maxCacheSize = 1024;
@@ -372,26 +346,26 @@ class Flut5TextCache {
   /// pair. Record-keyed so a hash collision can never silently return the
   /// wrong pair's kerning. No textLeading or letterSpacing — those are
   /// composition-time values.
-  final HashMap<(String, String, String, double, FontWeight, FontStyle),
-      double> _kernCache = HashMap();
+  final HashMap<(String, String, String, double, FontWeight, FontStyle), double>
+  _kernCache = HashMap();
 
   /// Lightweight width-only cache — stores a plain `double` per string/style.
   /// Used by [measureWidth] to avoid rasterizing a GPU texture just to read a
   /// width. Record-keyed for collision-proof lookups.
   final HashMap<(String, String, double, FontWeight, FontStyle), double>
-      _widthCache = HashMap();
+  _widthCache = HashMap();
 
   /// Lightweight line-height cache — one `double` per font style tuple.
   /// Used by [measureLineHeight] so the dynamic text pipeline never
   /// rasterizes a reference-glyph texture just to read a line height.
   final HashMap<(String, double, FontWeight, FontStyle), double>
-      _lineHeightCache = HashMap();
+  _lineHeightCache = HashMap();
 
   /// Lightweight ascent/descent cache — one record per font style tuple.
   /// Used by [measureAscentDescent] so [Flut5Text.textAscent] and
   /// [Flut5Text.textDescent] never rasterize a texture just to read metrics.
   final HashMap<(String, double, FontWeight, FontStyle), (double, double)>
-      _ascentDescentCache = HashMap();
+  _ascentDescentCache = HashMap();
 
   /// Cached word-wrap layouts for the dynamic text pipeline. A hit makes
   /// per-frame layout a single hash read instead of re-tokenizing and
@@ -505,7 +479,8 @@ class Flut5TextCache {
       // sides (within half a pixel) — likely an advance box in disguise,
       // telling us nothing about real overhang. A visible bearing or genuine
       // overhang on either side counts as honest metrics.
-      final bool suspicious = !hasBoxes ||
+      final bool suspicious =
+          !hasBoxes ||
           (rawLeft.abs() <= 0.5 && (rawRight - width).abs() <= 0.5);
       final double overscan = suspicious
           ? (fontSize * 0.35 + strokeWidth).ceilToDouble()

@@ -3,7 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:flut5/flut5.dart';
 
-class _EmptySketch extends Flut5Sketch {}
+class _EmptySketch extends Flut5Sketch;
 
 /// Two fixed-size canvases side by side, each hosting its own sketch.
 Widget _twoCanvases() => MaterialApp(
@@ -63,7 +63,11 @@ void main() {
 
     expect(Flut5Canvas.debugMultiCanvasWarned, isTrue);
     final advice = logs.where((l) => l.contains('Multiple Flut5Canvas'));
-    expect(advice, hasLength(1), reason: 'warning must be printed exactly once');
+    expect(
+      advice,
+      hasLength(1),
+      reason: 'warning must be printed exactly once',
+    );
     expect(advice.first, contains('Flut5.instanceMode = true'));
   });
 

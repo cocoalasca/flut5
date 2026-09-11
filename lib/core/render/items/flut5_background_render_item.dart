@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+
 import '../flut5_render_item.dart';
 
 /// Clears the canvas for the next frame.
@@ -6,12 +7,12 @@ import '../flut5_render_item.dart';
 /// [color] takes the fast `canvas.drawColor` path (single GPU op, no rect).
 /// [paint] is used for gradient/shader backgrounds — filled via [rect] when
 /// provided, or the full clip via `drawPaint` otherwise.
-class BackgroundRenderItem extends Flut5RenderItem {
-  final Color? color;
-  final Paint? paint;
-  final Rect? rect;
-  final bool isOpaqueFullCanvas;
-
+class BackgroundRenderItem._({
+  required final Color? color,
+  required final Paint? paint,
+  required final Rect? rect,
+  required final bool isOpaqueFullCanvas,
+}) extends Flut5RenderItem {
   BackgroundRenderItem(Color color)
     : this._(
         color: color,
@@ -26,13 +27,6 @@ class BackgroundRenderItem extends Flut5RenderItem {
         rect: rect,
         isOpaqueFullCanvas: rect == null && isOpaque,
       );
-
-  BackgroundRenderItem._({
-    required this.color,
-    required this.paint,
-    required this.rect,
-    required this.isOpaqueFullCanvas,
-  });
 
   @override
   void execute(Canvas canvas) {

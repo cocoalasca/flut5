@@ -15,10 +15,7 @@ const int _sharedPointNumbers = 0x8000; // bit 15 of tupleVariationCount
 
 /// Per-point delta produced by `gvar` for a single glyph at the current
 /// normalized axis position. Zero on points that no tuple touches.
-class GvarDelta {
-  final double dx;
-  final double dy;
-  const GvarDelta(this.dx, this.dy);
+class const GvarDelta(final double dx, final double dy) {
   static const zero = GvarDelta(0, 0);
 }
 
@@ -481,18 +478,10 @@ double _iupValue(int target, int a, int b, double da, double db) {
 
 // ── Internal types ───────────────────────────────────────────────────────
 
-class _TupleHeader {
-  final int variationDataSize;
-  final bool hasPrivatePoints;
-  final List<double> peak;
-  final List<double>? intermediateStart;
-  final List<double>? intermediateEnd;
-
-  const _TupleHeader({
-    required this.variationDataSize,
-    required this.hasPrivatePoints,
-    required this.peak,
-    this.intermediateStart,
-    this.intermediateEnd,
-  });
-}
+class const _TupleHeader({
+  required final int variationDataSize,
+  required final bool hasPrivatePoints,
+  required final List<double> peak,
+  final List<double>? intermediateStart,
+  final List<double>? intermediateEnd,
+});

@@ -101,7 +101,8 @@ export 'text/flut5_text_grid.dart';
 ///   Enemy(Flut5Engine engine) : super(flut5: engine);
 /// }
 /// ```
-abstract class Flut5 with Flut5EventMixin {
+abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
+    with Flut5EventMixin {
   /// Whether Flut5 runs in *instance mode* (mirrors p5.js instance mode,
   /// see https://p5js.org/reference/p5/p5/).
   ///
@@ -124,8 +125,18 @@ abstract class Flut5 with Flut5EventMixin {
   /// Whether this instance created its own engine (and is responsible for disposing it).
   late final bool _ownsEngine;
 
-  Flut5({Flut5Engine? flut5, bool listenEvents = false}) {
-    final resolved = flut5 ?? (instanceMode ? null : Flut5Engine.current);
+  Flut5({Flut5Engine? flut5, bool listenEvents = false})
+    : this._(flut5, listenEvents, false);
+
+  this {
+    if (root) {
+      _ownsEngine = true;
+      flut5 = Flut5Engine();
+      Flut5Engine.current = flut5;
+      if (listenEvents) this.listenEvents(flut5);
+      return;
+    }
+    final resolved = engine ?? (instanceMode ? null : Flut5Engine.current);
     if (resolved == null && instanceMode) {
       throw StateError(
         'Flut5 is in instance mode (Flut5.instanceMode == true), so every '
@@ -140,8 +151,8 @@ abstract class Flut5 with Flut5EventMixin {
       );
     }
     _ownsEngine = resolved == null;
-    this.flut5 = resolved ?? Flut5Engine();
-    if (listenEvents) this.listenEvents(this.flut5);
+    flut5 = resolved ?? Flut5Engine();
+    if (listenEvents) this.listenEvents(flut5);
   }
 
   /// Creates a *root* instance that always owns a fresh [Flut5Engine] and
@@ -152,12 +163,7 @@ abstract class Flut5 with Flut5EventMixin {
   /// global mode. [Flut5Canvas] then keeps [Flut5Engine.current] pointing at
   /// whichever sketch is running `setup()`/`draw()`.
   @protected
-  Flut5.root({bool listenEvents = false}) {
-    _ownsEngine = true;
-    flut5 = Flut5Engine();
-    Flut5Engine.current = flut5;
-    if (listenEvents) this.listenEvents(flut5);
-  }
+  Flut5.root({bool listenEvents = false}) : this._(null, listenEvents, true);
 
   bool _disposed = false;
 
@@ -292,17 +298,14 @@ abstract class Flut5 with Flut5EventMixin {
   void setFrameSnapshotMaxPixels(int? pixels) =>
       flut5.setFrameSnapshotMaxPixels(pixels);
   int? snapshotMaxPixels([int? pixels]) => flut5.snapshotMaxPixels(pixels);
-  bool get adaptiveSnapshotFilterQuality =>
-      flut5.adaptiveSnapshotFilterQuality;
+  bool get adaptiveSnapshotFilterQuality => flut5.adaptiveSnapshotFilterQuality;
   set adaptiveSnapshotFilterQuality(bool v) =>
       flut5.adaptiveSnapshotFilterQuality = v;
   int get frameSnapshotMinResolution => flut5.frameSnapshotMinResolution;
-  set frameSnapshotMinResolution(int v) =>
-      flut5.frameSnapshotMinResolution = v;
+  set frameSnapshotMinResolution(int v) => flut5.frameSnapshotMinResolution = v;
   void setFrameSnapshotMinResolution(int size) =>
       flut5.setFrameSnapshotMinResolution(size);
-  double get frameSnapshotResolutionScale =>
-      flut5.frameSnapshotResolutionScale;
+  double get frameSnapshotResolutionScale => flut5.frameSnapshotResolutionScale;
   FilterQuality get frameSnapshotFilterQuality =>
       flut5.frameSnapshotFilterQuality;
   set frameSnapshotFilterQuality(FilterQuality v) =>
@@ -479,8 +482,7 @@ abstract class Flut5 with Flut5EventMixin {
   void noShadow() => flut5.noShadow();
 
   // ── Vertex API ───────────────────────────────────────────────────────────
-  void beginShape([ShapeMode mode = .polygon]) =>
-      flut5.beginShape(mode);
+  void beginShape([ShapeMode mode = .polygon]) => flut5.beginShape(mode);
   void vertex(double x, double y) => flut5.vertex(x, y);
   void bezierVertex(
     double x2,
@@ -623,8 +625,10 @@ abstract class Flut5 with Flut5EventMixin {
       flut5.currentContainerOverscrollInput;
   void containerOverscrollInput(Flut5ContainerOverscrollInput mode) =>
       flut5.containerOverscrollInput(mode);
-  void containerScrollSensitivity(double multiplier, [double? wheelMultiplier]) =>
-      flut5.containerScrollSensitivity(multiplier, wheelMultiplier);
+  void containerScrollSensitivity(
+    double multiplier, [
+    double? wheelMultiplier,
+  ]) => flut5.containerScrollSensitivity(multiplier, wheelMultiplier);
   double get currentContainerPointerDragSensitivity =>
       flut5.currentContainerPointerDragSensitivity;
   void containerPointerDragSensitivity(double value) =>
@@ -651,8 +655,7 @@ abstract class Flut5 with Flut5EventMixin {
   void layoutWrap(Flut5LayoutWrap mode) => flut5.layoutWrap(mode);
   EdgeInsets get currentLayoutPadding => flut5.currentLayoutPadding;
   void layoutPadding(EdgeInsets padding) => flut5.layoutPadding(padding);
-  Flut5LayoutAlign get currentLayoutAlignItems =>
-      flut5.currentLayoutAlignItems;
+  Flut5LayoutAlign get currentLayoutAlignItems => flut5.currentLayoutAlignItems;
   void layoutAlignItems(Flut5LayoutAlign align) =>
       flut5.layoutAlignItems(align);
   Flut5LayoutJustify get currentLayoutJustifyContent =>
@@ -687,8 +690,7 @@ abstract class Flut5 with Flut5EventMixin {
   int get textCacheBytes => flut5.textCacheBytes;
   int get textCacheLength => flut5.textCacheLength;
   int get textLayoutCacheMaxSize => flut5.textLayoutCacheMaxSize;
-  set textLayoutCacheMaxSize(int value) =>
-      flut5.textLayoutCacheMaxSize = value;
+  set textLayoutCacheMaxSize(int value) => flut5.textLayoutCacheMaxSize = value;
   int get textLayoutCacheGrowthLimit => flut5.textLayoutCacheGrowthLimit;
   set textLayoutCacheGrowthLimit(int value) =>
       flut5.textLayoutCacheGrowthLimit = value;

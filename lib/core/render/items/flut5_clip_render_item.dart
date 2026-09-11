@@ -41,7 +41,14 @@ enum ClipKind {
 /// All three also accept [antiAlias] (default `true`). Setting it to `false`
 /// produces pixelated edges but avoids the offscreen `saveLayer` that
 /// anti-aliased complex clips usually trigger — a real win on hot paths.
-class ClipRenderItem extends Flut5RenderItem {
+class ClipRenderItem._({
+  required final ClipKind kind,
+  final Path? maskPath,
+  final Rect? rect,
+  final RRect? rrect,
+  final bool invert = false,
+  final bool antiAlias = true,
+}) extends Flut5RenderItem {
   /// Bounds large enough to cover any practical canvas + transform. Finite
   /// (rather than [Rect.largest]) so [Path.combine] stays numerically sane.
   static const Rect _cover = Rect.fromLTRB(-1e9, -1e9, 1e9, 1e9);
@@ -57,42 +64,36 @@ class ClipRenderItem extends Flut5RenderItem {
     'ClipRenderItem.invertedPath',
   );
 
-  final ClipKind kind;
-  final Path? maskPath;
-  final Rect? rect;
-  final RRect? rrect;
-  final bool invert;
-  final bool antiAlias;
-
   /// Arbitrary-shape clip. Set [invert] to turn the path into a hole.
   /// Set [antiAlias] to `false` to skip AA (faster, pixelated edges).
   ClipRenderItem.path(
-    Path this.maskPath, {
-    this.invert = false,
-    this.antiAlias = true,
-  })  : kind = .path,
-        rect = null,
-        rrect = null;
+    Path maskPath, {
+    bool invert = false,
+    bool antiAlias = true,
+  }) : this._(
+         kind: .path,
+         maskPath: maskPath,
+         invert: invert,
+         antiAlias: antiAlias,
+       );
 
   /// Sharp-cornered rectangular clip. Set [invert] to turn the rectangle
   /// into a hole instead (drawn everywhere except inside it).
-  ClipRenderItem.rect(
-    Rect this.rect, {
-    this.invert = false,
-    this.antiAlias = true,
-  })  : kind = .rect,
-        maskPath = null,
-        rrect = null;
+  ClipRenderItem.rect(Rect rect, {bool invert = false, bool antiAlias = true})
+    : this._(kind: .rect, rect: rect, invert: invert, antiAlias: antiAlias);
 
   /// Rounded rectangular clip. Set [invert] to turn the rounded rectangle
   /// into a hole instead.
   ClipRenderItem.rounded(
-    RRect this.rrect, {
-    this.invert = false,
-    this.antiAlias = true,
-  })  : kind = .rounded,
-        maskPath = null,
-        rect = null;
+    RRect rrect, {
+    bool invert = false,
+    bool antiAlias = true,
+  }) : this._(
+         kind: .rounded,
+         rrect: rrect,
+         invert: invert,
+         antiAlias: antiAlias,
+       );
 
   @override
   void execute(Canvas canvas) {

@@ -1,15 +1,11 @@
 import 'package:flutter/material.dart';
+
 import 'flut5_ui_element.dart';
 
-base class Flut5Button extends Flut5UIElement {
-  String label;
+base class Flut5Button(var String label, {required super.removeElement})
+    extends Flut5UIElement {
   VoidCallback? _onPressed;
   VoidCallback? _onReleased;
-
-  Flut5Button(
-    this.label, {
-    required super.removeElement,
-  });
 
   void onPressed(VoidCallback callback) {
     _onPressed = callback;

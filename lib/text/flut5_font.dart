@@ -16,74 +16,56 @@ export 'flut5_font_variation.dart' show Flut5FontAxis, Flut5NamedInstance;
 /// [name] is the pubspec/manifest family name used with [TextStyle.fontFamily]
 /// and `textFont('Family')`. [font] is the parsed outline data used by
 /// `textToPaths`, `textToPoints`, and `textToContours`.
-class Flut5FontData {
-  final String name;
-  final String asset;
-  final Flut5Font font;
-
-  const Flut5FontData({
-    required this.name,
-    required this.asset,
-    required this.font,
-  });
-}
+class const Flut5FontData({
+  required final String name,
+  required final String asset,
+  required final Flut5Font font,
+});
 
 // ── Path command hierarchy ─────────────────────────────────────────────
 
 /// A single drawing command extracted from a glyph outline.
-sealed class PathCommand {
-  const PathCommand();
-}
+sealed class const PathCommand();
 
 /// Move the pen to ([x], [y]) without drawing.
-class MoveToCommand extends PathCommand {
-  final double x, y;
-  const MoveToCommand(this.x, this.y);
-}
+class const MoveToCommand(final double x, final double y) extends PathCommand;
 
 /// Draw a straight line to ([x], [y]).
-class LineToCommand extends PathCommand {
-  final double x, y;
-  const LineToCommand(this.x, this.y);
-}
+class const LineToCommand(final double x, final double y) extends PathCommand;
 
 /// Draw a quadratic Bézier curve with control point ([cx], [cy]) to ([x], [y]).
-class QuadToCommand extends PathCommand {
-  final double cx, cy, x, y;
-  const QuadToCommand(this.cx, this.cy, this.x, this.y);
-}
+class const QuadToCommand(
+  final double cx,
+  final double cy,
+  final double x,
+  final double y,
+) extends PathCommand;
 
 /// Draw a cubic Bézier curve.
 /// Used by CFF/OTF fonts and available for manual vertex construction.
-class CubicToCommand extends PathCommand {
-  final double cx1, cy1, cx2, cy2, x, y;
-  const CubicToCommand(this.cx1, this.cy1, this.cx2, this.cy2, this.x, this.y);
-}
+class const CubicToCommand(
+  final double cx1,
+  final double cy1,
+  final double cx2,
+  final double cy2,
+  final double x,
+  final double y,
+) extends PathCommand;
 
 /// Close the current contour path.
-class CloseCommand extends PathCommand {
-  const CloseCommand();
-}
+class const CloseCommand() extends PathCommand;
 
 // ── CFF outline data (internal) ────────────────────────────────────────
 
 /// Holds the raw CFF table data needed to interpret glyph charstrings.
 /// @nodoc
-class CFFData {
-  final List<Uint8List> charStrings;
-  final List<Uint8List> globalSubrs;
-  final List<Uint8List> localSubrs;
-  final double defaultWidthX;
-  final double nominalWidthX;
-
-  const CFFData({
-    required this.charStrings,
-    required this.globalSubrs,
-    required this.localSubrs,
-    required this.defaultWidthX,
-    required this.nominalWidthX,
-  });
-}
+class const CFFData({
+  required final List<Uint8List> charStrings,
+  required final List<Uint8List> globalSubrs,
+  required final List<Uint8List> localSubrs,
+  required final double defaultWidthX,
+  required final double nominalWidthX,
+});
 
 // ── Flut5Font ──────────────────────────────────────────────────────────
 
@@ -114,21 +96,45 @@ class CFFData {
 /// final font = Flut5Font.fromBytes(ttfBytes);
 /// final cmds = font.textToPaths('Hello', 50, 100, 48); // explicit 48px
 /// ```
-class Flut5Font {
+class Flut5Font.internal({
   /// Font design units per em square. Typically 1000 or 2048.
-  final int unitsPerEm;
+  required final int unitsPerEm,
 
   /// Total number of glyphs in the font.
-  final int numGlyphs;
+  required final int numGlyphs,
 
   /// Number of horizontal metrics entries in hmtx.
-  final int numberOfHMetrics;
+  required final int numberOfHMetrics,
+  required final Map<int, int> _charToGlyph,
+  required final List<Flut5Glyph?> _glyphs,
+  required final List<int> _advanceWidths,
+  required final List<int> _lsbs,
+  final ByteData? _glyfData,
+  final List<int>? _locaOffsets,
+  final CFFData? _cffData,
 
-  final Map<int, int> _charToGlyph;
-  final List<Flut5Glyph?> _glyphs;
-  final List<int> _advanceWidths;
-  final List<int> _lsbs;
+  /// Variation axes declared by the font's `fvar` table. Empty for static fonts.
+  final List<Flut5FontAxis> axes = const [],
 
+  /// Predefined axis-value combinations declared by the font (e.g. "Bold",
+  /// "Light Condensed"). Empty for static fonts.
+  final List<Flut5NamedInstance> namedInstances = const [],
+
+  /// Raw `gvar` table data — present on TrueType variable fonts. Lazy-parsed
+  /// per-glyph at delta-application time.
+  /// @nodoc
+  final Flut5GvarData? gvar,
+
+  /// Parsed `avar` segment maps — present when the font remaps normalized
+  /// axis coordinates non-linearly.
+  /// @nodoc
+  final Flut5AvarData? avar,
+
+  /// Raw `HVAR` table data — present on variable fonts that vary advance
+  /// widths. Parsed lazily.
+  /// @nodoc
+  final Flut5HvarData? hvar,
+}) {
   /// Per-glyph sampled-contour cache in font-unit (y-up) space.
   ///
   /// Key is `(glyphIndex, sampleFactor, simplifyThreshold)` — scoped to this
@@ -161,34 +167,7 @@ class Flut5Font {
   int variableGlyphContourCacheMaxSize = 1024;
 
   // TrueType outline data (null for CFF fonts)
-  final ByteData? _glyfData;
-  final List<int>? _locaOffsets;
-
   // CFF outline data (null for TrueType fonts)
-  final CFFData? _cffData;
-
-  /// Variation axes declared by the font's `fvar` table. Empty for static fonts.
-  final List<Flut5FontAxis> axes;
-
-  /// Predefined axis-value combinations declared by the font (e.g. "Bold",
-  /// "Light Condensed"). Empty for static fonts.
-  final List<Flut5NamedInstance> namedInstances;
-
-  /// Raw `gvar` table data — present on TrueType variable fonts. Lazy-parsed
-  /// per-glyph at delta-application time.
-  /// @nodoc
-  final Flut5GvarData? gvar;
-
-  /// Parsed `avar` segment maps — present when the font remaps normalized
-  /// axis coordinates non-linearly.
-  /// @nodoc
-  final Flut5AvarData? avar;
-
-  /// Raw `HVAR` table data — present on variable fonts that vary advance
-  /// widths. Parsed lazily.
-  /// @nodoc
-  final Flut5HvarData? hvar;
-
   /// `true` when the font ships variation axes (i.e. is a variable font).
   bool get isVariable => axes.isNotEmpty;
 
@@ -322,29 +301,7 @@ class Flut5Font {
   }
 
   /// @nodoc — internal constructor used by [Flut5FontParser].
-  Flut5Font.internal({
-    required this.unitsPerEm,
-    required this.numGlyphs,
-    required this.numberOfHMetrics,
-    required Map<int, int> charToGlyph,
-    required List<Flut5Glyph?> glyphs,
-    required List<int> advanceWidths,
-    required List<int> lsbs,
-    ByteData? glyfData,
-    List<int>? locaOffsets,
-    CFFData? cffData,
-    this.axes = const [],
-    this.namedInstances = const [],
-    this.gvar,
-    this.avar,
-    this.hvar,
-  }) : _charToGlyph = charToGlyph,
-       _glyphs = glyphs,
-       _advanceWidths = advanceWidths,
-       _lsbs = lsbs,
-       _glyfData = glyfData,
-       _locaOffsets = locaOffsets,
-       _cffData = cffData {
+  this {
     for (final a in axes) {
       _axisValues[a.tag] = a.defaultValue;
     }

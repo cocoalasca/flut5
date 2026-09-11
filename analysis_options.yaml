@@ -1,4 +1,13 @@
+analyzer:
+  exclude:
+    - build/**
 include: package:flutter_lints/flutter.yaml
 
 # Additional information about this file can be found at
 # https://dart.dev/guides/language/analysis-options
+
+linter:
+  rules:
+    use_declaring_parameters: true
+    unnecessary_primary_constructor_body: true
+    empty_container_bodies: true

@@ -10,22 +10,12 @@ import 'package:flutter/services.dart';
 /// [keyCode] is p5-inspired: printable ASCII keys use their uppercase code
 /// unit and common control/navigation keys use their JavaScript keyCode value.
 @immutable
-final class SketchKeyboardEvent {
-  final String key;
-  final int keyCode;
-  final KeyEvent rawEvent;
-  final LogicalKeyboardKey logicalKey;
-  final PhysicalKeyboardKey physicalKey;
-  final String? character;
-  final bool repeat;
-
-  const SketchKeyboardEvent({
-    required this.key,
-    required this.keyCode,
-    required this.rawEvent,
-    required this.logicalKey,
-    required this.physicalKey,
-    required this.character,
-    required this.repeat,
-  });
-}
+final class const SketchKeyboardEvent({
+  required final String key,
+  required final int keyCode,
+  required final KeyEvent rawEvent,
+  required final LogicalKeyboardKey logicalKey,
+  required final PhysicalKeyboardKey physicalKey,
+  required final String? character,
+  required final bool repeat,
+});

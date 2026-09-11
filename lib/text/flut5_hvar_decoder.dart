@@ -14,19 +14,11 @@ import 'dart:typed_data';
 ///
 /// LSB and RSB mappings are present in some fonts but rarely consulted by
 /// renderers — we only decode the advance-width path.
-class Flut5HvarStore {
-  final List<_VariationRegion> _regions;
-  final List<_ItemVariationData> _itemVariationData;
-  final _DeltaSetIndexMap? _advanceWidthMap;
-
-  const Flut5HvarStore._({
-    required List<_VariationRegion> regions,
-    required List<_ItemVariationData> itemVariationData,
-    required _DeltaSetIndexMap? advanceWidthMap,
-  }) : _regions = regions,
-       _itemVariationData = itemVariationData,
-       _advanceWidthMap = advanceWidthMap;
-
+class const Flut5HvarStore._({
+  required final List<_VariationRegion> _regions,
+  required final List<_ItemVariationData> _itemVariationData,
+  required final _DeltaSetIndexMap? _advanceWidthMap,
+}) {
   /// Parses a complete HVAR table from its raw bytes (offset 0 = table start).
   factory Flut5HvarStore.fromBytes(ByteData bytes) {
     // HVAR header: majorVersion(2), minorVersion(2),
@@ -50,10 +42,7 @@ class Flut5HvarStore {
   /// Returns the advance-width delta in font units for [glyphIndex] at the
   /// current [normalizedCoords]. Returns 0 when no contribution applies
   /// (e.g. all axes at default, or glyph not referenced).
-  double advanceDelta(
-    int glyphIndex,
-    List<double> normalizedCoords,
-  ) {
+  double advanceDelta(int glyphIndex, List<double> normalizedCoords) {
     int outer, inner;
     final map = _advanceWidthMap;
     if (map != null) {
@@ -106,10 +95,7 @@ class Flut5HvarStore {
   return (regions, ivdList);
 }
 
-List<_VariationRegion> _parseVariationRegionList(
-  ByteData bytes,
-  int offset,
-) {
+List<_VariationRegion> _parseVariationRegionList(ByteData bytes, int offset) {
   final axisCount = bytes.getUint16(offset);
   final regionCount = bytes.getUint16(offset + 2);
   final regions = <_VariationRegion>[];
@@ -184,21 +170,13 @@ _DeltaSetIndexMap _parseDeltaSetIndexMap(ByteData bytes, int offset) {
 
 // ── Internal types ──────────────────────────────────────────────────────
 
-class _RegionAxis {
-  final double start;
-  final double peak;
-  final double end;
-  const _RegionAxis({
-    required this.start,
-    required this.peak,
-    required this.end,
-  });
-}
+class const _RegionAxis({
+  required final double start,
+  required final double peak,
+  required final double end,
+});
 
-class _VariationRegion {
-  final List<_RegionAxis> axes;
-  const _VariationRegion(this.axes);
-
+class const _VariationRegion(final List<_RegionAxis> axes) {
   /// Computes the contribution scalar for this region at [coords]. Returns 0
   /// when the position falls outside the region's span on any axis.
   double scalar(List<double> coords) {
@@ -233,23 +211,14 @@ class _VariationRegion {
   }
 }
 
-class _ItemVariationData {
-  final int itemCount;
-  final int shortDeltaCount;
-  final List<int> regionIndexes;
-  final ByteData bytes;
-  final int deltasOffset;
-  final int rowBytes;
-
-  const _ItemVariationData({
-    required this.itemCount,
-    required this.shortDeltaCount,
-    required this.regionIndexes,
-    required this.bytes,
-    required this.deltasOffset,
-    required this.rowBytes,
-  });
-
+class const _ItemVariationData({
+  required final int itemCount,
+  required final int shortDeltaCount,
+  required final List<int> regionIndexes,
+  required final ByteData bytes,
+  required final int deltasOffset,
+  required final int rowBytes,
+}) {
   /// Returns the delta for row [item] and region-index slot [r].
   /// The first [shortDeltaCount] slots are int16; the rest are int8.
   int delta(int item, int r) {
@@ -262,21 +231,13 @@ class _ItemVariationData {
   }
 }
 
-class _DeltaSetIndexMap {
-  final ByteData bytes;
-  final int dataOffset;
-  final int mapCount;
-  final int entrySize;
-  final int innerBitCount;
-
-  const _DeltaSetIndexMap({
-    required this.bytes,
-    required this.dataOffset,
-    required this.mapCount,
-    required this.entrySize,
-    required this.innerBitCount,
-  });
-
+class const _DeltaSetIndexMap({
+  required final ByteData bytes,
+  required final int dataOffset,
+  required final int mapCount,
+  required final int entrySize,
+  required final int innerBitCount,
+}) {
   /// Looks up the (outer, inner) variation-data index for [glyphIndex].
   /// Glyphs past [mapCount - 1] reuse the last entry (per spec).
   (int, int) lookup(int glyphIndex) {

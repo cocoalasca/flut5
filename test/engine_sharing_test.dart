@@ -3,11 +3,9 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:flut5/flut5.dart';
 
-class _RootSketch extends Flut5Sketch {}
+class _RootSketch extends Flut5Sketch;
 
-class _Helper extends Flut5 {
-  _Helper({super.flut5});
-}
+class _Helper({super.flut5}) extends Flut5;
 
 class _EagerFieldSketch extends Flut5Sketch {
   // Non-late field initializer: runs BEFORE the sketch's engine exists.
@@ -88,8 +86,7 @@ void main() {
   });
 
   group('instance mode', () {
-    test('helper without explicit engine throws even while a sketch runs',
-        () {
+    test('helper without explicit engine throws even while a sketch runs', () {
       Flut5.instanceMode = true;
       _RootSketch();
       expect(() => _Helper(), throwsStateError);

@@ -2,7 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flut5/flut5.dart';
 
 // Create a dummy vehicle to test the mixin
-class Vehicle with Flut5Steering {}
+class Vehicle with Flut5Steering;
 
 void main() {
   group('Flut5Steering Physics', () {
@@ -67,11 +67,15 @@ void main() {
     test('arrive slows down within slowingRadius', () {
       final vFar = Vehicle()..configSteering(maxVelocity: 4.0, maxForce: 10.0);
       vFar.position.setValues(0, 0, 0);
-      vFar.applyForce(vFar.arrive(Flut5Vector(200, 0))); // Outside default 100 slowingRadius
+      vFar.applyForce(
+        vFar.arrive(Flut5Vector(200, 0)),
+      ); // Outside default 100 slowingRadius
 
       final vNear = Vehicle()..configSteering(maxVelocity: 4.0, maxForce: 10.0);
       vNear.position.setValues(0, 0, 0);
-      vNear.applyForce(vNear.arrive(Flut5Vector(50, 0))); // Inside default 100 slowingRadius
+      vNear.applyForce(
+        vNear.arrive(Flut5Vector(50, 0)),
+      ); // Inside default 100 slowingRadius
 
       // Inline physics update
       vFar.velocity.add(vFar.acceleration);
@@ -118,25 +122,28 @@ void main() {
       expect(v.acceleration.y, 0.0);
     });
 
-    test('flee reverses the desired velocity, not the whole steering force', () {
-      final target = Flut5Vector(37, -19);
+    test(
+      'flee reverses the desired velocity, not the whole steering force',
+      () {
+        final target = Flut5Vector(37, -19);
 
-      final v = Vehicle();
-      v.position.setValues(3, 5, 0);
-      v.velocity.setValues(1, -2, 0);
-      final fleeForce = v.flee(target, returnCopy: true);
+        final v = Vehicle();
+        v.position.setValues(3, 5, 0);
+        v.velocity.setValues(1, -2, 0);
+        final fleeForce = v.flee(target, returnCopy: true);
 
-      // desired = setMag(position - target, maxVelocity); steer = desired - velocity
-      final expected = Flut5Vector(3, 5)
-          .sub(Flut5Vector(37, -19))
-          .setMag(v.maxVelocity)
-          .sub(Flut5Vector(1, -2))
-          .limit(v.maxForce);
+        // desired = setMag(position - target, maxVelocity); steer = desired - velocity
+        final expected = Flut5Vector(3, 5)
+            .sub(Flut5Vector(37, -19))
+            .setMag(v.maxVelocity)
+            .sub(Flut5Vector(1, -2))
+            .limit(v.maxForce);
 
-      expect(fleeForce.x, closeTo(expected.x, 1e-12));
-      expect(fleeForce.y, closeTo(expected.y, 1e-12));
-      expect(fleeForce.z, closeTo(expected.z, 1e-12));
-    });
+        expect(fleeForce.x, closeTo(expected.x, 1e-12));
+        expect(fleeForce.y, closeTo(expected.y, 1e-12));
+        expect(fleeForce.z, closeTo(expected.z, 1e-12));
+      },
+    );
 
     test('flee still steers away when charging the target at max speed', () {
       final v = Vehicle();

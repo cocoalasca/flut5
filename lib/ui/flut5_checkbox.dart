@@ -1,18 +1,14 @@
 import 'package:flutter/material.dart';
+
 import 'flut5_ui_element.dart';
 import 'flut5_style_builder.dart';
 
-base class Flut5Checkbox extends Flut5UIElement {
+base class Flut5Checkbox({var bool value = false, required super.removeElement})
+    extends Flut5UIElement {
   static const _kDefaultSize = 22.0;
 
-  bool value;
   Function(bool)? _onChanged;
   String _checkTransition = 'fade';
-
-  Flut5Checkbox({
-    this.value = false,
-    required super.removeElement,
-  });
 
   /// Sets the check-mark appearing/disappearing animation.
   /// Supported values: 'fade', 'scale'.
@@ -52,7 +48,8 @@ base class Flut5Checkbox extends Flut5UIElement {
     final borderColor = style['borderColor'] as Color?;
     final borderWeight = (style['borderWeight'] as num?)?.toDouble() ?? 2.0;
 
-    final inactiveFill = style['backgroundColor'] as Color? ?? Colors.transparent;
+    final inactiveFill =
+        style['backgroundColor'] as Color? ?? Colors.transparent;
     final activeFill = style['activeBackgroundColor'] as Color? ?? Colors.blue;
     final bgColor = value ? activeFill : inactiveFill;
 
@@ -102,7 +99,12 @@ base class Flut5Checkbox extends Flut5UIElement {
             return FadeTransition(opacity: animation, child: child);
           },
           child: value
-              ? Icon(Icons.check, key: const ValueKey(true), color: checkColor, size: checkSize)
+              ? Icon(
+                  Icons.check,
+                  key: const ValueKey(true),
+                  color: checkColor,
+                  size: checkSize,
+                )
               : const SizedBox.shrink(key: ValueKey(false)),
         ),
       );
@@ -110,10 +112,7 @@ base class Flut5Checkbox extends Flut5UIElement {
 
     return MouseRegion(
       cursor: SystemMouseCursors.click,
-      child: GestureDetector(
-        onTap: () => setValue(!value),
-        child: box,
-      ),
+      child: GestureDetector(onTap: () => setValue(!value), child: box),
     );
   }
 

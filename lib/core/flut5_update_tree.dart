@@ -142,9 +142,9 @@ void updateTree(VoidCallback update) {
 ///
 /// Written from outside `draw()` it behaves exactly like `ValueNotifier` —
 /// published immediately, no deferral, no latency.
-class Flut5ValueNotifier<T> extends ValueNotifier<T> {
+class Flut5ValueNotifier<T>(super.value) extends ValueNotifier<T> {
   /// Creates a notifier holding [value].
-  Flut5ValueNotifier(super.value);
+  this;
 
   /// Sentinel for "no write is waiting" — distinct from any `T`, including
   /// `null`, so a nullable notifier can queue a null write.

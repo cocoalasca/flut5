@@ -1,15 +1,14 @@
 import 'package:flutter/material.dart';
+
 import '../flut5_render_item.dart';
 import '../../flut5_shadow.dart';
 
-class EllipseRenderItem extends Flut5RenderItem {
-  final Rect rect;
-  final Paint? fillPaint;
-  final Paint? strokePaint;
-  final Flut5ShadowSpec? shadow;
-
-  EllipseRenderItem(this.rect, this.fillPaint, this.strokePaint, {this.shadow});
-
+class EllipseRenderItem(
+  final Rect rect,
+  final Paint? fillPaint,
+  final Paint? strokePaint, {
+  final Flut5ShadowSpec? shadow,
+}) extends Flut5RenderItem {
   @override
   Rect? get bounds => rect;
 

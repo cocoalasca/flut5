@@ -14,36 +14,27 @@ import 'flut5_hvar_decoder.dart';
 /// - `slnt` — slant in degrees, typically -90..0
 /// - `ital` — italic, 0 (upright) or 1 (italic)
 /// - `opsz` — optical size, in points
-class Flut5FontAxis {
+class const Flut5FontAxis({
   /// Four-character axis tag (e.g. `'wght'`, `'wdth'`).
-  final String tag;
+  required final String tag,
 
   /// Minimum legal user-space value for this axis.
-  final double minValue;
+  required final double minValue,
 
   /// Default user-space value applied when no value has been set.
-  final double defaultValue;
+  required final double defaultValue,
 
   /// Maximum legal user-space value for this axis.
-  final double maxValue;
+  required final double maxValue,
 
   /// Human-readable axis name from the font's `name` table, if available.
-  final String? name;
+  final String? name,
 
   /// True if the axis is marked HIDDEN_AXIS in `fvar` flags — set by the
   /// font designer to signal that the axis is intended as an implementation
   /// detail, not user-facing.
-  final bool hidden;
-
-  const Flut5FontAxis({
-    required this.tag,
-    required this.minValue,
-    required this.defaultValue,
-    required this.maxValue,
-    this.name,
-    this.hidden = false,
-  });
-
+  final bool hidden = false,
+}) {
   /// Clamps a user-space [value] to this axis's legal range.
   double clampValue(double value) {
     if (value < minValue) return minValue;
@@ -72,15 +63,13 @@ class Flut5FontAxis {
 /// may ship named instances like "Bold", "Light Condensed", "Display".
 ///
 /// Apply one with `flut5.fontInstance(name)`.
-class Flut5NamedInstance {
+class const Flut5NamedInstance({
   /// The instance's subfamily name from the font's `name` table.
-  final String name;
+  required final String name,
 
   /// Axis-tag → user-space value for every axis in the font.
-  final Map<String, double> coordinates;
-
-  const Flut5NamedInstance({required this.name, required this.coordinates});
-}
+  required final Map<String, double> coordinates,
+});
 
 /// Internal: raw `gvar` table data plus the metadata needed to lazy-parse
 /// a single glyph's tuple variation store on demand.
@@ -90,48 +79,37 @@ class Flut5NamedInstance {
 /// variable font with multiple shared/private tuples per glyph can be tens
 /// of thousands of entries — most never visited).
 /// @nodoc
-class Flut5GvarData {
+class const Flut5GvarData({
   /// The raw `gvar` table contents as a ByteData view (offset 0 = table start).
-  final ByteData bytes;
+  required final ByteData bytes,
 
   /// Number of variation axes — matches `fvar.axisCount`.
-  final int axisCount;
+  required final int axisCount,
 
   /// Number of shared tuple records in the table-level shared-tuples array.
-  final int sharedTupleCount;
+  required final int sharedTupleCount,
 
   /// Byte offset (from `bytes` start) of the shared tuples array.
-  final int sharedTuplesOffset;
+  required final int sharedTuplesOffset,
 
   /// Byte offset (from `bytes` start) of the glyph variation data region.
-  final int glyphVariationDataArrayOffset;
+  required final int glyphVariationDataArrayOffset,
 
   /// Per-glyph byte offsets into the glyph variation data region. Length
   /// is `numGlyphs + 1`; entry `i+1 - entry i` gives the glyph's size in bytes.
   /// A zero-length range means the glyph has no variations.
-  final List<int> glyphVariationDataOffsets;
-
-  const Flut5GvarData({
-    required this.bytes,
-    required this.axisCount,
-    required this.sharedTupleCount,
-    required this.sharedTuplesOffset,
-    required this.glyphVariationDataArrayOffset,
-    required this.glyphVariationDataOffsets,
-  });
-}
+  required final List<int> glyphVariationDataOffsets,
+});
 
 /// Internal: parsed `avar` segment maps — piecewise-linear remapping of
 /// normalized axis coordinates. Many fonts use this to make a value like
 /// "wght=700" feel like genuine Bold rather than mid-interpolation.
 /// @nodoc
-class Flut5AvarData {
+class const Flut5AvarData(
   /// One segment map per axis (index matches `fvar` order). Each segment map
   /// is a sorted list of `(fromCoord, toCoord)` pairs in normalized space.
-  final List<List<(double, double)>> axisSegmentMaps;
-
-  const Flut5AvarData(this.axisSegmentMaps);
-
+  final List<List<(double, double)>> axisSegmentMaps,
+) {
   /// Applies the segment map for [axisIndex] to a normalized [coord].
   /// Returns [coord] unchanged if the axis has no segment map.
   double remap(int axisIndex, double coord) {
@@ -154,15 +132,14 @@ class Flut5AvarData {
 /// Internal: holds raw `HVAR` table bytes + a lazily-built parsed store.
 /// Advance-width deltas are decoded on first use and cached on the instance.
 /// @nodoc
-class Flut5HvarData {
-  final ByteData bytes;
+class Flut5HvarData(final ByteData bytes) {
   Flut5HvarStore? _store;
-  Flut5HvarData(this.bytes);
 
   /// Advance-width delta in font units for [glyphIndex] at the current
   /// normalized axis position. Returns 0 when no contribution applies.
   double advanceDelta(int glyphIndex, List<double> normalizedCoords) {
-    return (_store ??= Flut5HvarStore.fromBytes(bytes))
-        .advanceDelta(glyphIndex, normalizedCoords);
+    return (_store ??= Flut5HvarStore.fromBytes(
+      bytes,
+    )).advanceDelta(glyphIndex, normalizedCoords);
   }
 }

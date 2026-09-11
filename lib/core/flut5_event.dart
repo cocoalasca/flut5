@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
+
 import 'dart:async';
+
 import '../math/flut5_vector.dart';
 import 'flut5_engine.dart';
 import 'sketch_keyboard_event.dart';
@@ -15,15 +17,13 @@ import 'sketch_scroll_event.dart';
 /// Dispatched whenever the canvas dimensions change (e.g. window resize,
 /// orientation change).
 @immutable
-final class ResizeEvent {
+final class const ResizeEvent(
   /// The canvas size before the change (p5 convention: `p` prefix = previous).
-  final Size psize;
+  final Size psize,
 
   /// The canvas size after the change.
-  final Size size;
-
-  const ResizeEvent(this.psize, this.size);
-}
+  final Size size,
+);
 
 /// The phase of a buffered per-frame pointer event. Mirrors the four
 /// sketch-level pointer callbacks ([Flut5EventMixin.onPointerDown],
@@ -35,12 +35,10 @@ enum Flut5PointerPhase { down, up, move, drag }
 /// by [Flut5Event] and read by scroll-mode-style consumers such as the
 /// `endContainer()` helper, which dispatches them to per-container callbacks.
 @immutable
-final class Flut5FramePointerEvent {
-  final Flut5PointerPhase phase;
-  final SketchPointerEvent event;
-
-  const Flut5FramePointerEvent(this.phase, this.event);
-}
+final class const Flut5FramePointerEvent(
+  final Flut5PointerPhase phase,
+  final SketchPointerEvent event,
+);
 
 /// A mixin that provides event-handling capabilities to a Sketch.
 ///
@@ -187,12 +185,10 @@ mixin Flut5EventMixin {
 /// Contains [StreamController]s for pointer and canvas events.
 /// The canvas widget dispatches events here, and any attached
 /// [Flut5EventMixin] listeners receive them via broadcast streams.
-final class Flut5Event {
-  final void Function(SketchPointerEvent event)? onPointerPositionChanged;
-  final void Function(SketchKeyboardEvent event)? onKeyboardChanged;
-
-  Flut5Event({this.onPointerPositionChanged, this.onKeyboardChanged});
-
+final class Flut5Event({
+  final void Function(SketchPointerEvent event)? onPointerPositionChanged,
+  final void Function(SketchKeyboardEvent event)? onKeyboardChanged,
+}) {
   final StreamController<SketchPointerEvent> _pointerDownController =
       StreamController<SketchPointerEvent>.broadcast();
 

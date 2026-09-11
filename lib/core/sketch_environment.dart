@@ -10,33 +10,33 @@ import '../text/flut5_font.dart';
 /// Holds canvas dimensions and frame timing data that change as the sketch is
 /// rendered.
 @immutable
-final class SketchEnvironment {
-  final Size size;
-  final double mouseX;
-  final double mouseY;
-  final double pmouseX;
-  final double pmouseY;
-  final String key;
-  final int keyCode;
-  final int frameCount;
-  final double deltaTime;
-  final int _lastFrameMs;
+final class const SketchEnvironment._({
+  required final Size size,
+  required final double mouseX,
+  required final double mouseY,
+  required final double pmouseX,
+  required final double pmouseY,
+  required final String key,
+  required final int keyCode,
+  required final int frameCount,
+  required final double deltaTime,
 
   /// Font shape data preloaded from Flutter's generated `FontManifest.json`,
   /// keyed by pubspec/manifest family name.
-  final Map<String, Flut5FontData> fonts;
+  required final Map<String, Flut5FontData> fonts,
+  required final int _lastFrameMs,
 
   /// Number of frames used to compute [avgMouseX], [avgMouseY] and [avgMouse].
   /// Defaults to 15 frames (~250 ms at 60 fps).
-  final int avgMouseFrames;
+  required final int avgMouseFrames,
 
   /// Average mouse velocity x-component (px / frame) over the last
   /// [avgMouseFrames] rendered frames. 0 before the first frame samples.
-  final double avgMouseX;
+  required final double avgMouseX,
 
   /// Average mouse velocity y-component (px / frame) over the last
   /// [avgMouseFrames] rendered frames. 0 before the first frame samples.
-  final double avgMouseY;
+  required final double avgMouseY,
 
   /// Per-frame velocity samples backing [avgMouseX] / [avgMouseY], stored as
   /// fixed-size ring buffers so [nextFrame] appends without allocating.
@@ -49,41 +49,16 @@ final class SketchEnvironment {
   /// buffers are private with no external readers; branching two `nextFrame`
   /// calls off one instance would interleave samples, which the engine never
   /// does. `null` until the first [nextFrame] (const constructor).
-  final Float64List? _vxSamples;
-  final Float64List? _vySamples;
+  required final Float64List? _vxSamples,
+  required final Float64List? _vySamples,
 
   /// Next ring-buffer slot [nextFrame] writes to. While the buffer isn't full
   /// yet, valid samples occupy indices `0 .. _sampleCount - 1`.
-  final int _sampleHead;
+  required final int _sampleHead,
 
   /// Number of valid samples in the ring buffers (≤ buffer length).
-  final int _sampleCount;
-
-  const SketchEnvironment._({
-    required this.size,
-    required this.mouseX,
-    required this.mouseY,
-    required this.pmouseX,
-    required this.pmouseY,
-    required this.key,
-    required this.keyCode,
-    required this.frameCount,
-    required this.deltaTime,
-    required this.fonts,
-    required int lastFrameMs,
-    required this.avgMouseFrames,
-    required this.avgMouseX,
-    required this.avgMouseY,
-    required Float64List? vxSamples,
-    required Float64List? vySamples,
-    required int sampleHead,
-    required int sampleCount,
-  }) : _lastFrameMs = lastFrameMs,
-       _vxSamples = vxSamples,
-       _vySamples = vySamples,
-       _sampleHead = sampleHead,
-       _sampleCount = sampleCount;
-
+  required final int _sampleCount,
+}) {
   /// Creates a fresh environment before the sketch has rendered any frames.
   const SketchEnvironment()
     : this._(

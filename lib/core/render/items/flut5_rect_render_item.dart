@@ -1,22 +1,15 @@
 import 'package:flutter/material.dart';
+
 import '../flut5_render_item.dart';
 import '../../flut5_shadow.dart';
 
-class RectRenderItem extends Flut5RenderItem {
-  final Rect rect;
-  final RRect? rrect;
-  final Paint? fillPaint;
-  final Paint? strokePaint;
-  final Flut5ShadowSpec? shadow;
-
-  RectRenderItem(
-    this.rect,
-    this.rrect,
-    this.fillPaint,
-    this.strokePaint, {
-    this.shadow,
-  });
-
+class RectRenderItem(
+  final Rect rect,
+  final RRect? rrect,
+  final Paint? fillPaint,
+  final Paint? strokePaint, {
+  final Flut5ShadowSpec? shadow,
+}) extends Flut5RenderItem {
   @override
   Rect? get bounds => rrect?.outerRect ?? rect;
 

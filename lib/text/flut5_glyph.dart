@@ -9,21 +9,22 @@ import 'flut5_gvar_decoder.dart';
 // ── Flut5Glyph ────────────────────────────────────────────────────────
 
 /// A parsed glyph containing path commands in font-unit space (y-up).
-class Flut5Glyph {
+class const Flut5Glyph({
   /// Drawing commands that describe this glyph's outline.
-  final List<PathCommand> commands;
+  required final List<PathCommand> commands,
 
   /// Bounding box in font units.
-  final int xMin, yMin, xMax, yMax;
+  required final int xMin,
 
-  const Flut5Glyph({
-    required this.commands,
-    required this.xMin,
-    required this.yMin,
-    required this.xMax,
-    required this.yMax,
-  });
+  /// Bounding box in font units.
+  required final int yMin,
 
+  /// Bounding box in font units.
+  required final int xMax,
+
+  /// Bounding box in font units.
+  required final int yMax,
+}) {
   /// Empty glyph — used for space characters and missing outlines.
   static const empty = Flut5Glyph(
     commands: [],
@@ -53,9 +54,7 @@ const _weHaveAnXAndYScale = 0x0040;
 const _weHaveATwoByTwo = 0x0080;
 
 /// Internal glyph outline parser.
-class Flut5GlyphParser {
-  Flut5GlyphParser._();
-
+class Flut5GlyphParser._() {
   /// Parses the glyph at [glyphIndex] from the raw glyf table data.
   ///
   /// [glyfData] is a ByteData view of the glyf table (offsets start at 0).
@@ -205,10 +204,14 @@ class Flut5GlyphParser {
     // resulting point coords carry sub-unit precision, so contour emission
     // operates on doubles from here on.
     final xs = List<double>.generate(
-      numPoints, (i) => xCoords[i].toDouble(), growable: false,
+      numPoints,
+      (i) => xCoords[i].toDouble(),
+      growable: false,
     );
     final ys = List<double>.generate(
-      numPoints, (i) => yCoords[i].toDouble(), growable: false,
+      numPoints,
+      (i) => yCoords[i].toDouble(),
+      growable: false,
     );
     if (gvar != null && normalizedCoords != null) {
       final deltas = resolveSimpleGlyphGvarDeltas(
@@ -233,9 +236,7 @@ class Flut5GlyphParser {
     int startIdx = 0;
     for (int c = 0; c < numberOfContours; c++) {
       final endIdx = endPts[c];
-      commands.addAll(
-        _contourToCommands(xs, ys, flags, startIdx, endIdx),
-      );
+      commands.addAll(_contourToCommands(xs, ys, flags, startIdx, endIdx));
       startIdx = endIdx + 1;
     }
 
@@ -449,9 +450,7 @@ class Flut5GlyphParser {
 // ── Point sampling ────────────────────────────────────────────────────
 
 /// Samples points along path commands for textToPoints / textToContours.
-class Flut5GlyphSampler {
-  Flut5GlyphSampler._();
-
+class Flut5GlyphSampler._() {
   /// Samples points along all segments in [commands].
   ///
   /// [sampleFactor] controls density — higher values produce more points.
@@ -714,24 +713,16 @@ class Flut5GlyphSampler {
   }
 }
 
-class _SampledContour {
-  final List<Flut5Vector> points;
-  final bool closed;
-  final bool hasCurve;
-
-  const _SampledContour({
-    required this.points,
-    required this.closed,
-    required this.hasCurve,
-  });
-}
+class const _SampledContour({
+  required final List<Flut5Vector> points,
+  required final bool closed,
+  required final bool hasCurve,
+});
 
 // ── CFF / Type 2 charstring interpreter ──────────────────────────────
 
 /// Interprets CFF Type 2 charstrings into [Flut5Glyph] path commands.
-class Flut5CFFInterpreter {
-  Flut5CFFInterpreter._();
-
+class Flut5CFFInterpreter._() {
   /// Parses the glyph at [glyphIndex] from [cff] charstring data.
   static Flut5Glyph parseGlyph(CFFData cff, int glyphIndex) {
     if (glyphIndex < 0 || glyphIndex >= cff.charStrings.length) {
@@ -760,11 +751,11 @@ int _cffBias(int count) {
   return 32768;
 }
 
-class _Interpreter {
-  final List<Uint8List> localSubrs;
-  final List<Uint8List> globalSubrs;
-  final double nominalWidthX;
-
+class _Interpreter({
+  required final List<Uint8List> localSubrs,
+  required final List<Uint8List> globalSubrs,
+  required final double nominalWidthX,
+}) {
   final List<double> _stack = [];
   final List<PathCommand> commands = [];
 
@@ -772,12 +763,6 @@ class _Interpreter {
   bool _open = false;
   bool _done = false;
   int _stemCount = 0;
-
-  _Interpreter({
-    required this.localSubrs,
-    required this.globalSubrs,
-    required this.nominalWidthX,
-  });
 
   // ── Pen helpers ──────────────────────────────────────────────────────
 

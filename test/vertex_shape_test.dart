@@ -5,8 +5,8 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:flut5/flut5.dart';
 
-class _RecordingGradient extends LinearGradient {
-  _RecordingGradient() : super(colors: [Colors.red, Colors.blue]);
+class _RecordingGradient() extends LinearGradient {
+  this : super(colors: [Colors.red, Colors.blue]);
 
   final shaderRects = <Rect>[];
 
@@ -231,11 +231,17 @@ void main() {
       engine.endShape(close: true);
     }
 
-    ring(const Rect.fromLTRB(0, 0, 200, 200), const Rect.fromLTRB(50, 50, 150, 150));
+    ring(
+      const Rect.fromLTRB(0, 0, 200, 200),
+      const Rect.fromLTRB(50, 50, 150, 150),
+    );
     engine.renderQueue.flushPending();
     engine.renderQueue.clear();
 
-    ring(const Rect.fromLTRB(0, 0, 40, 40), const Rect.fromLTRB(10, 10, 30, 30));
+    ring(
+      const Rect.fromLTRB(0, 0, 40, 40),
+      const Rect.fromLTRB(10, 10, 30, 30),
+    );
     final item = singleItem(engine);
     expect(item.bounds, const Rect.fromLTRB(0, 0, 40, 40));
   });

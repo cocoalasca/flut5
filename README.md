@@ -20,8 +20,11 @@ TODO: List what your package can do. Maybe include images, gifs, or videos.
 
 ## Getting started
 
-TODO: List prerequisites and provide or point to information on how to
-start using the package.
+Requires Dart 3.13 or later and Flutter 3.47 or later. The package, bundled
+example, and sibling demos use Dart 3.13 primary constructors.
+
+Run `flutter pub get` after upgrading Flutter, then restart the Dart analysis
+server in your editor so it picks up the new SDK and language version.
 
 ## Usage
 

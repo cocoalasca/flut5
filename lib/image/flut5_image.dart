@@ -54,9 +54,13 @@ const Set<String> _imageExtensions = {
 /// The underlying [ui.Image] is a native resource. It is freed when the
 /// [Flut5Image] is [dispose]d; a sketch that loads a fixed set of images in
 /// `setup()` and keeps them for its lifetime never needs to call it.
-class Flut5Image {
-  Flut5Image._(this._image, this.source);
+class Flut5Image._(
+  var ui.Image _image,
 
+  /// Where this image came from — an asset key, a URL, or a placeholder for
+  /// in-memory sources. Used to make warnings identify the culprit.
+  final String source,
+) {
   /// Wraps an already-decoded [ui.Image] — an escape hatch for bitmaps that
   /// came from somewhere other than [load], such as the engine's
   /// `frameSnapshot` or a `PictureRecorder` of your own.
@@ -64,15 +68,10 @@ class Flut5Image {
   /// Ownership transfers: [dispose] (and [resize], which replaces the bitmap)
   /// disposes [image]. Pass `image.clone()` to keep your own handle alive.
   /// [source] only labels the image in warnings.
-  Flut5Image.fromUiImage(ui.Image image, {this.source = '<ui.Image>'})
-    : _image = image;
+  Flut5Image.fromUiImage(ui.Image image, {String source = '<ui.Image>'})
+    : this._(image, source);
 
-  ui.Image _image;
   bool _disposed = false;
-
-  /// Where this image came from — an asset key, a URL, or a placeholder for
-  /// in-memory sources. Used to make warnings identify the culprit.
-  final String source;
 
   /// The decoded bitmap. Valid until [dispose]; replaced by [resize].
   ui.Image get uiImage => _image;

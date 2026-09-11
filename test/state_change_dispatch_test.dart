@@ -6,8 +6,8 @@ import 'package:flut5/flut5.dart';
 /// A helper object of the kind a sketch spawns for its particles — it reaches
 /// props through the same `listenEvents: true` subscription it uses for
 /// pointer events, with no `stateListener` flag at the call site.
-class _Helper extends Flut5 {
-  _Helper({super.flut5}) : super(listenEvents: true);
+class _Helper({super.flut5}) extends Flut5 {
+  this : super(listenEvents: true);
 
   final List<Map<String, dynamic>> received = [];
 
@@ -15,7 +15,7 @@ class _Helper extends Flut5 {
   void onStateChange(Map<String, dynamic> props) => received.add(props);
 }
 
-class _CountingSketch extends Flut5Sketch {
+class _CountingSketch() extends Flut5Sketch {
   final List<Map<String, dynamic>> received = [];
 
   /// Built in the constructor body rather than `setup()` so these tests do not
@@ -23,7 +23,7 @@ class _CountingSketch extends Flut5Sketch {
   /// in a test file runs setup()/draw() under flutter_test.
   late final _Helper helper;
 
-  _CountingSketch() {
+  this {
     helper = _Helper(flut5: flut5);
   }
 
@@ -32,10 +32,8 @@ class _CountingSketch extends Flut5Sketch {
 }
 
 /// Rebuilds the canvas with whatever props the test last set.
-class _Host extends StatefulWidget {
-  final _CountingSketch sketch;
-  const _Host({required this.sketch});
-
+class const _Host({required final _CountingSketch sketch})
+    extends StatefulWidget {
   @override
   State<_Host> createState() => _HostState();
 }

@@ -1,6 +1,7 @@
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+
 import '../flut5_render_item.dart';
 import '../../flut5_shadow.dart';
 
@@ -10,7 +11,24 @@ import '../../flut5_shadow.dart';
 /// queue's shared [Path] batch. It is queued as its own item, with the
 /// folded translate already baked into [dst] by
 /// `Flut5RenderQueue.appendImage`, so surrounding shapes keep batching.
-class ImageRenderItem extends Flut5RenderItem {
+class ImageRenderItem({
+  /// The bitmap to sample. Owned by the `Flut5Image` that queued it, which
+  /// checks it is not disposed before enqueuing.
+  required final ui.Image image,
+
+  /// Source rectangle in image pixels.
+  required final Rect src,
+
+  /// Destination rectangle in canvas coordinates.
+  required final Rect dst,
+
+  /// Compositing mode captured from the engine at queue time, so `blendMode()`
+  /// applies to images exactly as it does to shapes and text.
+  required final BlendMode blendMode,
+
+  /// Drop shadow cast beneath the image, or `null` for none.
+  final Flut5ShadowSpec? shadow,
+}) extends Flut5RenderItem {
   /// Shared blit paint, reconfigured in place each draw — the same pattern as
   /// `TextRenderItem`'s tint paint, so a frame full of images allocates no
   /// [Paint]s.
@@ -18,31 +36,6 @@ class ImageRenderItem extends Flut5RenderItem {
   /// [FilterQuality.medium] matches Flutter's own `paintImage` default: it
   /// keeps a downscaled photo from aliasing, and costs nothing extra at 1:1.
   static final Paint _blitPaint = Paint()..filterQuality = FilterQuality.medium;
-
-  /// The bitmap to sample. Owned by the `Flut5Image` that queued it, which
-  /// checks it is not disposed before enqueuing.
-  final ui.Image image;
-
-  /// Source rectangle in image pixels.
-  final Rect src;
-
-  /// Destination rectangle in canvas coordinates.
-  final Rect dst;
-
-  /// Compositing mode captured from the engine at queue time, so `blendMode()`
-  /// applies to images exactly as it does to shapes and text.
-  final BlendMode blendMode;
-
-  /// Drop shadow cast beneath the image, or `null` for none.
-  final Flut5ShadowSpec? shadow;
-
-  ImageRenderItem({
-    required this.image,
-    required this.src,
-    required this.dst,
-    required this.blendMode,
-    this.shadow,
-  });
 
   @override
   Rect? get bounds => dst;

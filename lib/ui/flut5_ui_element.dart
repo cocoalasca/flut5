@@ -1,16 +1,13 @@
 import 'package:flutter/material.dart';
+
 import 'flut5_style_builder.dart';
 
 /// Passes the UI transition duration down the widget tree to all UI elements.
-class Flut5UIScope extends InheritedWidget {
-  final Duration transitionDuration;
-
-  const Flut5UIScope({
-    required this.transitionDuration,
-    required super.child,
-    super.key,
-  });
-
+class const Flut5UIScope({
+  required final Duration transitionDuration,
+  required super.child,
+  super.key,
+}) extends InheritedWidget {
   static Duration of(BuildContext context) {
     return context
             .dependOnInheritedWidgetOfExactType<Flut5UIScope>()
@@ -24,14 +21,11 @@ class Flut5UIScope extends InheritedWidget {
 }
 
 /// Represents a dimension value: a fixed number or [Flut5Dim.fitContent].
-class Flut5Dim {
-  final double? _fixed;
-
-  const Flut5Dim._() : _fixed = null;
+class const Flut5Dim._fixed(final double? _fixed) {
+  const Flut5Dim._() : this._fixed(null);
 
   /// Creates a fixed-pixel dimension.
   factory Flut5Dim(double value) => Flut5Dim._fixed(value);
-  Flut5Dim._fixed(this._fixed);
 
   /// Sizes to the natural size of the content. This is the default.
   static const fitContent = Flut5Dim._();
@@ -52,7 +46,9 @@ class Flut5Dim {
 ///
 /// Use [buildInteractiveListenable] instead of [build] when placing the element
 /// inside a container — it wraps in a per-element ListenableBuilder without Positioned.
-abstract base class Flut5UIElement with ChangeNotifier {
+abstract base class Flut5UIElement({
+  required final Function(Flut5UIElement) removeElement,
+}) with ChangeNotifier {
   double x = 0;
   double y = 0;
   Object _widthDim = Flut5Dim.fitContent;
@@ -60,17 +56,14 @@ abstract base class Flut5UIElement with ChangeNotifier {
   Widget? _widgetContent;
   final ValueNotifier<bool> _hovered = ValueNotifier(false);
   final ValueNotifier<bool> _clicked = ValueNotifier(false);
-  late final Listenable _interactionListenable = Listenable.merge([_hovered, _clicked]);
+  late final Listenable _interactionListenable = Listenable.merge([
+    _hovered,
+    _clicked,
+  ]);
   Map<String, dynamic> _styleMap = const {};
   Map<String, dynamic> _hoverStyleMap = const {};
   Map<String, dynamic> _focusStyleMap = const {};
   BoxDecoration? _cachedStyleDecoration;
-
-  final Function(Flut5UIElement) removeElement;
-
-  Flut5UIElement({
-    required this.removeElement,
-  });
 
   /// Moves the element to the given position on the canvas.
   /// WARNING: Avoid calling every frame (e.g. inside draw()). For elements
@@ -106,7 +99,8 @@ abstract base class Flut5UIElement with ChangeNotifier {
     final resolved = props is String
         ? {props: value}
         : Map<String, dynamic>.from(props as Map);
-    _hoverStyleMap = {..._hoverStyleMap, ...resolved}..removeWhere((k, v) => v == null);
+    _hoverStyleMap = {..._hoverStyleMap, ...resolved}
+      ..removeWhere((k, v) => v == null);
     notifyListeners();
   }
 
@@ -114,7 +108,8 @@ abstract base class Flut5UIElement with ChangeNotifier {
     final resolved = props is String
         ? {props: value}
         : Map<String, dynamic>.from(props as Map);
-    _focusStyleMap = {..._focusStyleMap, ...resolved}..removeWhere((k, v) => v == null);
+    _focusStyleMap = {..._focusStyleMap, ...resolved}
+      ..removeWhere((k, v) => v == null);
     notifyListeners();
   }
 
@@ -194,9 +189,15 @@ abstract base class Flut5UIElement with ChangeNotifier {
 
     // Only add a Container/AnimatedContainer if box props are present.
     // Skipping it avoids unnecessary layout overhead for text-only styles.
-    final bool hasBoxProps = effectiveMap.keys.any((k) =>
-        k == 'backgroundColor' || k == 'borderColor' || k == 'borderWeight' ||
-        k == 'borderRadius' || k == 'padding' || k == 'shadow');
+    final bool hasBoxProps = effectiveMap.keys.any(
+      (k) =>
+          k == 'backgroundColor' ||
+          k == 'borderColor' ||
+          k == 'borderWeight' ||
+          k == 'borderRadius' ||
+          k == 'padding' ||
+          k == 'shadow',
+    );
     if (!hasBoxProps) return inner;
 
     // Cache the base decoration to avoid rebuilding it on every frame.
@@ -205,16 +206,13 @@ abstract base class Flut5UIElement with ChangeNotifier {
         ? (_cachedStyleDecoration ??= buildDecoration(_styleMap))
         : buildDecoration(effectiveMap);
 
-    final EdgeInsetsGeometry? padding = effectiveMap['padding'] as EdgeInsetsGeometry?;
+    final EdgeInsetsGeometry? padding =
+        effectiveMap['padding'] as EdgeInsetsGeometry?;
 
     // Use AnimatedContainer when transitions are enabled so backgroundColor, border,
     // borderRadius, and padding interpolate smoothly on state changes.
     if (duration == Duration.zero) {
-      return Container(
-        decoration: decoration,
-        padding: padding,
-        child: inner,
-      );
+      return Container(decoration: decoration, padding: padding, child: inner);
     }
     return AnimatedContainer(
       duration: duration,
@@ -231,12 +229,14 @@ abstract base class Flut5UIElement with ChangeNotifier {
   /// rebuilds on state changes — not the entire canvas UI layer.
   /// Does NOT add positioning — use this when placing the element inside a container.
   Widget buildInteractive(BuildContext context) {
-    final bool needsInteraction = _hoverStyleMap.isNotEmpty || _focusStyleMap.isNotEmpty;
+    final bool needsInteraction =
+        _hoverStyleMap.isNotEmpty || _focusStyleMap.isNotEmpty;
     // Fast path: skip the ListenableBuilder overhead if no interaction styles are set.
     if (!needsInteraction) return buildContent(context);
 
     return ListenableBuilder(
-      listenable: _interactionListenable, // fires when _hovered or _clicked changes
+      listenable:
+          _interactionListenable, // fires when _hovered or _clicked changes
       builder: (ctx, _) {
         Widget inner = buildContent(ctx);
         // MouseRegion tracks pointer enter/exit to toggle _hovered.

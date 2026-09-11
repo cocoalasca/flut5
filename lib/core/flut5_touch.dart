@@ -24,22 +24,15 @@ import '../math/flut5_vector.dart';
 /// `containerOverscrollInput` mode can restrict mouse input without affecting
 /// touch on mobile. Defaults to [PointerDeviceKind.touch].
 @immutable
-final class Flut5Touch {
-  final int id;
-  final double x;
-  final double y;
-  final double px;
-  final double py;
+final class Flut5Touch({
+  required final int id,
+  required final double x,
+  required final double y,
+  required final double px,
+  required final double py,
+  Flut5Vector? velocity,
+  final PointerDeviceKind kind = PointerDeviceKind.touch,
+}) {
   final Flut5Vector velocity;
-  final PointerDeviceKind kind;
-
-  Flut5Touch({
-    required this.id,
-    required this.x,
-    required this.y,
-    required this.px,
-    required this.py,
-    Flut5Vector? velocity,
-    this.kind = PointerDeviceKind.touch,
-  }) : velocity = velocity ?? Flut5Vector.zero();
+  this : velocity = velocity ?? Flut5Vector.zero();
 }

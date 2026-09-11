@@ -9,9 +9,7 @@ import 'flut5_glyph.dart';
 ///
 /// Reads the table directory and extracts the tables needed for glyph
 /// outline extraction. Supports both TrueType (glyf) and CFF outlines.
-class Flut5FontParser {
-  Flut5FontParser._();
-
+class Flut5FontParser._() {
   /// Parses a TTF or OTF font from raw [bytes].
   ///
   /// Throws [FormatException] on invalid data or unsupported format.
@@ -44,7 +42,8 @@ class Flut5FontParser {
 
     _TableRecord requireTable(String tag) {
       final rec = tables[tag];
-      if (rec == null) throw FormatException("Required table '$tag' not found.");
+      if (rec == null)
+        throw FormatException("Required table '$tag' not found.");
       return rec;
     }
 
@@ -116,7 +115,9 @@ class Flut5FontParser {
         ? null
         : Flut5HvarData(
             ByteData.sublistView(
-              bytes, hvarRec.offset, hvarRec.offset + hvarRec.length,
+              bytes,
+              hvarRec.offset,
+              hvarRec.offset + hvarRec.length,
             ),
           );
 
@@ -180,7 +181,9 @@ class Flut5FontParser {
       }
 
       final glyfData = ByteData.sublistView(
-        bytes, glyfRec.offset, glyfRec.offset + glyfRec.length,
+        bytes,
+        glyfRec.offset,
+        glyfRec.offset + glyfRec.length,
       );
 
       return Flut5Font.internal(
@@ -373,7 +376,9 @@ class Flut5FontParser {
     int numGlyphs,
   ) {
     final data = ByteData.sublistView(
-      bytes, tableOffset, tableOffset + tableLength,
+      bytes,
+      tableOffset,
+      tableOffset + tableLength,
     );
     final axisCount = data.getUint16(4);
     final sharedTupleCount = data.getUint16(6);
@@ -461,7 +466,9 @@ class Flut5FontParser {
       final privateSize = privateEntry[0].toInt();
       final privateOffset = cffBase + privateEntry[1].toInt();
       final privateBytes = Uint8List.sublistView(
-        bytes, privateOffset, privateOffset + privateSize,
+        bytes,
+        privateOffset,
+        privateOffset + privateSize,
       );
       final privateDict = _parseCFFDict(privateBytes);
 
@@ -495,7 +502,11 @@ class Flut5FontParser {
   }
 
   /// Extracts all items from a CFF INDEX as zero-copy [Uint8List] views.
-  static List<Uint8List> _parseCFFIndex(ByteData data, Uint8List bytes, int offset) {
+  static List<Uint8List> _parseCFFIndex(
+    ByteData data,
+    Uint8List bytes,
+    int offset,
+  ) {
     final count = data.getUint16(offset);
     if (count == 0) return const [];
     final offSize = data.getUint8(offset + 2);
@@ -503,8 +514,10 @@ class Flut5FontParser {
     final dataBase = offsetsBase + (count + 1) * offSize;
     final items = <Uint8List>[];
     for (int i = 0; i < count; i++) {
-      final start = _readCFFOffset(data, offsetsBase + i * offSize, offSize) - 1;
-      final end = _readCFFOffset(data, offsetsBase + (i + 1) * offSize, offSize) - 1;
+      final start =
+          _readCFFOffset(data, offsetsBase + i * offSize, offSize) - 1;
+      final end =
+          _readCFFOffset(data, offsetsBase + (i + 1) * offSize, offSize) - 1;
       items.add(Uint8List.sublistView(bytes, dataBase + start, dataBase + end));
     }
     return items;
@@ -534,8 +547,11 @@ class Flut5FontParser {
         i += 3;
       } else if (b == 29) {
         // 4-byte integer
-        final val = (item[i + 1] << 24) | (item[i + 2] << 16) |
-                    (item[i + 3] << 8)  |  item[i + 4];
+        final val =
+            (item[i + 1] << 24) |
+            (item[i + 2] << 16) |
+            (item[i + 3] << 8) |
+            item[i + 4];
         stack.add(val > 2147483647 ? val - 4294967296 : val);
         i += 5;
       } else if (b == 30) {
@@ -576,11 +592,23 @@ class Flut5FontParser {
       for (int shift in [4, 0]) {
         final nibble = (byte >> shift) & 0xF;
         if (nibble == 0xF) return double.tryParse(buf.toString()) ?? 0;
-        if (nibble == 0xE) { buf.write('-'); continue; }
+        if (nibble == 0xE) {
+          buf.write('-');
+          continue;
+        }
         if (nibble == 0xD) continue; // reserved
-        if (nibble == 0xC) { buf.write('E-'); continue; }
-        if (nibble == 0xB) { buf.write('E'); continue; }
-        if (nibble == 0xA) { buf.write('.'); continue; }
+        if (nibble == 0xC) {
+          buf.write('E-');
+          continue;
+        }
+        if (nibble == 0xB) {
+          buf.write('E');
+          continue;
+        }
+        if (nibble == 0xA) {
+          buf.write('.');
+          continue;
+        }
         buf.write(nibble);
       }
     }
@@ -653,8 +681,8 @@ class Flut5FontParser {
         if (idRangeOffset == 0) {
           glyphIndex = (c + idDelta) & 0xFFFF;
         } else {
-          final glyphIdAddr = idRangeOffsetsOff + s * 2 +
-              idRangeOffset + 2 * (c - startCode);
+          final glyphIdAddr =
+              idRangeOffsetsOff + s * 2 + idRangeOffset + 2 * (c - startCode);
           glyphIndex = data.getUint16(glyphIdAddr);
           if (glyphIndex != 0) glyphIndex = (glyphIndex + idDelta) & 0xFFFF;
         }
@@ -682,8 +710,7 @@ class Flut5FontParser {
   }
 }
 
-class _TableRecord {
-  final int offset;
-  final int length;
-  const _TableRecord({required this.offset, required this.length});
-}
+class const _TableRecord({
+  required final int offset,
+  required final int length,
+});

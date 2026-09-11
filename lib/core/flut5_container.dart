@@ -113,7 +113,14 @@ enum Flut5LayoutAlign { start, center, end }
 /// * [spaceAround] — split so each container has equal space around it
 ///   (half-size margins at the line's edges).
 /// * [spaceEvenly] — equal space between containers and at both edges.
-enum Flut5LayoutJustify { start, center, end, spaceBetween, spaceAround, spaceEvenly }
+enum Flut5LayoutJustify {
+  start,
+  center,
+  end,
+  spaceBetween,
+  spaceAround,
+  spaceEvenly,
+}
 
 /// Per-container persistent state used by [Flut5ContainerOverflow.scroll].
 /// Lives across frames so the accumulated drag offset survives.
@@ -156,93 +163,99 @@ class _Flut5ContainerScrollState {
 /// (Local touch coordinates do not account for the scroll offset applied in
 /// [Flut5ContainerOverflow.scroll] mode.)
 @immutable
-class Flut5ContainerContext {
+class const Flut5ContainerContext({
   /// Container's top-left x in canvas coordinates.
-  final double x;
+  required final double x,
 
   /// Container's top-left y in canvas coordinates.
-  final double y;
+  required final double y,
 
   /// Container width in pixels.
-  final double width;
+  required final double width,
 
   /// Container height in pixels.
-  final double height;
+  required final double height,
 
   /// Whether any pointer is currently pressed *inside* the container's bounds.
   /// The container-scoped equivalent of the sketch's `pointerIsDown`.
-  final bool pointerIsDown;
+  required final bool pointerIsDown,
 
   /// Whether the pointer is currently hovering *over* the container's bounds
   /// (position inside the rect; does not require a press). On touch devices
   /// this tracks the last known pointer position.
-  final bool pointerIsOver;
+  required final bool pointerIsOver,
 
   /// Current pointer x, local to the container's top-left corner — the sketch's
   /// `mouseX` shifted into container coordinates. Negative or beyond [width]
   /// when the pointer is outside the container (see [pointerIsOver]).
-  final double mouseX;
+  required final double mouseX,
 
   /// Current pointer y, local to the container's top-left corner. See [mouseX].
-  final double mouseY;
+  required final double mouseY,
 
   /// Average pointer velocity x-component (px / frame) over the last
   /// `avgMouseFrames` rendered frames — identical to the sketch's `avgMouseX`.
   /// A velocity, so it is not shifted by the container's position.
-  final double avgMouseX;
+  required final double avgMouseX,
 
   /// Average pointer velocity y-component (px / frame). See [avgMouseX].
-  final double avgMouseY;
+  required final double avgMouseY,
 
   /// Average pointer velocity (px / frame) as a 2D vector — the sketch's
   /// `avgMouse`. Useful for reading where the pointer is heading.
-  final Flut5Vector avgMouse;
+  required final Flut5Vector avgMouse,
 
   /// Pointers currently pressed inside the container, with `x` / `y` / `px` /
   /// `py` shifted to coordinates local to the container's top-left corner.
   /// The container-scoped equivalent of the sketch's `touches`.
-  final List<Flut5Touch> touches;
-
-  const Flut5ContainerContext({
-    required this.x,
-    required this.y,
-    required this.width,
-    required this.height,
-    required this.pointerIsDown,
-    required this.pointerIsOver,
-    required this.mouseX,
-    required this.mouseY,
-    required this.avgMouseX,
-    required this.avgMouseY,
-    required this.avgMouse,
-    required this.touches,
-  });
-}
+  required final List<Flut5Touch> touches,
+});
 
 /// Bookkeeping for one open layout scope, stacked so layouts nest. A frame is
 /// pushed by [Flut5ContainerMixin.beginLayout] (a *root* frame) and by every
 /// layout-managed [Flut5ContainerMixin.beginContainer] (so containers nested
 /// inside a layout container flow within it), and popped by the matching
 /// `endLayout()` / `endContainer()`.
-class _Flut5LayoutFrame {
+class _Flut5LayoutFrame({
   /// Flow direction for the containers placed directly in this frame.
-  final Flut5LayoutDirection direction;
+  required final Flut5LayoutDirection direction,
 
   /// Main-axis spacing (px) between consecutive containers in this frame.
-  final double gap;
+  required final double gap,
 
   /// Cross-axis spacing (px) between wrapped lines.
-  final double crossGap;
+  required final double crossGap,
 
   /// Wrap behavior for this frame's containers. See [Flut5LayoutWrap].
-  final Flut5LayoutWrap wrap;
+  required final Flut5LayoutWrap wrap,
 
   /// Cross-axis alignment of containers within their line.
-  final Flut5LayoutAlign align;
+  required final Flut5LayoutAlign align,
 
   /// Main-axis distribution of a line's free space.
-  final Flut5LayoutJustify justify;
+  required final Flut5LayoutJustify justify,
 
+  /// Content-box origin along the main / cross axis — the start padding, so
+  /// children are placed inset from the scope's edge.
+  required final double mainStart,
+
+  /// Content-box origin along the main / cross axis — the start padding, so
+  /// children are placed inset from the scope's edge.
+  required final double crossStart,
+
+  /// Content-box main-axis size; children wrap when they would flow past it.
+  /// [double.infinity] when unknown (or wrapping is off), so nothing wraps.
+  required final double mainLimit,
+
+  /// Content-box cross-axis size, used by [Flut5LayoutWrap.wrapReverse] to
+  /// stack lines from the end. `0` when unknown (falls back to normal wrap).
+  required final double crossLimit,
+
+  /// `true` for frames opened by `beginLayout()`, `false` for frames opened
+  /// by a layout-managed `beginContainer()`. `endLayout()` uses it to detect
+  /// containers left open inside the layout.
+  required final bool isRoot,
+}) {
   /// Whether [align] / [justify] deviate from their defaults — only then do
   /// containers reserve placeholder translates for the line-close patch pass.
   final bool aligned;
@@ -251,23 +264,6 @@ class _Flut5LayoutFrame {
   /// placeholder queue slot plus declared main/cross size. Only populated
   /// when [aligned]; drained by `_finalizeLayoutLine()`.
   final List<({int slot, double main, double cross})> lineEntries = [];
-
-  /// Content-box origin along the main / cross axis — the start padding, so
-  /// children are placed inset from the scope's edge.
-  final double mainStart, crossStart;
-
-  /// Content-box main-axis size; children wrap when they would flow past it.
-  /// [double.infinity] when unknown (or wrapping is off), so nothing wraps.
-  final double mainLimit;
-
-  /// Content-box cross-axis size, used by [Flut5LayoutWrap.wrapReverse] to
-  /// stack lines from the end. `0` when unknown (falls back to normal wrap).
-  final double crossLimit;
-
-  /// `true` for frames opened by `beginLayout()`, `false` for frames opened
-  /// by a layout-managed `beginContainer()`. `endLayout()` uses it to detect
-  /// containers left open inside the layout.
-  final bool isRoot;
 
   /// Main-axis offset (within the content box) where the next child container
   /// will be placed.
@@ -280,54 +276,47 @@ class _Flut5LayoutFrame {
   /// when the line wraps.
   double lineCross = 0;
 
-  _Flut5LayoutFrame({
-    required this.direction,
-    required this.gap,
-    required this.crossGap,
-    required this.wrap,
-    required this.align,
-    required this.justify,
-    required this.mainStart,
-    required this.crossStart,
-    required this.mainLimit,
-    required this.crossLimit,
-    required this.isRoot,
-  }) : aligned =
-           align != Flut5LayoutAlign.start || justify != Flut5LayoutJustify.start;
+  this
+    : aligned =
+          align != Flut5LayoutAlign.start ||
+          justify != Flut5LayoutJustify.start;
 }
 
 /// Bookkeeping for one open [Flut5ContainerMixin.beginContainer] scope,
 /// stacked so containers can nest. Captured at `beginContainer()` and consumed
 /// by the matching `endContainer()`.
-class _Flut5ContainerFrame {
-  final double x, y, w, h;
+class _Flut5ContainerFrame({
+  required final double x,
+  required final double y,
+  required final double w,
+  required final double h,
 
   /// The `args` map passed to `beginContainer()`; read again at
   /// `endContainer()` to dispatch the per-container pointer callbacks.
-  final Map<String, dynamic>? args;
+  required final Map<String, dynamic>? args,
 
   /// Overflow mode snapshotted when the container was opened, so a
   /// `containerOverflow()` call made *inside* the container only affects
   /// nested containers, never the one already open.
-  final Flut5ContainerOverflow overflow;
+  required final Flut5ContainerOverflow overflow,
 
   /// Overscroll mode snapshotted when the container was opened; same
   /// only-affects-nested rule as [overflow].
-  final Flut5ContainerOverscroll overscroll;
+  required final Flut5ContainerOverscroll overscroll,
 
   /// Render-queue index where the scroll translate is back-filled at
   /// `endContainer()`. Only meaningful in [Flut5ContainerOverflow.scroll] mode.
-  final int slot;
+  required final int slot,
 
   /// Scroll-state identity. Only set in [Flut5ContainerOverflow.scroll] mode.
-  final String? scrollId;
+  required final String? scrollId,
 
   /// Whether this container was opened inside a [Flut5ContainerMixin.beginLayout]
   /// scope and therefore positioned by it. `endContainer()` uses it to advance
   /// the enclosing layout's cursor.
-  final bool layoutManaged;
-
-  final Flut5ContainerContext Function() _buildContext;
+  required final bool layoutManaged,
+  required final Flut5ContainerContext Function() _buildContext,
+}) {
   Flut5ContainerContext? _context;
 
   /// Context snapshot exposed via [Flut5ContainerMixin.containerContext]
@@ -336,20 +325,6 @@ class _Flut5ContainerFrame {
   /// state is frame-stable during `draw()`, so access timing doesn't change
   /// the values.
   Flut5ContainerContext get context => _context ??= _buildContext();
-
-  _Flut5ContainerFrame({
-    required this.x,
-    required this.y,
-    required this.w,
-    required this.h,
-    required this.args,
-    required this.overflow,
-    required this.overscroll,
-    required this.slot,
-    required this.scrollId,
-    required this.layoutManaged,
-    required Flut5ContainerContext Function() buildContext,
-  }) : _buildContext = buildContext;
 }
 
 /// Provides the [beginContainer] / [endContainer] drawing scope for the
@@ -377,7 +352,8 @@ mixin Flut5ContainerMixin on Flut5Transform, Flut52DPrimitives, Flut5Clip {
 
   /// How a scroll container reacts at the edge of its content. Defaults to
   /// [Flut5ContainerOverscroll.bounce].
-  Flut5ContainerOverscroll _containerOverscroll = Flut5ContainerOverscroll.bounce;
+  Flut5ContainerOverscroll _containerOverscroll =
+      Flut5ContainerOverscroll.bounce;
 
   /// Rubber-band give for [Flut5ContainerOverscroll.bounce], in `[0, 1]`.
   /// `0.5` is the default browser-like feel; see [containerOverscrollBounce].
@@ -580,7 +556,10 @@ mixin Flut5ContainerMixin on Flut5Transform, Flut52DPrimitives, Flut5Clip {
   ///
   /// This is a convenience over [containerPointerDragSensitivity] /
   /// [containerWheelSensitivity], which set each absolute gain directly.
-  void containerScrollSensitivity(double multiplier, [double? wheelMultiplier]) {
+  void containerScrollSensitivity(
+    double multiplier, [
+    double? wheelMultiplier,
+  ]) {
     final m = multiplier < 0.0 ? 0.0 : multiplier;
     final wm = wheelMultiplier == null
         ? m
@@ -977,10 +956,10 @@ mixin Flut5ContainerMixin on Flut5Transform, Flut52DPrimitives, Flut5Clip {
       justify: _layoutJustify,
       mainStart: mainStart,
       crossStart: crossStart,
-      mainLimit:
-          mainContent.isFinite && mainContent > 0 ? mainContent : double.infinity,
-      crossLimit:
-          crossContent.isFinite && crossContent > 0 ? crossContent : 0,
+      mainLimit: mainContent.isFinite && mainContent > 0
+          ? mainContent
+          : double.infinity,
+      crossLimit: crossContent.isFinite && crossContent > 0 ? crossContent : 0,
       isRoot: isRoot,
     );
   }
@@ -1005,7 +984,8 @@ mixin Flut5ContainerMixin on Flut5Transform, Flut52DPrimitives, Flut5Clip {
     if (cross > frame.lineCross) frame.lineCross = cross;
 
     final mainPos = frame.mainStart + frame.cursor;
-    final crossPos = frame.crossStart +
+    final crossPos =
+        frame.crossStart +
         (frame.wrap == Flut5LayoutWrap.wrapReverse && frame.crossLimit > 0
             ? frame.crossLimit - frame.crossCursor - cross
             : frame.crossCursor);
@@ -1024,8 +1004,7 @@ mixin Flut5ContainerMixin on Flut5Transform, Flut52DPrimitives, Flut5Clip {
     final n = entries.length;
     // cursor accumulated `size + gap` per container, so drop the trailing gap.
     final lineMain = frame.cursor - frame.gap;
-    final freeRaw =
-        frame.mainLimit.isFinite ? frame.mainLimit - lineMain : 0.0;
+    final freeRaw = frame.mainLimit.isFinite ? frame.mainLimit - lineMain : 0.0;
     // Overflowing / unbounded lines distribute nothing — CSS `start` behavior.
     final free = freeRaw > 0 ? freeRaw : 0.0;
     final horizontal = frame.direction == Flut5LayoutDirection.horizontal;
@@ -1123,11 +1102,13 @@ mixin Flut5ContainerMixin on Flut5Transform, Flut52DPrimitives, Flut5Clip {
       outerH = h ?? height - y;
     }
     final horizontal = _layoutDirection == Flut5LayoutDirection.horizontal;
-    _layoutStack.add(_newLayoutFrame(
-      outerMain: horizontal ? outerW : outerH,
-      outerCross: horizontal ? outerH : outerW,
-      isRoot: true,
-    ));
+    _layoutStack.add(
+      _newLayoutFrame(
+        outerMain: horizontal ? outerW : outerH,
+        outerCross: horizontal ? outerH : outerW,
+        isRoot: true,
+      ),
+    );
   }
 
   /// Closes the innermost layout scope opened by [beginLayout]. Containers
@@ -1382,19 +1363,21 @@ mixin Flut5ContainerMixin on Flut5Transform, Flut52DPrimitives, Flut5Clip {
       slot = renderQueue.itemCount;
     }
 
-    _containerStack.add(_Flut5ContainerFrame(
-      x: x,
-      y: y,
-      w: w,
-      h: h,
-      args: args,
-      overflow: overflow,
-      overscroll: _containerOverscroll,
-      slot: slot,
-      scrollId: scrollId,
-      layoutManaged: layoutManaged,
-      buildContext: () => _buildContainerContext(x, y, w, h),
-    ));
+    _containerStack.add(
+      _Flut5ContainerFrame(
+        x: x,
+        y: y,
+        w: w,
+        h: h,
+        args: args,
+        overflow: overflow,
+        overscroll: _containerOverscroll,
+        slot: slot,
+        scrollId: scrollId,
+        layoutManaged: layoutManaged,
+        buildContext: () => _buildContainerContext(x, y, w, h),
+      ),
+    );
 
     if (layoutManaged) {
       // The container flows its own child containers, using the direction /
@@ -1402,11 +1385,13 @@ mixin Flut5ContainerMixin on Flut5Transform, Flut52DPrimitives, Flut5Clip {
       // containerOverflow). Its own size bounds the children's wrapping.
       final childHorizontal =
           _layoutDirection == Flut5LayoutDirection.horizontal;
-      _layoutStack.add(_newLayoutFrame(
-        outerMain: childHorizontal ? w : h,
-        outerCross: childHorizontal ? h : w,
-        isRoot: false,
-      ));
+      _layoutStack.add(
+        _newLayoutFrame(
+          outerMain: childHorizontal ? w : h,
+          outerCross: childHorizontal ? h : w,
+          isRoot: false,
+        ),
+      );
     }
   }
 
@@ -1537,7 +1522,8 @@ mixin Flut5ContainerMixin on Flut5Transform, Flut52DPrimitives, Flut5Clip {
     final onUp = args['pointerUp'];
     final onMove = args['pointerMove'];
     final onDragged = args['pointerDragged'];
-    final hasAny = onDown is void Function(SketchPointerEvent) ||
+    final hasAny =
+        onDown is void Function(SketchPointerEvent) ||
         onUp is void Function(SketchPointerEvent) ||
         onMove is void Function(SketchPointerEvent) ||
         onDragged is void Function(SketchPointerEvent);
@@ -1559,12 +1545,14 @@ mixin Flut5ContainerMixin on Flut5Transform, Flut52DPrimitives, Flut5Clip {
       };
       if (handler is! void Function(SketchPointerEvent)) continue;
       final e = frame.event;
-      handler(SketchPointerEvent(
-        location: Offset(e.location.dx - x, e.location.dy - y),
-        plocation: Offset(e.plocation.dx - x, e.plocation.dy - y),
-        rawEvent: e.rawEvent,
-        velocity: e.velocity,
-      ));
+      handler(
+        SketchPointerEvent(
+          location: Offset(e.location.dx - x, e.location.dy - y),
+          plocation: Offset(e.plocation.dx - x, e.plocation.dy - y),
+          rawEvent: e.rawEvent,
+          velocity: e.velocity,
+        ),
+      );
     }
   }
 
@@ -1585,18 +1573,21 @@ mixin Flut5ContainerMixin on Flut5Transform, Flut52DPrimitives, Flut5Clip {
     for (final t in touches) {
       if (t.x >= x && t.x <= x + w && t.y >= y && t.y <= y + h) {
         down = true;
-        localTouches.add(Flut5Touch(
-          id: t.id,
-          x: t.x - x,
-          y: t.y - y,
-          px: t.px - x,
-          py: t.py - y,
-          velocity: t.velocity,
-          kind: t.kind,
-        ));
+        localTouches.add(
+          Flut5Touch(
+            id: t.id,
+            x: t.x - x,
+            y: t.y - y,
+            px: t.px - x,
+            py: t.py - y,
+            velocity: t.velocity,
+            kind: t.kind,
+          ),
+        );
       }
     }
-    final over = mouseX >= x && mouseX <= x + w && mouseY >= y && mouseY <= y + h;
+    final over =
+        mouseX >= x && mouseX <= x + w && mouseY >= y && mouseY <= y + h;
     return Flut5ContainerContext(
       x: x,
       y: y,

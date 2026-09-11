@@ -1,15 +1,14 @@
 import 'package:flutter/material.dart';
+
 import '../flut5_render_item.dart';
 import '../../flut5_shadow.dart';
 
-class PathRenderItem extends Flut5RenderItem {
-  final Path path;
-  final Paint? fillPaint;
-  final Paint? strokePaint;
-  final Flut5ShadowSpec? shadow;
-
-  PathRenderItem(this.path, this.fillPaint, this.strokePaint, {this.shadow});
-
+class PathRenderItem(
+  final Path path,
+  final Paint? fillPaint,
+  final Paint? strokePaint, {
+  final Flut5ShadowSpec? shadow,
+}) extends Flut5RenderItem {
   /// Memoized — the path is immutable once queued, and bounds may be read
   /// repeatedly (e.g. overlapping `contentBoundsFrom` walks).
   @override

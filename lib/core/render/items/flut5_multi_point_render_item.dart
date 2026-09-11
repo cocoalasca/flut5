@@ -9,13 +9,11 @@ import '../../flut5_shadow.dart';
 /// [coords] is a flat [Float32List] of (x, y) pairs.
 /// [pointPaint] must have [Paint.strokeWidth] set to the desired point diameter
 /// and [Paint.strokeCap] = [StrokeCap.round] for circular dots.
-class MultiPointRenderItem extends Flut5RenderItem {
-  final Float32List coords;
-  final Paint pointPaint;
-  final Flut5ShadowSpec? shadow;
-
-  MultiPointRenderItem(this.coords, this.pointPaint, {this.shadow});
-
+class MultiPointRenderItem(
+  final Float32List coords,
+  final Paint pointPaint, {
+  final Flut5ShadowSpec? shadow,
+}) extends Flut5RenderItem {
   @override
   late final Rect? bounds = _coordBounds(coords);
 

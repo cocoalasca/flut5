@@ -11,13 +11,11 @@ import '../../flut5_shadow.dart';
 /// forms one segment: (p0,p1), (p2,p3), (p4,p5), ...
 /// [linePaint] must have [Paint.strokeWidth] set to the desired thickness
 /// and a stroke-style [Paint.color].
-class MultiLineRenderItem extends Flut5RenderItem {
-  final Float32List coords;
-  final Paint linePaint;
-  final Flut5ShadowSpec? shadow;
-
-  MultiLineRenderItem(this.coords, this.linePaint, {this.shadow});
-
+class MultiLineRenderItem(
+  final Float32List coords,
+  final Paint linePaint, {
+  final Flut5ShadowSpec? shadow,
+}) extends Flut5RenderItem {
   @override
   late final Rect? bounds = _coordBounds(coords);
 

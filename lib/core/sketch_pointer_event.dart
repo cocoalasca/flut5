@@ -13,16 +13,9 @@ import '../math/flut5_vector.dart';
 /// [Flut5Vector]. It is populated for move and drag events; it is `null` on
 /// down, up, and other non-positional events.
 @immutable
-final class SketchPointerEvent {
-  final Offset location;
-  final Offset plocation;
-  final PointerEvent rawEvent;
-  final Flut5Vector? velocity;
-
-  const SketchPointerEvent({
-    required this.location,
-    required this.plocation,
-    required this.rawEvent,
-    this.velocity,
-  });
-}
+final class const SketchPointerEvent({
+  required final Offset location,
+  required final Offset plocation,
+  required final PointerEvent rawEvent,
+  final Flut5Vector? velocity,
+});

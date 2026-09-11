@@ -67,19 +67,21 @@ void main() {
   });
 
   group('Translate folding — rendered positions', () {
-    test('folded translate positions geometry like a canvas translate',
-        () async {
-      final e = engine();
-      e.push();
-      e.translate(30, 40);
-      e.rect(0, 0, 10, 10);
-      e.pop();
-      final b = await _alphaBounds(e, 100, 100);
-      expect(b.minX, inInclusiveRange(29, 31));
-      expect(b.minY, inInclusiveRange(39, 41));
-      expect(b.maxX, inInclusiveRange(38, 40));
-      expect(b.maxY, inInclusiveRange(48, 50));
-    });
+    test(
+      'folded translate positions geometry like a canvas translate',
+      () async {
+        final e = engine();
+        e.push();
+        e.translate(30, 40);
+        e.rect(0, 0, 10, 10);
+        e.pop();
+        final b = await _alphaBounds(e, 100, 100);
+        expect(b.minX, inInclusiveRange(29, 31));
+        expect(b.minY, inInclusiveRange(39, 41));
+        expect(b.maxX, inInclusiveRange(38, 40));
+        expect(b.maxY, inInclusiveRange(48, 50));
+      },
+    );
 
     test('pop restores the folded offset', () async {
       final e = engine();
@@ -106,25 +108,26 @@ void main() {
       expect(b.minY, inInclusiveRange(0, 1));
     });
 
-    test('rotation after a folded translate rotates about the right origin',
-        () async {
-      // A 10×10 rect centered on the rotated origin at (50, 50) becomes a
-      // diamond with extent ±(5√2) ≈ ±7.07 around (50, 50).
-      final e = engine();
-      e.push();
-      e.translate(50, 50);
-      e.rotate(math.pi / 4);
-      e.rect(-5, -5, 10, 10);
-      e.pop();
-      final b = await _alphaBounds(e, 100, 100);
-      expect(b.minX, inInclusiveRange(41, 44));
-      expect(b.maxX, inInclusiveRange(56, 58));
-      expect(b.minY, inInclusiveRange(41, 44));
-      expect(b.maxY, inInclusiveRange(56, 58));
-    });
+    test(
+      'rotation after a folded translate rotates about the right origin',
+      () async {
+        // A 10×10 rect centered on the rotated origin at (50, 50) becomes a
+        // diamond with extent ±(5√2) ≈ ±7.07 around (50, 50).
+        final e = engine();
+        e.push();
+        e.translate(50, 50);
+        e.rotate(math.pi / 4);
+        e.rect(-5, -5, 10, 10);
+        e.pop();
+        final b = await _alphaBounds(e, 100, 100);
+        expect(b.minX, inInclusiveRange(41, 44));
+        expect(b.maxX, inInclusiveRange(56, 58));
+        expect(b.minY, inInclusiveRange(41, 44));
+        expect(b.maxY, inInclusiveRange(56, 58));
+      },
+    );
 
-    test('translate after a rotation folds in local (rotated) space',
-        () async {
+    test('translate after a rotation folds in local (rotated) space', () async {
       // T(50,50) · R(90°) · T(10,0) applied to rect(0,0,10,10):
       // local (10..20, 0..10) → rotated (-10..0, 10..20) → +50 → (40..50, 60..70).
       final e = engine();
@@ -141,20 +144,22 @@ void main() {
       expect(b.maxY, inInclusiveRange(69, 71));
     });
 
-    test('a shape after popping a rotated scope is unrotated and unshifted',
-        () async {
-      final e = engine();
-      e.push();
-      e.translate(50, 50);
-      e.rotate(math.pi / 4);
-      e.pop();
-      e.rect(0, 0, 10, 10);
-      final b = await _alphaBounds(e, 100, 100);
-      expect(b.minX, inInclusiveRange(0, 1));
-      expect(b.minY, inInclusiveRange(0, 1));
-      expect(b.maxX, inInclusiveRange(9, 10));
-      expect(b.maxY, inInclusiveRange(9, 10));
-    });
+    test(
+      'a shape after popping a rotated scope is unrotated and unshifted',
+      () async {
+        final e = engine();
+        e.push();
+        e.translate(50, 50);
+        e.rotate(math.pi / 4);
+        e.pop();
+        e.rect(0, 0, 10, 10);
+        final b = await _alphaBounds(e, 100, 100);
+        expect(b.minX, inInclusiveRange(0, 1));
+        expect(b.minY, inInclusiveRange(0, 1));
+        expect(b.maxX, inInclusiveRange(9, 10));
+        expect(b.maxY, inInclusiveRange(9, 10));
+      },
+    );
 
     test('unbalanced translate-only push leaks nothing to the canvas', () {
       final e = engine();
@@ -414,10 +419,12 @@ void main() {
   });
 }
 
-class _AlphaBounds {
-  final int minX, minY, maxX, maxY;
-  const _AlphaBounds(this.minX, this.minY, this.maxX, this.maxY);
-}
+class const _AlphaBounds(
+  final int minX,
+  final int minY,
+  final int maxX,
+  final int maxY,
+);
 
 Future<_AlphaBounds> _alphaBounds(
   Flut5Engine engine,

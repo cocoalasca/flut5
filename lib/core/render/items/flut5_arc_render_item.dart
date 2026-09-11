@@ -1,26 +1,17 @@
 import 'package:flutter/material.dart';
+
 import '../flut5_render_item.dart';
 import '../../flut5_shadow.dart';
 
-class ArcRenderItem extends Flut5RenderItem {
-  final Rect rect;
-  final double start;
-  final double sweepAngle;
-  final bool useCenter;
-  final Paint? fillPaint;
-  final Paint? strokePaint;
-  final Flut5ShadowSpec? shadow;
-
-  ArcRenderItem(
-    this.rect,
-    this.start,
-    this.sweepAngle,
-    this.useCenter,
-    this.fillPaint,
-    this.strokePaint, {
-    this.shadow,
-  });
-
+class ArcRenderItem(
+  final Rect rect,
+  final double start,
+  final double sweepAngle,
+  final bool useCenter,
+  final Paint? fillPaint,
+  final Paint? strokePaint, {
+  final Flut5ShadowSpec? shadow,
+}) extends Flut5RenderItem {
   @override
   Rect? get bounds => rect;
 

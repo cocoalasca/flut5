@@ -2,6 +2,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+
 import '../flut5_render_item.dart';
 
 /// A run of blits that all sample the same bitmap, drawn in one
@@ -24,33 +25,24 @@ import '../flut5_render_item.dart';
 /// The precision floor is the same one the engine already lives with — Skia
 /// path geometry is float32 throughout — and at a scale factor near 1 the
 /// worst-case placement error is well under a thousandth of a pixel.
-class ImageAtlasRenderItem extends Flut5RenderItem {
-  /// Shared blit paint, reconfigured in place each draw — same pattern as
-  /// [ImageRenderItem], so a frame full of sprite runs allocates no [Paint]s.
-  static final Paint _blitPaint = Paint()..filterQuality = FilterQuality.medium;
-
+class ImageAtlasRenderItem({
   /// The single bitmap every sprite in this run samples.
-  final ui.Image image;
+  required final ui.Image image,
 
   /// Packed `scos, ssin, tx, ty` per sprite.
-  final Float32List transforms;
+  required final Float32List transforms,
 
   /// Packed `left, top, right, bottom` source rect per sprite.
-  final Float32List rects;
+  required final Float32List rects,
 
   /// Compositing mode captured from the engine when the run opened. A change
   /// mid-run closes the run, so one mode covers the whole batch.
-  final BlendMode blendMode;
-
-  final Rect _bounds;
-
-  ImageAtlasRenderItem({
-    required this.image,
-    required this.transforms,
-    required this.rects,
-    required this.blendMode,
-    required Rect bounds,
-  }) : _bounds = bounds;
+  required final BlendMode blendMode,
+  required final Rect _bounds,
+}) extends Flut5RenderItem {
+  /// Shared blit paint, reconfigured in place each draw — same pattern as
+  /// [ImageRenderItem], so a frame full of sprite runs allocates no [Paint]s.
+  static final Paint _blitPaint = Paint()..filterQuality = FilterQuality.medium;
 
   /// Number of blits merged into this item. Always >= 2 — the queue emits a
   /// plain [ImageRenderItem] for a run of one.

@@ -14,14 +14,8 @@ import '../math/flut5_vector.dart';
 /// motion occurred. [scrollDelta] is the per-event scroll delta in logical
 /// pixels: positive `y` scrolls down, positive `x` scrolls right.
 @immutable
-final class SketchScrollEvent {
-  final Offset location;
-  final Flut5Vector scrollDelta;
-  final PointerScrollEvent rawEvent;
-
-  const SketchScrollEvent({
-    required this.location,
-    required this.scrollDelta,
-    required this.rawEvent,
-  });
-}
+final class const SketchScrollEvent({
+  required final Offset location,
+  required final Flut5Vector scrollDelta,
+  required final PointerScrollEvent rawEvent,
+});

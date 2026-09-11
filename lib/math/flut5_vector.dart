@@ -16,14 +16,14 @@ mixin Flut5VectorMixin {
 /// ```dart
 /// v.add(other).mult(2).limit(5);
 /// ```
-final class Flut5Vector extends Vector3 {
+final class Flut5Vector(double x, double y, [double z = 0.0]) extends Vector3 {
   /// Creates a vector at ([x], [y], [z]).
-  Flut5Vector(double x, double y, [double z = 0.0]) : super.zero() {
+  this : super.zero() {
     setValues(x, y, z);
   }
 
   /// Creates a zero vector.
-  Flut5Vector.zero() : super.zero();
+  Flut5Vector.zero() : this(0, 0);
 
   // ── Magnitude ───────────────────────────────────────────────────────────
 
@@ -136,7 +136,11 @@ final class Flut5Vector extends Vector3 {
   }
 
   /// Creates a new [Flut5Vector]. Defaults to zero.
-  static Flut5Vector createVector([double x = 0.0, double y = 0.0, double z = 0.0]) {
+  static Flut5Vector createVector([
+    double x = 0.0,
+    double y = 0.0,
+    double z = 0.0,
+  ]) {
     return Flut5Vector(x, y, z);
   }
 
@@ -165,7 +169,6 @@ final class Flut5Vector extends Vector3 {
   static Flut5Vector subVectors(Vector3 a, Vector3 b) {
     return Flut5Vector(a.x - b.x, a.y - b.y, a.z - b.z);
   }
-
 
   @override
   String toString() => 'Flut5Vector($x, $y, $z)';
