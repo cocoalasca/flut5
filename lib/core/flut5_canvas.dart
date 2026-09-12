@@ -133,6 +133,7 @@ class _Flut5CanvasState extends State<Flut5Canvas>
   @override
   void initState() {
     super.initState();
+    Flut5TextCache.instance.trackFrames();
     _ticker = createTicker(_onTick);
     _ticker.start();
     _painter = Flut5Painter(sketch: widget.sketch, repaint: _repaint);

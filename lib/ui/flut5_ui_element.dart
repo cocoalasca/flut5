@@ -64,6 +64,36 @@ abstract base class Flut5UIElement({
   Map<String, dynamic> _hoverStyleMap = const {};
   Map<String, dynamic> _focusStyleMap = const {};
   BoxDecoration? _cachedStyleDecoration;
+  Flut5UIElement? _parent;
+  VoidCallback? _detachFromParent;
+
+  /// Internal container ownership plumbing. Moves this element from its
+  /// previous parent without disposing it; [onDetach] removes it from the list.
+  void attachToParent(Flut5UIElement parent, VoidCallback onDetach) {
+    assert(ChangeNotifier.debugAssertNotDisposed(this));
+    assert(ChangeNotifier.debugAssertNotDisposed(parent));
+    for (
+      Flut5UIElement? ancestor = parent;
+      ancestor != null;
+      ancestor = ancestor._parent
+    ) {
+      if (identical(ancestor, this)) {
+        throw ArgumentError(
+          'A UI element cannot contain itself or an ancestor.',
+        );
+      }
+    }
+    _detachParent();
+    _parent = parent;
+    _detachFromParent = onDetach;
+  }
+
+  void _detachParent() {
+    final detach = _detachFromParent;
+    _parent = null;
+    _detachFromParent = null;
+    detach?.call();
+  }
 
   /// Moves the element to the given position on the canvas.
   /// WARNING: Avoid calling every frame (e.g. inside draw()). For elements
@@ -135,6 +165,7 @@ abstract base class Flut5UIElement({
   /// Always call [super.dispose()] when overriding.
   @override
   void dispose() {
+    _detachParent();
     _hovered.dispose();
     _clicked.dispose();
     super.dispose();

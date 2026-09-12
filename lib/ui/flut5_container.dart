@@ -53,10 +53,7 @@ base class Flut5Container({
   }
 
   void setChildren(List<Widget> children) {
-    for (final item in _items) {
-      if (item is Flut5UIElement) item.dispose();
-    }
-    _items.clear();
+    _disposeChildren();
     _items.addAll(children);
     notifyListeners();
   }
@@ -66,22 +63,21 @@ base class Flut5Container({
     notifyListeners();
   }
 
-  /// Detaches [element] from the top-level UI stack and adds it as the last child.
+  /// Moves [element] from its current parent or UI stack to the last position.
   void append(Flut5UIElement element) {
-    detachElement(element);
-    _items.add(element);
-    notifyListeners();
+    insert(_items.length, element);
   }
 
-  /// Detaches [element] from the top-level UI stack and inserts it as the first child.
+  /// Moves [element] from its current parent or UI stack to the first position.
   void prepend(Flut5UIElement element) {
-    detachElement(element);
-    _items.insert(0, element);
-    notifyListeners();
+    insert(0, element);
   }
 
   /// Detaches [element] and inserts it at [index]. Appends if [index] exceeds the list length.
   void insert(int index, Flut5UIElement element) {
+    element.attachToParent(this, () {
+      if (_items.remove(element)) notifyListeners();
+    });
     detachElement(element);
     _items.insert(index.clamp(0, _items.length), element);
     notifyListeners();
@@ -89,8 +85,16 @@ base class Flut5Container({
 
   @override
   void dispose() {
+    _disposeChildren();
     super.dispose();
-    for (final item in _items) {
+  }
+
+  void _disposeChildren() {
+    final children = List<Object>.of(_items);
+    // Clear first so child disposal cannot mutate this iteration or notify a
+    // container that is being torn down.
+    _items.clear();
+    for (final item in children) {
       if (item is Flut5UIElement) item.dispose();
     }
   }

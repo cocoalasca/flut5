@@ -35,6 +35,20 @@ to `/example` folder.
 const like = 'sample';
 ```
 
+Text caches expire entries after **600 unused Flutter frames** by default. A
+cache hit refreshes the entry's lifetime. Set the timeout from any sketch:
+
+```dart
+textCacheTimeout(1200); // Keep entries for up to 1200 unused frames.
+final timeout = textCacheTimeout(); // Read the shared setting.
+```
+
+The timeout applies to text textures, layouts, and measurements across all
+sketches. Values must be positive integers. Cleanup runs after painting and
+releases expired textures; existing cache size and byte limits still apply.
+Frames are counted once per Flutter frame, regardless of canvas count. At
+60 FPS, 600 frames is about 10 seconds; expiration pauses while no frames run.
+
 ## Additional information
 
 TODO: Tell users more about the package: where to find more information, how to

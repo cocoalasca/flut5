@@ -58,7 +58,9 @@ mixin Flut5EventMixin {
 
   /// Subscribes to pointer, keyboard, resize, scroll and props state-change
   /// events broadcasted by the [Flut5Engine].
+  /// Replaces any existing subscriptions, including those to another engine.
   void listenEvents(Flut5Engine engine) {
+    disposeEvents();
     _pointerDownSub = engine.events.pointerDownStream.listen(onPointerDown);
     _pointerUpSub = engine.events.pointerUpStream.listen(onPointerUp);
     _pointerMoveSub = engine.events.pointerMoveStream.listen(onPointerMove);
@@ -177,6 +179,16 @@ mixin Flut5EventMixin {
     _resizeSub?.cancel();
     _scrollSub?.cancel();
     _stateChangeSub?.cancel();
+    _pointerDownSub = null;
+    _pointerUpSub = null;
+    _pointerMoveSub = null;
+    _pointerDraggedSub = null;
+    _keyPressedSub = null;
+    _keyReleasedSub = null;
+    _keyTypedSub = null;
+    _resizeSub = null;
+    _scrollSub = null;
+    _stateChangeSub = null;
   }
 }
 

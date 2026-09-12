@@ -1,8 +1,11 @@
-import 'dart:collection';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/painting.dart';
+import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/scheduler.dart';
+
+import 'flut5_expiring_cache.dart';
 
 import '../core/flut5_console.dart';
 
@@ -241,6 +244,56 @@ class _TextCacheKey(
 class Flut5TextCache._() {
   static final Flut5TextCache instance = Flut5TextCache._();
 
+  int _frame = 0;
+  int _timeoutFrames = 600;
+  bool _trackingFrames = false;
+
+  /// Sliding lifetime in completed, unused Flutter frames. Shared by sketches.
+  int get timeoutFrames => _timeoutFrames;
+  set timeoutFrames(int frames) {
+    if (frames < 1) throw RangeError.range(frames, 1, null, 'frames');
+    _timeoutFrames = frames;
+  }
+
+  /// Hooks the shared cache into the existing frame loop exactly once.
+  /// Does not request frames or keep the app animating when it is idle.
+  void trackFrames() {
+    if (_trackingFrames) return;
+    _trackingFrames = true;
+    SchedulerBinding.instance.addPersistentFrameCallback((_) {
+      SchedulerBinding.instance.addPostFrameCallback((_) => finishFrame());
+    });
+  }
+
+  /// Internal end-of-frame maintenance, also usable by offscreen renderers.
+  /// Expire after all canvases have used their textures, then start a new age.
+  void finishFrame() {
+    _cache.expire(_timeoutFrames);
+    _layoutCache.expire(_timeoutFrames);
+    _kernCache.expire(_timeoutFrames);
+    _widthCache.expire(_timeoutFrames);
+    _lineHeightCache.expire(_timeoutFrames);
+    _ascentDescentCache.expire(_timeoutFrames);
+    _charStrings.expire(_timeoutFrames);
+    // The mutable lookup key is scratch space, not a cache entry. Do not let
+    // it retain the last measured string after all actual entries expire.
+    _lookupKey.text = '';
+    _lookupKey.fontFamily = '';
+    _frame++;
+  }
+
+  /// Counts all entry categories without refreshing their lifetime.
+  @visibleForTesting
+  Map<String, int> get debugEntryCounts => {
+    'textures': _cache.length,
+    'layouts': _layoutCache.length,
+    'kerning': _kernCache.length,
+    'widths': _widthCache.length,
+    'lineHeights': _lineHeightCache.length,
+    'ascentDescent': _ascentDescentCache.length,
+    'characters': _charStrings.length,
+  };
+
   int _maxCacheSize = 1024;
 
   /// Current max cached textures before LRU eviction.
@@ -331,7 +384,13 @@ class Flut5TextCache._() {
   bool _textureGrowthStopWarned = false;
   bool _layoutGrowthStopWarned = false;
 
-  final HashMap<_TextCacheKey, Flut5CachedText> _cache = HashMap();
+  late final _cache = Flut5ExpiringCache<_TextCacheKey, Flut5CachedText>(
+    () => _frame,
+    onExpire: (entry) {
+      _cacheBytes -= entry.bytes;
+      entry.dispose();
+    },
+  );
 
   /// Monotonic access counter used to stamp entries for LRU eviction.
   int _accessTick = 0;
@@ -346,43 +405,55 @@ class Flut5TextCache._() {
   /// pair. Record-keyed so a hash collision can never silently return the
   /// wrong pair's kerning. No textLeading or letterSpacing — those are
   /// composition-time values.
-  final HashMap<(String, String, String, double, FontWeight, FontStyle), double>
-  _kernCache = HashMap();
+  late final Flut5ExpiringCache<
+    (String, String, String, double, FontWeight, FontStyle),
+    double
+  >
+  _kernCache = Flut5ExpiringCache(() => _frame);
 
   /// Lightweight width-only cache — stores a plain `double` per string/style.
   /// Used by [measureWidth] to avoid rasterizing a GPU texture just to read a
   /// width. Record-keyed for collision-proof lookups.
-  final HashMap<(String, String, double, FontWeight, FontStyle), double>
-  _widthCache = HashMap();
+  late final Flut5ExpiringCache<
+    (String, String, double, FontWeight, FontStyle),
+    double
+  >
+  _widthCache = Flut5ExpiringCache(() => _frame);
 
   /// Lightweight line-height cache — one `double` per font style tuple.
   /// Used by [measureLineHeight] so the dynamic text pipeline never
   /// rasterizes a reference-glyph texture just to read a line height.
-  final HashMap<(String, double, FontWeight, FontStyle), double>
-  _lineHeightCache = HashMap();
+  late final Flut5ExpiringCache<(String, double, FontWeight, FontStyle), double>
+  _lineHeightCache = Flut5ExpiringCache(() => _frame);
 
   /// Lightweight ascent/descent cache — one record per font style tuple.
   /// Used by [measureAscentDescent] so [Flut5Text.textAscent] and
   /// [Flut5Text.textDescent] never rasterize a texture just to read metrics.
-  final HashMap<(String, double, FontWeight, FontStyle), (double, double)>
-  _ascentDescentCache = HashMap();
+  late final Flut5ExpiringCache<
+    (String, double, FontWeight, FontStyle),
+    (double, double)
+  >
+  _ascentDescentCache = Flut5ExpiringCache(() => _frame);
 
   /// Cached word-wrap layouts for the dynamic text pipeline. A hit makes
   /// per-frame layout a single hash read instead of re-tokenizing and
   /// re-measuring every glyph.
-  final HashMap<_LayoutKey, Flut5TextLayout> _layoutCache = HashMap();
+  late final Flut5ExpiringCache<_LayoutKey, Flut5TextLayout> _layoutCache =
+      Flut5ExpiringCache(() => _frame);
 
   /// Memoized single-character strings keyed by code point, so layout never
   /// allocates the same one-char string twice.
-  static final HashMap<int, String> _charStrings = HashMap();
+  late final Flut5ExpiringCache<int, String> _charStrings = Flut5ExpiringCache(
+    () => _frame,
+  );
 
-  static String _charString(int codePoint) =>
+  String _charString(int codePoint) =>
       _charStrings[codePoint] ??= String.fromCharCode(codePoint);
 
   /// Whitespace test on code points — fast path for ASCII, falls back to
   /// `trim()` for the Unicode space characters (matches `String.trim`'s
   /// White_Space semantics used by the previous per-char implementation).
-  static bool _isWhitespaceCodePoint(int codePoint) {
+  bool _isWhitespaceCodePoint(int codePoint) {
     if (codePoint == 0x20 || (codePoint >= 0x09 && codePoint <= 0x0D)) {
       return true;
     }
@@ -1027,7 +1098,7 @@ class Flut5TextCache._() {
   /// Returns the kerning offset between [a] and [b] for the given font config.
   ///
   /// Measures the pair width via [TextPainter] and subtracts individual character
-  /// widths to derive the font's kerning adjustment. Cached permanently (just doubles).
+  /// widths to derive the font's kerning adjustment. Expires after the configured idle-frame timeout.
   /// A negative value means the characters should sit closer together.
   double getKernOffset({
     required String a,
@@ -1106,6 +1177,9 @@ class Flut5TextCache._() {
     _lineHeightCache.clear();
     _ascentDescentCache.clear();
     _layoutCache.clear();
+    _charStrings.clear();
+    _lookupKey.text = '';
+    _lookupKey.fontFamily = '';
     _textureLimitWarned = false;
     _layoutLimitWarned = false;
     _textureGrowthStopWarned = false;

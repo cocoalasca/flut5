@@ -100,8 +100,8 @@ void _checkArgKeys(
     _warnArg(
       '$method:$key:unknown',
       '$method() ignored the arg "$key" — it accepts '
-      '${(allowed.toList()..sort()).join(', ')}. Check the spelling, or use '
-      'the Flut5TextArg constants so the compiler catches it.',
+          '${(allowed.toList()..sort()).join(', ')}. Check the spelling, or use '
+          'the Flut5TextArg constants so the compiler catches it.',
     );
   }
 }
@@ -116,7 +116,7 @@ double? _argDouble(Map<String, dynamic>? args, String key, String method) {
   _warnArg(
     '$method:$key:type',
     '$method() ignored the arg "$key": expected a number, got '
-    '${value.runtimeType}.',
+        '${value.runtimeType}.',
   );
   return null;
 }
@@ -130,7 +130,7 @@ Flut5Font? _argFont(Map<String, dynamic>? args, String method) {
   _warnArg(
     '$method:font:type',
     '$method() ignored the arg "font": expected a Flut5Font, got '
-    '${value.runtimeType}. Load one with await loadFont("path/to/font.ttf").',
+        '${value.runtimeType}. Load one with await loadFont("path/to/font.ttf").',
   );
   return null;
 }
@@ -342,6 +342,23 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
   /// ideal for text that rarely changes.
   void textCacheMode(TextCacheMode mode) {
     _textCacheMode = mode;
+  }
+
+  /// Gets or sets the shared text-cache lifetime in unused Flutter frames.
+  ///
+  /// Defaults to 600. Every cache hit refreshes that entry's lifetime; textures,
+  /// layouts, and measurements expire after this many unused frames. Cleanup
+  /// runs after all canvases paint, even when no text is drawn. Frames are
+  /// counted once across the app, not once per canvas or text call. Expiration
+  /// pauses when Flutter stops producing frames. Existing capacity limits may
+  /// evict entries sooner.
+  ///
+  /// Call `textCacheTimeout(300)` to change the timeout for every sketch, or
+  /// `textCacheTimeout()` to read it. Changes apply at the next frame cleanup.
+  /// Throws [RangeError] for values below 1.
+  int textCacheTimeout([int? frames]) {
+    if (frames != null) _textCache.timeoutFrames = frames;
+    return _textCache.timeoutFrames;
   }
 
   /// Gets or sets the sampling quality used when blitting cached glyph
@@ -595,9 +612,13 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
     if (!hasFill && !hasStroke) return;
 
     final Gradient? autoFillGrad =
-        (fillGradient != null && fillGradientRect == null) ? fillGradient : null;
+        (fillGradient != null && fillGradientRect == null)
+        ? fillGradient
+        : null;
     final Gradient? autoStrokeGrad =
-        (strokeGradient != null && strokeGradientRect == null) ? strokeGradient : null;
+        (strokeGradient != null && strokeGradientRect == null)
+        ? strokeGradient
+        : null;
 
     // Identity-stable snapshots — no per-call Paint clone. When bounds will
     // be resolved at render time (auto gradient), the shaderless variant
@@ -605,13 +626,13 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
     final Paint? queuedFill = !hasFill
         ? null
         : autoFillGrad != null
-            ? snapshotFillPaintNoShader()
-            : snapshotFillPaint();
+        ? snapshotFillPaintNoShader()
+        : snapshotFillPaint();
     final Paint? queuedStroke = !hasStroke
         ? null
         : autoStrokeGrad != null
-            ? snapshotStrokePaintNoShader()
-            : snapshotStrokePaint();
+        ? snapshotStrokePaintNoShader()
+        : snapshotStrokePaint();
 
     renderQueue.enqueue(
       TextDynamicRenderItem(
@@ -661,9 +682,13 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
     if (!hasFill && !hasStroke) return;
 
     final Gradient? autoFillGrad =
-        (fillGradient != null && fillGradientRect == null) ? fillGradient : null;
+        (fillGradient != null && fillGradientRect == null)
+        ? fillGradient
+        : null;
     final Gradient? autoStrokeGrad =
-        (strokeGradient != null && strokeGradientRect == null) ? strokeGradient : null;
+        (strokeGradient != null && strokeGradientRect == null)
+        ? strokeGradient
+        : null;
 
     Paint? queuedFill;
     if (hasFill) {
@@ -906,8 +931,7 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
       x,
       y,
       _argDouble(args, Flut5TextArg.fontSize, method) ?? _fontSize,
-      sampleFactor:
-          _argDouble(args, Flut5TextArg.sampleFactor, method) ?? 0.5,
+      sampleFactor: _argDouble(args, Flut5TextArg.sampleFactor, method) ?? 0.5,
       simplifyThreshold:
           _argDouble(args, Flut5TextArg.simplifyThreshold, method) ?? 0,
       letterSpacing:
@@ -958,8 +982,7 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
       x,
       y,
       _argDouble(args, Flut5TextArg.fontSize, method) ?? _fontSize,
-      sampleFactor:
-          _argDouble(args, Flut5TextArg.sampleFactor, method) ?? 0.5,
+      sampleFactor: _argDouble(args, Flut5TextArg.sampleFactor, method) ?? 0.5,
       simplifyThreshold:
           _argDouble(args, Flut5TextArg.simplifyThreshold, method) ?? 0,
       letterSpacing:

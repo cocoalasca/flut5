@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+
 import 'flut5_ui_element.dart';
 import 'flut5_button.dart';
 import 'flut5_label.dart';
@@ -93,16 +94,18 @@ final class Flut5UI extends ChangeNotifier {
   }
 
   void clear() {
-    for (final element in _elements) {
+    final elements = List<Flut5UIElement>.of(_elements);
+    _elements.clear();
+    for (final element in elements) {
       element.dispose();
     }
-    _elements.clear();
     if (!_disposed) notifyListeners();
   }
 
   @override
   void dispose() {
     _disposed = true;
+    clear();
     super.dispose();
   }
 }

@@ -677,6 +677,9 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
   void textLeading(double leading) => flut5.textLeading(leading);
   void letterSpacing(double? spacing) => flut5.letterSpacing(spacing);
   void textCacheMode(TextCacheMode mode) => flut5.textCacheMode(mode);
+
+  /// Gets or sets the shared text-cache timeout in frames (default 600).
+  int textCacheTimeout([int? frames]) => flut5.textCacheTimeout(frames);
   FilterQuality textFilterQuality([FilterQuality? quality]) =>
       flut5.textFilterQuality(quality);
   int get textCacheMaxSize => flut5.textCacheMaxSize;
