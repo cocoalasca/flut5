@@ -36,7 +36,7 @@ void main() {
       expect(e.renderQueue.itemCount, 1);
     });
 
-    test('a rotation materializes real transform items', () {
+    test('a rotation folds into the shape geometry', () {
       final e = engine();
       e.push();
       e.translate(10, 10);
@@ -44,10 +44,8 @@ void main() {
       e.rect(0, 0, 5, 5);
       e.pop();
       e.renderQueue.flushPending();
-      // save + translate + rotate + shape + restore
-      final types = e.renderQueue.items.map((i) => i.runtimeType).toList();
-      expect(types, contains(TransformRenderItem));
-      expect(types, contains(PathRenderItem));
+      expect(e.renderQueue.items, hasLength(1));
+      expect(e.renderQueue.items.single, isA<PathRenderItem>());
     });
 
     test('contentBoundsFrom sees folded geometry at baked coordinates', () {

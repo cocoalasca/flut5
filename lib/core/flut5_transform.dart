@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+
 import '../math/flut5_trigonometry.dart';
 import 'render/flut5_render_queue.dart';
 
@@ -31,9 +32,9 @@ mixin Flut5Transform on Flut5Trigonometry {
 
   /// Saves the current drawing style settings and transformations.
   ///
-  /// Pure-translation scopes are folded by the render queue: no canvas
-  /// `save()` is emitted unless a rotation/scale/skew (or a clip) makes one
-  /// necessary, so batched shapes keep coalescing across push/pop pairs.
+  /// Translation, rotation and uniform-scale scopes fold into compatible
+  /// geometry, allowing automatic batches to coalesce across push/pop pairs.
+  /// Canvas saves are emitted when an operation needs a real transform.
   void push() => renderQueue.pushTransform();
 
   /// Restores the drawing state to what it was before the last [push] call.
@@ -67,6 +68,7 @@ mixin Flut5Transform on Flut5Trigonometry {
   /// Rotates the coordinate system.
   ///
   /// The [angle] respects the current [AngleMode] set by the engine.
+  /// Automatic geometry batches bake the rotation into compatible shapes.
   void rotate(double angle) {
     renderQueue.applyTransform(TransformRenderItem.rotate(toRadians(angle)));
   }
@@ -95,8 +97,12 @@ mixin Flut5Transform on Flut5Trigonometry {
 
   /// Scales the coordinate system.
   ///
-  /// If [y] is omitted, both axes are scaled uniformly by [x].
-  void scale(double x, [double? y]) => renderQueue.applyTransform(TransformRenderItem.scale(x, y ?? x));
+  /// If [y] is omitted, both axes are scaled uniformly by [x]. Nonzero
+  /// uniform scales fold into compatible automatic geometry batches. Stroke
+  /// widths scale too, so different resulting widths split batches.
+  /// Nonuniform scales retain canvas transforms and break automatic batches.
+  void scale(double x, [double? y]) =>
+      renderQueue.applyTransform(TransformRenderItem.scale(x, y ?? x));
 
   // ---------------------------------------------------------------------------
   // Shear

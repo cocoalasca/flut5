@@ -111,6 +111,20 @@ void main() {
     expect(cache.cacheLength, lessThanOrEqualTo(4));
   });
 
+  test(
+    'LRU keeps same-frame texture hits and evicts the exact oldest entry',
+    () {
+      cache.autoGrow = false;
+      final a = _put('a'), b = _put('b'), c = _put('c'), d = _put('d');
+      expect(_put('a'), same(a));
+      _put('e');
+      expect(b.image.debugDisposed, isTrue);
+      expect(a.image.debugDisposed, isFalse);
+      expect(c.image.debugDisposed, isFalse);
+      expect(d.image.debugDisposed, isFalse);
+    },
+  );
+
   test('byte budget bounds residency and blocks growth', () {
     final probe = _put('m');
     final entryBytes = probe.bytes;

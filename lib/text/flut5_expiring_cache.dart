@@ -70,6 +70,49 @@ class Flut5ExpiringCache<K, V>(
     _oldestFirst.clear();
   }
 
+  /// Removes the lowest-priority values while [shouldEvict] is true.
+  /// Heap construction is linear and each victim costs O(log n); ordinary
+  /// cache hits need no additional bookkeeping. The snapshot holds entries,
+  /// not allocated MapEntry wrappers, and never refreshes expiration ages.
+  /// Callbacks must not insert entries or access values through this cache.
+  void evictWhile(
+    bool Function() shouldEvict,
+    int Function(V, V) compare,
+    void Function(V) onEvict,
+  ) {
+    if (!shouldEvict() || _entries.isEmpty) return;
+    final heap = _entries.values.toList(growable: false);
+    var size = heap.length;
+    void siftDown(int root) {
+      final entry = heap[root];
+      while (root * 2 + 1 < size) {
+        var child = root * 2 + 1;
+        if (child + 1 < size &&
+            compare(heap[child + 1].value, heap[child].value) < 0) {
+          child++;
+        }
+        if (compare(entry.value, heap[child].value) <= 0) break;
+        heap[root] = heap[child];
+        root = child;
+      }
+      heap[root] = entry;
+    }
+
+    for (var i = (size >> 1) - 1; i >= 0; i--) {
+      siftDown(i);
+    }
+    while (size > 0 && shouldEvict()) {
+      final entry = heap[0];
+      size--;
+      if (size > 0) {
+        heap[0] = heap[size];
+        siftDown(0);
+      }
+      remove(entry.key);
+      onEvict(entry.value);
+    }
+  }
+
   /// Removes entries unused for [timeoutFrames], disposing owned resources.
   void expire(int timeoutFrames) {
     final cutoff = currentFrame() - timeoutFrames;

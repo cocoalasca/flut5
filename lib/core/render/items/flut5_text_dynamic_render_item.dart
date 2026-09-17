@@ -107,42 +107,6 @@ class TextDynamicRenderItem({
     return Rect.fromLTWH(left, 0, right - left, lineHeight);
   }
 
-  Rect _lineVisualBounds(
-    Flut5TextCache cache,
-    Flut5TextLine line,
-    double lineStartX,
-    double lineHeight, {
-    required bool includeFill,
-    required bool includeStroke,
-  }) {
-    Rect? bounds;
-
-    if (includeFill) {
-      bounds = _lineInkBounds(
-        cache,
-        line,
-        lineHeight,
-        0,
-        0.0,
-      ).shift(Offset(lineStartX, 0));
-    }
-
-    if (includeStroke && strokePaint != null) {
-      final strokeBounds = _lineInkBounds(
-        cache,
-        line,
-        lineHeight,
-        1,
-        strokePaint!.strokeWidth,
-      ).shift(Offset(lineStartX, 0));
-      bounds = bounds == null
-          ? strokeBounds
-          : bounds.expandToInclude(strokeBounds);
-    }
-
-    return bounds ?? Rect.fromLTWH(lineStartX, 0, _lineWidth(line), lineHeight);
-  }
-
   double _alignedX(double originalX, double lineWidth) {
     if (textAlign == TextAlign.center) return originalX - lineWidth / 2;
     if (textAlign == TextAlign.right || textAlign == TextAlign.end) {
@@ -250,19 +214,43 @@ class TextDynamicRenderItem({
     // (0,0) local space sits on the canvas for the translate below.
     Rect? gradientBounds;
     double gradientOriginX = 0;
+    // Keep only measurements, never texture references: drawing may evict
+    // glyph images under a small cache budget. These lists live for one draw
+    // and are allocated only when auto-bounds gradients need a first pass.
+    final fillInkBounds = fillGradient == null
+        ? null
+        : List<Rect?>.filled(lines.length, null);
+    final strokeInkBounds = strokeGradient == null
+        ? null
+        : List<Rect?>.filled(lines.length, null);
     if (fillGradient != null || strokeGradient != null) {
       Rect? visualBounds;
-      for (final line in lines) {
+      for (var lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+        final line = lines[lineIndex];
         if (!line.hasChars) continue;
         final lineStartX = _alignedX(x, _lineWidth(line));
-        final lineBounds = _lineVisualBounds(
-          cache,
-          line,
-          lineStartX,
-          lineHeight,
-          includeFill: fillGradient != null,
-          includeStroke: strokeGradient != null,
-        );
+        Rect? localBounds;
+        if (fillInkBounds != null) {
+          final ink = _lineInkBounds(cache, line, lineHeight, 0, 0);
+          fillInkBounds[lineIndex] = ink;
+          localBounds = ink;
+        }
+        if (strokeInkBounds != null && strokePaint != null) {
+          final ink = _lineInkBounds(
+            cache,
+            line,
+            lineHeight,
+            1,
+            strokePaint!.strokeWidth,
+          );
+          strokeInkBounds[lineIndex] = ink;
+          localBounds = localBounds == null
+              ? ink
+              : localBounds.expandToInclude(ink);
+        }
+        final lineBounds =
+            (localBounds ?? Rect.fromLTWH(0, 0, _lineWidth(line), lineHeight))
+                .shift(Offset(lineStartX, 0));
         visualBounds = visualBounds == null
             ? lineBounds
             : visualBounds.expandToInclude(lineBounds);
@@ -325,7 +313,8 @@ class TextDynamicRenderItem({
       cursorY = y;
     }
 
-    for (final line in lines) {
+    for (var lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+      final line = lines[lineIndex];
       if (maxHeight != null && (cursorY - y + lineHeight) > maxHeight!) break;
       if (line.glyphs.isEmpty) {
         // Empty or whitespace-only line — nothing to blit, just advance.
@@ -338,13 +327,15 @@ class TextDynamicRenderItem({
       // ── Stroke pass (bottom) ──
       if (strokePaint != null) {
         if (strokePaint!.shader != null || strokeGradient != null) {
-          final localInkBounds = _lineInkBounds(
-            cache,
-            line,
-            lineHeight,
-            1,
-            strokePaint!.strokeWidth,
-          );
+          final localInkBounds =
+              strokeInkBounds?[lineIndex] ??
+              _lineInkBounds(
+                cache,
+                line,
+                lineHeight,
+                1,
+                strokePaint!.strokeWidth,
+              );
           final lineBounds = localInkBounds.shift(Offset(lineStartX, cursorY));
           _layerPaint
             ..colorFilter = null
@@ -421,13 +412,9 @@ class TextDynamicRenderItem({
       // ── Fill pass (top) ──
       if (fillPaint != null) {
         if (fillPaint!.shader != null || fillGradient != null) {
-          final localInkBounds = _lineInkBounds(
-            cache,
-            line,
-            lineHeight,
-            0,
-            0.0,
-          );
+          final localInkBounds =
+              fillInkBounds?[lineIndex] ??
+              _lineInkBounds(cache, line, lineHeight, 0, 0.0);
           final lineBounds = localInkBounds.shift(Offset(lineStartX, cursorY));
           _layerPaint
             ..colorFilter = null

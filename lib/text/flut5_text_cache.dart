@@ -656,31 +656,24 @@ class Flut5TextCache._() {
 
   /// Evicts least-recently-used textures in one batch until both budgets fit.
   ///
-  /// Trims to 7/8 of each limit rather than to exactly the limit, so the O(n)
-  /// sort amortizes across the ~n/8 inserts before the next eviction instead
-  /// of running per insert.
+  /// Trims to 7/8 of each limit using a heap to select only the victims,
+  /// avoiding a full sort while keeping the ordinary cache-hit path unchanged.
   void _evictStaleTextures() {
     final targetCount = _maxCacheSize - (_maxCacheSize >> 3);
     final targetBytes = maxCacheBytes - (maxCacheBytes >> 3);
 
-    // Ticks are unique per entry (each stamp increments the counter), so a
-    // plain ascending sort is a total order from coldest to hottest.
-    final entries = _cache.entries.toList()
-      ..sort((a, b) => a.value._lastUsedTick.compareTo(b.value._lastUsedTick));
-
-    // Stop short of the last element — the entry just inserted carries the
-    // highest tick, so it sorts last. [getOrCreate] returns it, and a
-    // disposed image would crash at draw time. This matters on the byte
-    // path, where one oversized texture can otherwise consume the whole
-    // budget and walk the loop to the end. Worst case the cache sits a
-    // single entry over budget until the next insert.
-    for (var i = 0; i < entries.length - 1; i++) {
-      if (_cache.length <= targetCount && _cacheBytes <= targetBytes) break;
-      final removed = _cache.remove(entries[i].key);
-      if (removed == null) continue;
-      _cacheBytes -= removed.bytes;
-      removed.dispose();
-    }
+    // Ticks are unique, so priority selection preserves the exact old LRU
+    // order. Keep the newest texture even if it alone exceeds the budget.
+    _cache.evictWhile(
+      () =>
+          _cache.length > 1 &&
+          (_cache.length > targetCount || _cacheBytes > targetBytes),
+      (a, b) => a._lastUsedTick.compareTo(b._lastUsedTick),
+      (removed) {
+        _cacheBytes -= removed.bytes;
+        removed.dispose();
+      },
+    );
   }
 
   void _warnTextureGrowth(int previous) {
@@ -941,15 +934,13 @@ class Flut5TextCache._() {
       );
     }
 
-    // Batch-evict to 7/8 of the cap so the O(n) sort amortizes — see
-    // [_evictStaleTextures].
+    // Keep the batch-eviction target and exact per-access LRU order.
     final targetCount = _maxLayoutCacheSize - (_maxLayoutCacheSize >> 3);
-    final entries = _layoutCache.entries.toList()
-      ..sort((a, b) => a.value._lastUsedTick.compareTo(b.value._lastUsedTick));
-    for (final entry in entries) {
-      if (_layoutCache.length <= targetCount) break;
-      _layoutCache.remove(entry.key);
-    }
+    _layoutCache.evictWhile(
+      () => _layoutCache.length > targetCount,
+      (a, b) => a._lastUsedTick.compareTo(b._lastUsedTick),
+      (_) {},
+    );
   }
 
   /// Word-wrap layout over code points. Runs only on layout-cache misses.

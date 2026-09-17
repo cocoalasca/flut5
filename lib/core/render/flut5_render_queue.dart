@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+
 import '../flut5_console.dart';
 import '../../text/flut5_font.dart';
 import '../flut5_shadow.dart';
@@ -58,11 +59,10 @@ export 'items/flut5_transform_render_item.dart';
 /// text, background, a shape with a different paint, or a primitive of
 /// a different kind) flushes the pending batches first.
 ///
-/// Pure translations (`push`/`pop`/`translate` with no rotation, scale, or
-/// skew in between) are *folded* into geometry coordinates at append time
-/// instead of being emitted as [TransformRenderItem]s — see the fold-state
-/// section below. This keeps the canonical `push(); translate(); shape();
-/// pop();` pattern fully batchable across iterations.
+/// Translation, rotation and uniform scale are folded into compatible geometry
+/// at append time, including across push/pop scopes. Uniform scale adjusts
+/// stroke widths; differing widths split batches. Nonuniform scale, matrices,
+/// and operations that require canvas-local paint effects still emit transforms.
 class Flut5RenderQueue {
   final List<Flut5RenderItem> _items = [];
 
@@ -99,6 +99,7 @@ class Flut5RenderQueue {
   Float32List _atlasTransforms = Float32List(0);
   Float32List _atlasRects = Float32List(0);
   int _atlasCount = 0;
+  bool _atlasHasRotation = false;
 
   /// Running union of the destination rects in the open run, so the flushed
   /// item carries bounds without re-reading the float32 buffers.
@@ -109,6 +110,7 @@ class Flut5RenderQueue {
   /// cheaper and bit-exact — see [_flushImages].
   Rect? _atlasFirstSrc;
   Rect? _atlasFirstDst;
+  _FoldTransform? _atlasFirstFold;
 
   /// Relative tolerance for calling a blit's x and y scales equal.
   ///
@@ -146,29 +148,73 @@ class Flut5RenderQueue {
     _polyYs = Float64List(len);
   }
 
-  // ── Translate folding ─────────────────────────────────────────────────
-  //
-  // While the transform state is a pure translation, `translate()` adds to
-  // (_foldDx, _foldDy) and geometry is offset at append time — no transform
-  // items are queued and batches keep accumulating across push/pop pairs.
-  // Each folded push() saves the pending offset on [_foldStack]; a folded
-  // pop() restores it. The moment something needs the *canvas* transform to
-  // match (a rotate/scale/matrix, an opaque enqueued item like text or a
-  // clip, or clip-mask recording), [_materializeTransforms] converts the
-  // folded state into real save/translate items — folded stack entries
-  // become `real` and their pops emit real restores. Baking a translation
-  // into local coordinates is valid under any already-emitted canvas
-  // transform (canvas.translate(o) then draw(p) ≡ draw(p + o)), so folding
-  // resumes immediately after materialization.
-  double _foldDx = 0.0;
-  double _foldDy = 0.0;
+  // ── Geometry transform folding ────────────────────────────────────────
+  // Similarities (translation, rotation, uniform scale) are baked into safe
+  // geometry. Opaque operations and unsupported paints materialize the state
+  // on the canvas. Saved states then become real canvas saves; folding can
+  // resume relative to that canvas transform.
+  _FoldTransform _fold = const _FoldTransform();
+  final List<(_FoldTransform, bool)> _foldStack = [];
+  final Map<Paint, Map<double, Paint>> _scaledStrokes = Map.identity();
+  // addPath consumes these synchronously. Only the destination path is queued.
+  final Path _transformPath = Path();
+  final Float64List _transformMatrix = Float64List.fromList([
+    1,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    0,
+    1,
+    0,
+    0,
+    0,
+    0,
+    1,
+  ]);
 
-  /// Saved (dx, dy, isReal) per push. `isReal` entries were materialized as
-  /// canvas `save()`s and pop as real restores; their saved offset is always
-  /// (0, 0) because materialization moves pending offsets onto the canvas.
-  final List<(double, double, bool)> _foldStack = [];
-
+  double get _foldDx => _fold.dx;
+  double get _foldDy => _fold.dy;
   bool get _hasFoldOffset => _foldDx != 0.0 || _foldDy != 0.0;
+
+  // Shadows, dashes and shaders depend on the original local coordinate
+  // system. Keep their existing canvas rendering rather than transforming
+  // only the outline and silently changing their appearance.
+  void _prepareGeometry(Paint? fill, Paint? stroke, {bool points = false}) {
+    if (!_fold.hasLinear) return;
+    if (_activeShadow != null ||
+        (_hasDash && stroke != null && !points) ||
+        !canBatchPaint(fill) ||
+        !canBatchPaint(stroke) ||
+        (points && stroke?.strokeCap != StrokeCap.round)) {
+      _materializeTransforms();
+    }
+  }
+
+  Paint? _foldStroke(Paint? stroke) {
+    if (stroke == null || _fold.scale == 1 || stroke.strokeWidth == 0) {
+      return stroke;
+    }
+    final variants = _scaledStrokes.putIfAbsent(stroke, () => {});
+    return variants.putIfAbsent(
+      _fold.scale,
+      () => Paint.from(stroke)..strokeWidth = stroke.strokeWidth * _fold.scale,
+    );
+  }
+
+  void _appendTransformedPath(Path path, Paint? fill, Paint? stroke) {
+    if (fill == null && stroke == null) return;
+    _fold.writeMatrix(_transformMatrix);
+    _beginShape(
+      fill,
+      _foldStroke(stroke),
+    ).addPath(path, Offset.zero, matrix4: _transformMatrix);
+    _pendingShapeHasContent = true;
+  }
 
   // ── Background bookkeeping (kept O(1) instead of scanning _items) ─────
   BackgroundRenderItem? _lastBackground;
@@ -176,12 +222,12 @@ class Flut5RenderQueue {
 
   // ── Transform entry points (called by the transform mixin) ────────────
 
-  /// Records a `push()`. Folded: saves the pending offset, emits nothing.
+  /// Records a `push()`. Saves the pending transform without emitting an item.
   void pushTransform() {
-    _foldStack.add((_foldDx, _foldDy, false));
+    _foldStack.add((_fold, false));
   }
 
-  /// Records a `pop()`. Folded entries restore the pending offset silently;
+  /// Records a `pop()`. Folded entries restore the pending transform silently;
   /// materialized (`real`) entries emit a canvas restore.
   void popTransform() {
     if (_foldStack.isEmpty) {
@@ -197,31 +243,28 @@ class Flut5RenderQueue {
       _addItem(TransformRenderItem.pop());
       return;
     }
-    if (_foldStack.last.$3 && _clipRecordingPath != null) {
+    if (_foldStack.last.$2 && _clipRecordingPath != null) {
       Flut5Console.printLater(
         'clip(): pop() of a scope opened outside the clip callback was '
         'ignored inside the callback.',
       );
       return;
     }
-    final (dx, dy, real) = _foldStack.removeLast();
+    final (saved, real) = _foldStack.removeLast();
     if (real) {
       _addItem(TransformRenderItem.pop());
     }
-    _foldDx = dx;
-    _foldDy = dy;
+    _fold = saved;
   }
 
   /// Records a `translate()`. Never emits an item — the offset is baked into
   /// geometry at append time, so batches keep accumulating across it.
   void translateTransform(double dx, double dy) {
-    _foldDx += dx;
-    _foldDy += dy;
+    _fold = _fold.translated(dx, dy);
   }
 
-  /// Records a non-translate transform (rotate/scale/skew/matrix). The folded
-  /// state is materialized first so the canvas transform matches, then [item]
-  /// is queued like any other.
+  /// Folds rotations and nonzero uniform scales into subsequent geometry.
+  /// Other transforms materialize the folded state and close pending batches.
   void applyTransform(TransformRenderItem item) {
     if (_clipRecordingPath != null) {
       Flut5Console.printLater(
@@ -230,52 +273,53 @@ class Flut5RenderQueue {
       );
       return;
     }
+    if (item.type == TransformType.rotate && item.rotation!.isFinite) {
+      _fold = _fold.rotated(item.rotation!);
+      return;
+    }
+    if (item.type == TransformType.scale &&
+        item.scaleX == item.scaleY &&
+        item.scaleX!.isFinite &&
+        item.scaleX != 0) {
+      final next = _fold.scaled(item.scaleX!);
+      // Keep the folded state invertible for materializing nested saves.
+      final determinant = next.a * next.a + next.b * next.b;
+      if (determinant.isFinite && determinant > 0) {
+        _fold = next;
+        return;
+      }
+    }
     _materializeTransforms();
     _addItem(item);
   }
 
-  /// Converts the folded translation state into real canvas ops.
-  ///
-  /// Needed whenever the *canvas* transform must reflect the folded offsets:
-  /// before opaque enqueued items (text, clips, custom paths — their
-  /// coordinates are not baked by this queue), before non-translate
-  /// transforms, and before clip-mask recording. Emits, bottom-up per folded
-  /// stack level, `translate(delta)` + `save()`, then the remaining pending
-  /// delta; marks those levels `real` so their pops emit real restores.
+  /// Moves pending transforms onto the canvas, preserving every saved scope.
+  /// Each saved transform is relative to the last materialized canvas state.
+  /// Emit the delta between saved states before their corresponding save.
   void _materializeTransforms() {
-    var anyFolded = _foldDx != 0.0 || _foldDy != 0.0;
-    if (!anyFolded) {
-      for (int i = _foldStack.length - 1; i >= 0; i--) {
-        if (!_foldStack[i].$3) {
-          anyFolded = true;
-          break;
-        }
-      }
-      if (!anyFolded) return;
-    }
-    _flushShapes();
-    _flushPoints();
-    _flushLines();
-    _flushImages();
-    double prevDx = 0.0, prevDy = 0.0;
+    if (_fold.isIdentity && !_foldStack.any((entry) => !entry.$2)) return;
+    flushPending();
+    var previous = const _FoldTransform();
     for (int i = 0; i < _foldStack.length; i++) {
-      final (dx, dy, real) = _foldStack[i];
-      if (real) continue; // Already on the canvas; its saved offset is 0.
-      if (dx != prevDx || dy != prevDy) {
-        _items.add(TransformRenderItem.translate(dx - prevDx, dy - prevDy));
-      }
+      final (saved, real) = _foldStack[i];
+      if (real) continue;
+      _emitFoldDelta(previous, saved);
       _items.add(TransformRenderItem.push());
-      prevDx = dx;
-      prevDy = dy;
-      _foldStack[i] = (0.0, 0.0, true);
+      previous = saved;
+      _foldStack[i] = (const _FoldTransform(), true);
     }
-    if (_foldDx != prevDx || _foldDy != prevDy) {
-      _items.add(
-        TransformRenderItem.translate(_foldDx - prevDx, _foldDy - prevDy),
-      );
+    _emitFoldDelta(previous, _fold);
+    _fold = const _FoldTransform();
+  }
+
+  void _emitFoldDelta(_FoldTransform from, _FoldTransform to) {
+    final delta = to.relativeTo(from);
+    if (delta.isIdentity) return;
+    if (!delta.hasLinear) {
+      _items.add(TransformRenderItem.translate(delta.dx, delta.dy));
+    } else {
+      _items.add(TransformRenderItem.matrix(delta.matrix));
     }
-    _foldDx = 0.0;
-    _foldDy = 0.0;
   }
 
   // ── Line dash state ───────────────────────────────────────────────────
@@ -365,7 +409,9 @@ class Flut5RenderQueue {
   Path endClipRecording() {
     final p = _clipRecordingPath;
     if (p == null) {
-      throw StateError('endClipRecording() called without beginClipRecording().');
+      throw StateError(
+        'endClipRecording() called without beginClipRecording().',
+      );
     }
     _clipRecordingPath = null;
     return p;
@@ -388,13 +434,13 @@ class Flut5RenderQueue {
         case QuadToCommand(:final cx, :final cy, :final x, :final y):
           p.quadraticBezierTo(cx + fdx, cy + fdy, x + fdx, y + fdy);
         case CubicToCommand(
-              :final cx1,
-              :final cy1,
-              :final cx2,
-              :final cy2,
-              :final x,
-              :final y,
-            ):
+          :final cx1,
+          :final cy1,
+          :final cx2,
+          :final cy2,
+          :final x,
+          :final y,
+        ):
           p.cubicTo(
             cx1 + fdx,
             cy1 + fdy,
@@ -452,8 +498,11 @@ class Flut5RenderQueue {
       );
       return;
     }
-    x += _foldDx;
-    y += _foldDy;
+    _prepareGeometry(null, paint, points: true);
+    paint = _foldStroke(paint)!;
+    final transformedX = _fold.x(x, y);
+    y = _fold.y(x, y);
+    x = transformedX;
     if (_pendingPointPaint != null && !identical(_pendingPointPaint, paint)) {
       _flushPoints();
     }
@@ -481,12 +530,22 @@ class Flut5RenderQueue {
       );
       return;
     }
-    x1 += _foldDx;
-    y1 += _foldDy;
-    x2 += _foldDx;
-    y2 += _foldDy;
+    _prepareGeometry(null, paint);
+    paint = _foldStroke(paint)!;
+    final transformedX1 = _fold.x(x1, y1);
+    final transformedX2 = _fold.x(x2, y2);
+    y1 = _fold.y(x1, y1);
+    y2 = _fold.y(x2, y2);
+    x1 = transformedX1;
+    x2 = transformedX2;
     if (_hasDash) {
-      _emitDashed(Path()..moveTo(x1, y1)..lineTo(x2, y2), null, paint);
+      _emitDashed(
+        Path()
+          ..moveTo(x1, y1)
+          ..lineTo(x2, y2),
+        null,
+        paint,
+      );
       return;
     }
     if (!canBatchPaint(paint)) {
@@ -538,6 +597,34 @@ class Flut5RenderQueue {
   /// Falls back to a per-shape [RectRenderItem] when the paint can't be
   /// safely merged (translucent, shader, filter, non-srcOver blend).
   void appendRect(Rect rect, RRect? rrect, Paint? fill, Paint? stroke) {
+    _prepareGeometry(fill, stroke);
+    if (_fold.hasLinear) {
+      if (fill == null && stroke == null) return;
+      if (rrect == null) {
+        final path = _beginShape(fill, _foldStroke(stroke));
+        path.moveTo(_fold.x(rect.left, rect.top), _fold.y(rect.left, rect.top));
+        path.lineTo(
+          _fold.x(rect.right, rect.top),
+          _fold.y(rect.right, rect.top),
+        );
+        path.lineTo(
+          _fold.x(rect.right, rect.bottom),
+          _fold.y(rect.right, rect.bottom),
+        );
+        path.lineTo(
+          _fold.x(rect.left, rect.bottom),
+          _fold.y(rect.left, rect.bottom),
+        );
+        path.close();
+        _pendingShapeHasContent = true;
+      } else {
+        _transformPath
+          ..reset()
+          ..addRRect(rrect);
+        _appendTransformedPath(_transformPath, fill, stroke);
+      }
+      return;
+    }
     if (_hasFoldOffset) {
       final off = Offset(_foldDx, _foldDy);
       rect = rect.shift(off);
@@ -576,6 +663,20 @@ class Flut5RenderQueue {
 
   /// Append a circle to the pending shape path.
   void appendCircle(Offset center, double radius, Paint? fill, Paint? stroke) {
+    _prepareGeometry(fill, stroke);
+    if (_fold.hasLinear) {
+      if (fill == null && stroke == null) return;
+      final placed = Offset(
+        _fold.x(center.dx, center.dy),
+        _fold.y(center.dx, center.dy),
+      );
+      _beginShape(
+        fill,
+        _foldStroke(stroke),
+      ).addOval(Rect.fromCircle(center: placed, radius: radius * _fold.scale));
+      _pendingShapeHasContent = true;
+      return;
+    }
     if (_hasFoldOffset) {
       center = center.translate(_foldDx, _foldDy);
     }
@@ -609,6 +710,14 @@ class Flut5RenderQueue {
 
   /// Append an ellipse (oval) to the pending shape path.
   void appendEllipse(Rect rect, Paint? fill, Paint? stroke) {
+    _prepareGeometry(fill, stroke);
+    if (_fold.hasLinear) {
+      _transformPath
+        ..reset()
+        ..addOval(rect);
+      _appendTransformedPath(_transformPath, fill, stroke);
+      return;
+    }
     if (_hasFoldOffset) {
       rect = rect.shift(Offset(_foldDx, _foldDy));
     }
@@ -642,6 +751,15 @@ class Flut5RenderQueue {
     Paint? fill,
     Paint? stroke,
   ) {
+    _prepareGeometry(fill, stroke);
+    if (_fold.hasLinear) {
+      final path = _transformPath..reset();
+      if (useCenter) path.moveTo(rect.center.dx, rect.center.dy);
+      path.arcTo(rect, startAngle, sweepAngle, !useCenter);
+      if (useCenter) path.close();
+      _appendTransformedPath(path, fill, stroke);
+      return;
+    }
     if (_hasFoldOffset) {
       rect = rect.shift(Offset(_foldDx, _foldDy));
     }
@@ -706,6 +824,11 @@ class Flut5RenderQueue {
   /// shapes when [paint] identity matches. Falls back to a per-shape
   /// [PathRenderItem] when the paint can't be safely merged.
   void appendShapePath(Path path, Paint? fill, Paint? stroke) {
+    _prepareGeometry(fill, stroke);
+    if (_fold.hasLinear) {
+      _appendTransformedPath(path, fill, stroke);
+      return;
+    }
     final off = _hasFoldOffset ? Offset(_foldDx, _foldDy) : Offset.zero;
     if (_clipRecordingPath != null) {
       _clipRecordingPath!.addPath(path, off);
@@ -735,12 +858,10 @@ class Flut5RenderQueue {
   /// Append a bitmap blit sampling [src] (image pixels) into [dst] (user
   /// coordinates).
   ///
-  /// A texture op can't merge into the shared shape [Path], so this always
-  /// materializes its own [ImageRenderItem]. It still bakes the folded
-  /// translate into [dst] rather than routing through [enqueue], so an
-  /// `image()` inside a `push(); translate(); … pop();` loop doesn't force
-  /// the queue to emit real transform items and break batching for the
-  /// shapes around it.
+  /// Compatible same-image runs use an atlas, baking folded translation,
+  /// rotation and uniform scale into each sprite. Other operations preserve
+  /// draw order by closing the run. Shadows and non-proportional sizes keep
+  /// their individual canvas rendering.
   void appendImage(ui.Image image, Rect src, Rect dst, BlendMode blendMode) {
     if (_clipRecordingPath != null) {
       Flut5Console.printLater(
@@ -750,14 +871,9 @@ class Flut5RenderQueue {
       );
       return;
     }
-    // Bake the folded translate the same way the shape/point paths do, so an
-    // image() inside a push(); translate(); … pop(); loop neither materializes
-    // transform items nor breaks batching for the shapes around it. For the
-    // atlas run this is doubly useful: the baked offset IS the sprite's
-    // translate, so the canonical mosaic loop feeds the buffers directly.
-    final placed = _hasFoldOffset ? dst.shift(Offset(_foldDx, _foldDy)) : dst;
-
-    if (!_canAtlas(src, placed)) {
+    if (!_canAtlas(src, dst)) {
+      if (_fold.hasLinear) _materializeTransforms();
+      final placed = _hasFoldOffset ? dst.shift(Offset(_foldDx, _foldDy)) : dst;
       _addItem(
         ImageRenderItem(
           image: image,
@@ -770,6 +886,9 @@ class Flut5RenderQueue {
       return;
     }
 
+    final placed = _fold.hasLinear
+        ? _fold.bounds(dst)
+        : (_hasFoldOffset ? dst.shift(Offset(_foldDx, _foldDy)) : dst);
     // Same protocol as appendPoint/appendLine: close our own run when it can
     // no longer accept this blit, then close the other batches so draw order
     // is preserved.
@@ -786,19 +905,22 @@ class Flut5RenderQueue {
     _pendingAtlasBlend = blendMode;
     _ensureAtlasCapacity(_atlasCount + 1);
     final i = _atlasCount * 4;
-    // scos carries the uniform scale; ssin stays 0 because Flut5 rotation
-    // lives on the canvas transform, shared by every sprite in the run.
-    _atlasTransforms[i] = placed.width / src.width;
-    _atlasTransforms[i + 1] = 0.0;
-    _atlasTransforms[i + 2] = placed.left;
-    _atlasTransforms[i + 3] = placed.top;
+    // Compose the sprite's size/position with the folded similarity. Atlas
+    // coordinates start at the source rect's top-left, not image (0, 0).
+    final ratio = dst.width / src.width;
+    _atlasTransforms[i] = _fold.a * ratio;
+    _atlasTransforms[i + 1] = _fold.b * ratio;
+    if (_fold.b != 0) _atlasHasRotation = true;
+    _atlasTransforms[i + 2] = _fold.x(dst.left, dst.top);
+    _atlasTransforms[i + 3] = _fold.y(dst.left, dst.top);
     _atlasRects[i] = src.left;
     _atlasRects[i + 1] = src.top;
     _atlasRects[i + 2] = src.right;
     _atlasRects[i + 3] = src.bottom;
     if (_atlasCount == 0) {
       _atlasFirstSrc = src;
-      _atlasFirstDst = placed;
+      _atlasFirstDst = _fold.hasLinear ? dst : placed;
+      _atlasFirstFold = _fold.hasLinear ? _fold : null;
       _atlasBounds = placed;
     } else {
       _atlasBounds = _atlasBounds!.expandToInclude(placed);
@@ -825,21 +947,20 @@ class Flut5RenderQueue {
 
   /// Materializes the open atlas run, if any.
   ///
-  /// A run of one flushes as a plain [ImageRenderItem]: it skips the atlas
-  /// setup and keeps full double precision, so a single `image()` produces
-  /// byte-identical output whether or not this path exists.
+  /// A run of one keeps drawImageRect and its original double coordinates.
+  /// Its folded transform, if any, is captured in an owned wrapper.
   void _flushImages() {
     if (_atlasCount == 0) return;
     final image = _pendingAtlasImage!;
     if (_atlasCount == 1) {
-      _items.add(
-        ImageRenderItem(
-          image: image,
-          src: _atlasFirstSrc!,
-          dst: _atlasFirstDst!,
-          blendMode: _pendingAtlasBlend,
-        ),
+      final item = ImageRenderItem(
+        image: image,
+        src: _atlasFirstSrc!,
+        dst: _atlasFirstDst!,
+        blendMode: _pendingAtlasBlend,
       );
+      final fold = _atlasFirstFold;
+      _items.add(fold == null ? item : _TransformedImageRenderItem(item, fold));
     } else {
       // sublist copies — decouples the item from the reusable buffers so the
       // next run can overwrite them in place (same as the point/line flushes).
@@ -847,6 +968,7 @@ class Flut5RenderQueue {
         ImageAtlasRenderItem(
           image: image,
           transforms: _atlasTransforms.sublist(0, _atlasCount * 4),
+          preserveRotatedEdges: _atlasHasRotation,
           rects: _atlasRects.sublist(0, _atlasCount * 4),
           blendMode: _pendingAtlasBlend,
           bounds: _atlasBounds!,
@@ -854,10 +976,12 @@ class Flut5RenderQueue {
       );
     }
     _atlasCount = 0;
+    _atlasHasRotation = false;
     _pendingAtlasImage = null;
     _atlasBounds = null;
     _atlasFirstSrc = null;
     _atlasFirstDst = null;
+    _atlasFirstFold = null;
   }
 
   /// Bulk-append a packed `(x, y)` coordinate list to the auto-batch point
@@ -876,6 +1000,8 @@ class Flut5RenderQueue {
       );
       return;
     }
+    _prepareGeometry(null, paint, points: true);
+    paint = _foldStroke(paint)!;
     if (_pendingPointPaint != null && !identical(_pendingPointPaint, paint)) {
       _flushPoints();
     }
@@ -885,11 +1011,10 @@ class Flut5RenderQueue {
     _pendingPointPaint = paint;
     _pendingPointShadow = _activeShadow;
     _ensurePointCapacity(_pointCount + coords.length);
-    if (_hasFoldOffset) {
-      final fdx = _foldDx, fdy = _foldDy;
+    if (!_fold.isIdentity) {
       for (int i = 0; i + 1 < coords.length; i += 2) {
-        _pointBuffer[_pointCount++] = coords[i] + fdx;
-        _pointBuffer[_pointCount++] = coords[i + 1] + fdy;
+        _pointBuffer[_pointCount++] = _fold.x(coords[i], coords[i + 1]);
+        _pointBuffer[_pointCount++] = _fold.y(coords[i], coords[i + 1]);
       }
     } else {
       _pointBuffer.setRange(_pointCount, _pointCount + coords.length, coords);
@@ -1021,6 +1146,8 @@ class Flut5RenderQueue {
   /// Shared polygon implementation reading the first [n] points from the
   /// poly scratch buffers. Applies the fold offset while building the path.
   void _appendPoly(int n, Paint? fill, Paint? stroke) {
+    _prepareGeometry(fill, stroke);
+    stroke = _foldStroke(stroke);
     if (_clipRecordingPath != null) {
       _addPolyTo(_clipRecordingPath!, n);
       return;
@@ -1043,10 +1170,12 @@ class Flut5RenderQueue {
   }
 
   void _addPolyTo(Path p, int n) {
-    final fdx = _foldDx, fdy = _foldDy;
-    p.moveTo(_polyXs[0] + fdx, _polyYs[0] + fdy);
+    p.moveTo(_fold.x(_polyXs[0], _polyYs[0]), _fold.y(_polyXs[0], _polyYs[0]));
     for (int i = 1; i < n; i++) {
-      p.lineTo(_polyXs[i] + fdx, _polyYs[i] + fdy);
+      p.lineTo(
+        _fold.x(_polyXs[i], _polyYs[i]),
+        _fold.y(_polyXs[i], _polyYs[i]),
+      );
     }
     p.close();
   }
@@ -1378,15 +1507,17 @@ class Flut5RenderQueue {
     // Atlas run: drop the sprites but keep the Float32List backing buffers,
     // same bargain as the point/line buffers above.
     _atlasCount = 0;
+    _atlasHasRotation = false;
     _pendingAtlasImage = null;
     _atlasBounds = null;
     _atlasFirstSrc = null;
     _atlasFirstDst = null;
+    _atlasFirstFold = null;
     _clipRecordingPath = null;
     // Fold state is per-frame — the canvas transform resets with the frame.
-    _foldDx = 0.0;
-    _foldDy = 0.0;
+    _fold = const _FoldTransform();
     _foldStack.clear();
+    _scaledStrokes.clear();
     _lastBackground = null;
     _hasOpaqueFullCanvasBg = false;
   }
@@ -1530,5 +1661,106 @@ extension Flut5PaintCloner on Paint {
       ..imageFilter = imageFilter
       ..isAntiAlias = isAntiAlias
       ..filterQuality = filterQuality;
+  }
+}
+
+/// An invertible 2D similarity: `[a -b dx; b a dy; 0 0 1]`.
+/// The scale magnitude is tracked separately so rotation rounding cannot
+/// create slightly different stroke widths and accidentally split a batch.
+class const _FoldTransform({
+  final double a = 1,
+  final double b = 0,
+  final double dx = 0,
+  final double dy = 0,
+  final double scale = 1,
+}) {
+  bool get hasLinear => a != 1 || b != 0;
+  bool get isIdentity => !hasLinear && dx == 0 && dy == 0;
+
+  double x(double x, double y) => a * x - b * y + dx;
+  double y(double x, double y) => b * x + a * y + dy;
+
+  Rect bounds(Rect rect) {
+    final x0 = x(rect.left, rect.top), y0 = y(rect.left, rect.top);
+    final x1 = x(rect.right, rect.top), y1 = y(rect.right, rect.top);
+    final x2 = x(rect.right, rect.bottom), y2 = y(rect.right, rect.bottom);
+    final x3 = x(rect.left, rect.bottom), y3 = y(rect.left, rect.bottom);
+    return Rect.fromLTRB(
+      math.min(math.min(x0, x1), math.min(x2, x3)),
+      math.min(math.min(y0, y1), math.min(y2, y3)),
+      math.max(math.max(x0, x1), math.max(x2, x3)),
+      math.max(math.max(y0, y1), math.max(y2, y3)),
+    );
+  }
+
+  _FoldTransform translated(double x, double y) => _FoldTransform(
+    a: a,
+    b: b,
+    dx: this.x(x, y),
+    dy: this.y(x, y),
+    scale: scale,
+  );
+
+  _FoldTransform rotated(double angle) {
+    final c = math.cos(angle), s = math.sin(angle);
+    return _FoldTransform(
+      a: a * c - b * s,
+      b: b * c + a * s,
+      dx: dx,
+      dy: dy,
+      scale: scale,
+    );
+  }
+
+  _FoldTransform scaled(double factor) => _FoldTransform(
+    a: a * factor,
+    b: b * factor,
+    dx: dx,
+    dy: dy,
+    scale: scale * factor.abs(),
+  );
+
+  _FoldTransform relativeTo(_FoldTransform previous) {
+    if (identical(this, previous)) return const _FoldTransform();
+    final d = previous.a * previous.a + previous.b * previous.b;
+    final tx = dx - previous.dx, ty = dy - previous.dy;
+    return _FoldTransform(
+      a: (previous.a * a + previous.b * b) / d,
+      b: (previous.a * b - previous.b * a) / d,
+      dx: (previous.a * tx + previous.b * ty) / d,
+      dy: (previous.a * ty - previous.b * tx) / d,
+      scale: scale / previous.scale,
+    );
+  }
+
+  void writeMatrix(Float64List storage) {
+    storage[0] = a;
+    storage[1] = b;
+    storage[4] = -b;
+    storage[5] = a;
+    storage[12] = dx;
+    storage[13] = dy;
+  }
+
+  Float64List get matrix =>
+      Float64List.fromList([a, b, 0, 0, -b, a, 0, 0, 0, 0, 1, 0, dx, dy, 0, 1]);
+}
+
+/// Owns a lone blit's folded transform without changing the surrounding canvas
+/// state. Multi-sprite runs instead carry these transforms in their atlas data.
+class _TransformedImageRenderItem(
+  final ImageRenderItem item,
+  final _FoldTransform fold,
+) extends Flut5RenderItem {
+  @override
+  late final Rect? bounds = fold.bounds(item.dst);
+  late final Float64List _matrix = fold.matrix;
+
+  @override
+  void execute(Canvas canvas) {
+    canvas.save();
+    canvas.transform(_matrix);
+    item.execute(canvas);
+    canvas.restore();
   }
 }
