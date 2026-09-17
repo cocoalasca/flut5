@@ -102,7 +102,10 @@ final class const Flut5TextCell({
 
 /// A uniform grid sampled over the outlines of a string.
 ///
-/// Produced by `textToGrid`. The grid covers the tight bounding box of the
+/// Produced by `textToGrid` or `textToCharGrids`. Query results have read-only
+/// cell arrays so cached grids can be safely shared. Character grids are
+/// cropped on the full text's cell lattice. The combined grid covers the
+/// tight bounding box of the
 /// rendered outline: cell `(0, 0)` sits at ([x], [y]), the box's top-left
 /// corner, and rows run top-to-bottom in screen space (y-down). Note that
 /// ([x], [y]) is the *outline's* box, not the baseline origin passed to

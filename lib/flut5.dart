@@ -747,6 +747,12 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
     double y, {
     Map<String, dynamic>? args,
   }) => flut5.textToGrid(content, x, y, args: args);
+  List<Flut5TextGrid> textToCharGrids(
+    String content,
+    double x,
+    double y, {
+    Map<String, dynamic>? args,
+  }) => flut5.textToCharGrids(content, x, y, args: args);
   double textWidth(String content) => flut5.textWidth(content);
   double textAscent() => flut5.textAscent();
   double textDescent() => flut5.textDescent();

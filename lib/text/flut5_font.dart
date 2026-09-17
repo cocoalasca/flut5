@@ -144,6 +144,14 @@ class Flut5Font.internal({
   final LinkedHashMap<(String, int, double, double), List<List<Flut5Vector>>>
   _glyphContourCache = LinkedHashMap();
 
+  // Position-independent CPU grids. Reserve space for the lazy combined grid
+  // as well as character grids; large one-off queries bypass retention.
+  final _textGridCache =
+      <(String, String, double, double, double, double), _TextGridResult>{};
+  int _textGridCacheCost = 0;
+  static const _textGridCacheMaxEntries = 32;
+  static const _textGridCacheMaxCost = 1000000;
+
   /// Per-glyph [Path] cache in font-unit (y-up) space.
   ///
   /// Built once on first use of [getGlyphPath] and reused across outline
@@ -604,8 +612,12 @@ class Flut5Font.internal({
   /// density is derived from it, so curves stay accurate to within half a
   /// cell however fine the grid gets.
   ///
-  /// Cost scales with the cell count, which grows quadratically as
-  /// [cellSize] shrinks. This is a build-once call, not a per-frame one.
+  /// [lineHeight] sets the baseline distance in pixels, defaulting to
+  /// [fontSize]. Letter spacing restarts on each line.
+  ///
+  /// Shares a bounded, position-independent cache with [textToCharGrids].
+  /// Returned cell arrays are read-only. Cache misses scale with cell count;
+  /// repeated calls and x/y-only changes reuse the rasterized cells.
   Flut5TextGrid textToGrid(
     String text,
     double x,
@@ -613,37 +625,191 @@ class Flut5Font.internal({
     double fontSize, {
     double? cellSize,
     double letterSpacing = 0,
+    double? lineHeight,
+  }) => _positionGrid(
+    _textGrids(text, fontSize, cellSize, letterSpacing, lineHeight).grid,
+    x,
+    y,
+  );
+
+  /// Returns one grid per Unicode code point, in source order.
+  ///
+  /// Spaces and line breaks have empty grids. Each drawable character keeps
+  /// all its contours together, including holes and disconnected parts.
+  /// Grids are cropped on the full text's cell lattice, so their cell anchors
+  /// match [textToGrid], even for fractional advances and negative spacing.
+  /// Overlapping characters may own the same cell; edge states are classified
+  /// within each character. The combined grid classifies the union instead.
+  ///
+  /// [lineHeight] is the baseline distance in pixels (defaults to [fontSize]).
+  /// LF, CR and CRLF start a new line; CRLF advances only once but retains two
+  /// empty entries. Like the other outline APIs, this uses code-point glyph
+  /// lookup, without grapheme shaping, ligatures, wrapping or text alignment.
+  ///
+  /// Cell arrays are read-only and cached together with [textToGrid], scoped
+  /// to this font and its variation axes. Moving x/y reuses the same arrays.
+  /// The LRU retains at most 32 layouts and 1,000,000 cell/entry slots per font;
+  /// oversized queries are returned without being retained.
+  List<Flut5TextGrid> textToCharGrids(
+    String text,
+    double x,
+    double y,
+    double fontSize, {
+    double? cellSize,
+    double letterSpacing = 0,
+    double? lineHeight,
   }) {
-    final double cell = (cellSize == null || cellSize <= 0) ? 4.0 : cellSize;
-    if (cell <= 0 || !cell.isFinite) return Flut5TextGrid.empty;
-
-    // A polyline vertex every half cell — the sampler's pixel step is
-    // 3 / sampleFactor, so 6 / cell lands exactly there.
-    final contours = textToContours(
+    final result = _textGrids(
       text,
-      x,
-      y,
       fontSize,
-      sampleFactor: 6.0 / cell,
-      letterSpacing: letterSpacing,
+      cellSize,
+      letterSpacing,
+      lineHeight,
     );
+    if (x == 0 && y == 0) return result.chars;
+    return List.unmodifiable([
+      for (final grid in result.chars) _positionGrid(grid, x, y),
+    ]);
+  }
 
+  _TextGridResult _textGrids(
+    String text,
+    double fontSize,
+    double? cellSize,
+    double letterSpacing,
+    double? lineHeight,
+  ) {
+    final cell = (cellSize == null || cellSize <= 0) ? 4.0 : cellSize;
+    final leading = lineHeight ?? fontSize;
+    if (!cell.isFinite ||
+        !fontSize.isFinite ||
+        !letterSpacing.isFinite ||
+        !leading.isFinite) {
+      return _TextGridResult(const [], 0, 0, 0, 0, 0);
+    }
+    final key = (axisCacheKey, text, fontSize, cell, letterSpacing, leading);
+    final cached = _textGridCache.remove(key);
+    if (cached != null) {
+      _textGridCache[key] = cached;
+      return cached;
+    }
+
+    // Lay out once in baseline-relative coordinates. All character bounds
+    // must be known before rasterization to establish the shared cell lattice.
+    final glyphs = <(int, double, double, List<List<Flut5Vector>>)>[];
+    final scale = fontSize / unitsPerEm;
+    double cursorX = 0, cursorY = 0;
     double minX = double.infinity, minY = double.infinity;
     double maxX = -double.infinity, maxY = -double.infinity;
-    for (final contour in contours) {
-      for (final p in contour) {
-        if (p.x < minX) minX = p.x;
-        if (p.x > maxX) maxX = p.x;
-        if (p.y < minY) minY = p.y;
-        if (p.y > maxY) maxY = p.y;
+    var first = true;
+    var previousCR = false;
+    for (final rune in text.runes) {
+      if (rune == 10 || rune == 13) {
+        if (rune != 10 || !previousCR) cursorY += leading;
+        cursorX = 0;
+        first = true;
+        previousCR = rune == 13;
+        glyphs.add((0, 0, cursorY, const []));
+        continue;
       }
+      previousCR = false;
+      if (!first) cursorX += letterSpacing;
+      first = false;
+      final index = glyphIndexForChar(rune);
+      final contours = <List<Flut5Vector>>[];
+      for (final contour in _getGlyphContours(index, 6 / cell * scale, 0)) {
+        final points = <Flut5Vector>[];
+        for (final point in contour) {
+          final px = point.x * scale + cursorX;
+          final py = -point.y * scale + cursorY;
+          points.add(Flut5Vector(px, py));
+          minX = math.min(minX, px);
+          minY = math.min(minY, py);
+          maxX = math.max(maxX, px);
+          maxY = math.max(maxY, py);
+        }
+        contours.add(points);
+      }
+      glyphs.add((index, cursorX, cursorY, contours));
+      cursorX += advanceWidth(index) * scale;
     }
-    // Whitespace-only or an empty string leaves no outline to bound.
-    if (minX > maxX || minY > maxY) return Flut5TextGrid.empty;
 
-    final int cols = math.max(1, ((maxX - minX) / cell).ceil());
-    final int rows = math.max(1, ((maxY - minY) / cell).ceil());
+    final chars = <Flut5TextGrid>[];
+    var cols = 0, rows = 0;
+    if (minX <= maxX && minY <= maxY) {
+      cols = math.max(1, ((maxX - minX) / cell).ceil());
+      rows = math.max(1, ((maxY - minY) / cell).ceil());
+      for (final (index, gx, gy, contours) in glyphs) {
+        var left = cols, top = rows, right = -1, bottom = -1;
+        for (final contour in contours) {
+          for (final p in contour) {
+            final c = ((p.x - minX) / cell).floor().clamp(0, cols - 1);
+            final r = ((p.y - minY) / cell).floor().clamp(0, rows - 1);
+            left = math.min(left, c);
+            right = math.max(right, c);
+            top = math.min(top, r);
+            bottom = math.max(bottom, r);
+          }
+        }
+        if (right < left) {
+          chars.add(Flut5TextGrid.empty);
+          continue;
+        }
+        final matrix = Float64List(16)
+          ..[0] = scale
+          ..[5] = -scale
+          ..[10] = 1
+          ..[12] = gx
+          ..[13] = gy
+          ..[15] = 1;
+        final path = Path()
+          ..addPath(getGlyphPath(index), Offset.zero, matrix4: matrix);
+        chars.add(
+          _rasterizeGrid(
+            contours,
+            path,
+            minX + left * cell,
+            minY + top * cell,
+            cell,
+            right - left + 1,
+            bottom - top + 1,
+          ),
+        );
+      }
+    } else {
+      minX = minY = 0;
+      chars.addAll(List.filled(glyphs.length, Flut5TextGrid.empty));
+    }
+    final result = _TextGridResult(
+      List.unmodifiable(chars),
+      minX,
+      minY,
+      cell,
+      cols,
+      rows,
+    );
+    if (result.cost <= _textGridCacheMaxCost) {
+      while (_textGridCache.isNotEmpty &&
+          (_textGridCache.length >= _textGridCacheMaxEntries ||
+              _textGridCacheCost + result.cost > _textGridCacheMaxCost)) {
+        final oldest = _textGridCache.remove(_textGridCache.keys.first)!;
+        _textGridCacheCost -= oldest.cost;
+      }
+      _textGridCache[key] = result;
+      _textGridCacheCost += result.cost;
+    }
+    return result;
+  }
 
+  static Flut5TextGrid _rasterizeGrid(
+    List<List<Flut5Vector>> contours,
+    Path path,
+    double minX,
+    double minY,
+    double cell,
+    int cols,
+    int rows,
+  ) {
     final cells = List<List<Flut5CellState>>.generate(
       rows,
       (_) => List<Flut5CellState>.filled(cols, Flut5CellState.empty),
@@ -663,7 +829,6 @@ class Flut5Font.internal({
     }
 
     // Fill pass — every cell the outline missed is cleanly in or out.
-    final path = _composedPath(text, x, y, fontSize, letterSpacing);
     for (int r = 0; r < rows; r++) {
       final row = cells[r];
       final double cy = minY + (r + 0.5) * cell;
@@ -675,67 +840,13 @@ class Flut5Font.internal({
       }
     }
 
-    // Boundary pass — the edge pass marks every cell an outline *touches*,
-    // which over-marks wherever a stroke is thicker than a cell: a slanted
-    // outline walks through two cells side by side and the inner one lands
-    // fully surrounded by glyph. Edge is a border of the filled shape, so
-    // demote anything walled in on all four sides. Off-grid counts as empty,
-    // matching [Flut5TextGrid.stateAt], so the box's rim stays edge.
-    //
-    // This only swaps edge and interior — `isFilled` is invariant, so
-    // neighbors can be read in place while the pass rewrites them.
-    for (int r = 0; r < rows; r++) {
-      final row = cells[r];
-      for (int c = 0; c < cols; c++) {
-        if (!row[c].isFilled) continue;
-        final bool exposed =
-            c == 0 ||
-            c == cols - 1 ||
-            r == 0 ||
-            r == rows - 1 ||
-            !row[c - 1].isFilled ||
-            !row[c + 1].isFilled ||
-            !cells[r - 1][c].isFilled ||
-            !cells[r + 1][c].isFilled;
-        row[c] = exposed ? Flut5CellState.edge : Flut5CellState.interior;
-      }
-    }
-
-    return Flut5TextGrid(states: cells, x: minX, y: minY, cellSize: cell);
-  }
-
-  /// Builds one screen-space [Path] for [text], reusing the per-glyph path
-  /// cache and composing with a scale + Y-flip + translate matrix.
-  Path _composedPath(
-    String text,
-    double x,
-    double y,
-    double fontSize,
-    double letterSpacing,
-  ) {
-    final double scale = fontSize / unitsPerEm;
-    final path = Path();
-    double cursorX = x;
-    bool isFirstGlyph = true;
-
-    for (final codePoint in text.runes) {
-      if (!isFirstGlyph) cursorX += letterSpacing;
-      isFirstGlyph = false;
-
-      final glyphIndex = glyphIndexForChar(codePoint);
-      final matrix = Float64List(16)
-        ..[0] = scale
-        ..[5] = -scale
-        ..[10] = 1
-        ..[12] = cursorX
-        ..[13] = y
-        ..[15] = 1;
-      path.addPath(getGlyphPath(glyphIndex), Offset.zero, matrix4: matrix);
-
-      cursorX += advanceWidth(glyphIndex) * scale;
-    }
-
-    return path;
+    _classifyGridBoundary(cells);
+    return Flut5TextGrid(
+      states: _freezeGridCells(cells),
+      x: minX,
+      y: minY,
+      cellSize: cell,
+    );
   }
 
   /// Marks every cell the segment [a]–[b] passes through as an edge, using a
@@ -833,5 +944,86 @@ class Flut5Font.internal({
 void _trimLru<K, V>(LinkedHashMap<K, V> cache, int maxSize) {
   while (cache.length > maxSize) {
     cache.remove(cache.keys.first);
+  }
+}
+
+Flut5TextGrid _positionGrid(Flut5TextGrid grid, double x, double y) {
+  if (grid.isEmpty || (x == 0 && y == 0)) return grid;
+  return Flut5TextGrid(
+    states: grid.states,
+    x: grid.x + x,
+    y: grid.y + y,
+    cellSize: grid.cellSize,
+  );
+}
+
+List<List<Flut5CellState>> _freezeGridCells(List<List<Flut5CellState>> cells) =>
+    List.unmodifiable([
+      for (final row in cells) List<Flut5CellState>.unmodifiable(row),
+    ]);
+
+void _classifyGridBoundary(List<List<Flut5CellState>> cells) {
+  final rows = cells.length;
+  final cols = rows == 0 ? 0 : cells.first.length;
+  for (var r = 0; r < rows; r++) {
+    for (var c = 0; c < cols; c++) {
+      if (!cells[r][c].isFilled) continue;
+      final exposed =
+          c == 0 ||
+          c == cols - 1 ||
+          r == 0 ||
+          r == rows - 1 ||
+          !cells[r][c - 1].isFilled ||
+          !cells[r][c + 1].isFilled ||
+          !cells[r - 1][c].isFilled ||
+          !cells[r + 1][c].isFilled;
+      cells[r][c] = exposed ? Flut5CellState.edge : Flut5CellState.interior;
+    }
+  }
+}
+
+class _TextGridResult(
+  final List<Flut5TextGrid> chars,
+  final double x,
+  final double y,
+  final double cell,
+  final int cols,
+  final int rows,
+) {
+  // Include source text/empty entries and reserve the lazy combined grid.
+  final int cost = chars.fold<int>(
+    cols * rows + chars.length,
+    (sum, grid) => sum + grid.cols * grid.rows,
+  );
+
+  late final Flut5TextGrid grid = _combine();
+
+  Flut5TextGrid _combine() {
+    if (cols == 0 || rows == 0) return Flut5TextGrid.empty;
+    if (chars.length == 1) return chars.single;
+    final cells = List.generate(
+      rows,
+      (_) => List.filled(cols, Flut5CellState.empty),
+      growable: false,
+    );
+    for (final char in chars) {
+      if (char.isEmpty) continue;
+      final left = ((char.x - x) / cell).round();
+      final top = ((char.y - y) / cell).round();
+      for (var r = 0; r < char.rows; r++) {
+        for (var c = 0; c < char.cols; c++) {
+          if (char.states[r][c].isFilled) {
+            cells[top + r][left + c] = Flut5CellState.interior;
+          }
+        }
+      }
+    }
+    _classifyGridBoundary(cells);
+    return Flut5TextGrid(
+      states: _freezeGridCells(cells),
+      x: x,
+      y: y,
+      cellSize: cell,
+    );
   }
 }

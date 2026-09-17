@@ -62,6 +62,9 @@ abstract final class Flut5TextArg {
   /// A number setting grid cell edge length. Defaults to `4`.
   static const String cellSize = 'cellSize';
 
+  /// Baseline distance in pixels, overriding the current `textLeading`.
+  static const String lineHeight = 'lineHeight';
+
   /// Keys understood by [Flut5Text.textToPaths].
   static const Set<String> pathKeys = {font, fontSize, letterSpacing};
 
@@ -75,7 +78,13 @@ abstract final class Flut5TextArg {
   };
 
   /// Keys understood by [Flut5Text.textToGrid].
-  static const Set<String> gridKeys = {font, fontSize, letterSpacing, cellSize};
+  static const Set<String> gridKeys = {
+    font,
+    fontSize,
+    letterSpacing,
+    cellSize,
+    lineHeight,
+  };
 }
 
 /// One-shot guard per `method:key:problem`, so a bad arg inside `draw()`
@@ -1010,13 +1019,17 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
   ///
   /// [args] overrides the sketch's own settings for this call only — see
   /// [Flut5TextArg] for the accepted keys (`cellSize`, `fontSize`,
-  /// `letterSpacing`, `font`). Unrecognized keys and wrong-typed values are
-  /// logged once and ignored rather than throwing.
+  /// `letterSpacing`, `lineHeight`, `font`). Unrecognized keys and wrong-typed
+  /// values are logged once and ignored rather than throwing.
   ///
   /// `cellSize` is the cell edge length in pixels and defaults to 4 — a
   /// fixed on-screen density at any font size. Halving it quadruples the
-  /// cell count, so treat this as a build-once call rather than a
-  /// per-frame one.
+  /// cell count. Both grid queries share a bounded per-font cache; unchanged
+  /// inputs and x/y-only changes reuse read-only cell arrays. Newlines use
+  /// [textLeading], or the font's default line height when unset. `lineHeight`
+  /// overrides the baseline distance in pixels for this call. An explicit
+  /// `font` override defaults to the font size as line height because the
+  /// outline font may not have a registered Flutter family.
   ///
   /// ```dart
   /// final grid = flut5.textToGrid('HELLO', 40, 200, args: {
@@ -1049,6 +1062,7 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
       x,
       y,
       _argDouble(args, Flut5TextArg.fontSize, method) ?? _fontSize,
+      lineHeight: _gridLineHeight(content, args, method),
       cellSize: _argDouble(args, Flut5TextArg.cellSize, method),
       letterSpacing:
           _argDouble(args, Flut5TextArg.letterSpacing, method) ??
@@ -1062,11 +1076,87 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
       Flut5Console.printLater(
         'textToGrid() built a ${grid.cols}x${grid.rows} grid '
         '($cellCount cells) at cellSize ${grid.cellSize.toStringAsFixed(2)}. '
-        'That is fine to build once, but it will stutter if you call it every '
-        'frame — hoist it out of draw(), or pass a larger cellSize.',
+        'Unchanged queries reuse cached cells; changing layout settings every '
+        'frame can be expensive. Consider a larger cellSize.',
       );
     }
     return grid;
+  }
+
+  /// Returns one grid per Unicode code point in [content], in source order.
+  ///
+  /// Each grid keeps its character's position in the full text and uses the
+  /// same cell alignment as [textToGrid]. Spaces and line breaks retain empty
+  /// entries. Holes and disconnected parts stay with their character.
+  /// Overlapping characters may share cells; edge states describe each
+  /// character independently.
+  ///
+  /// Uses the current font, size, [letterSpacing] and [textLeading]. [args]
+  /// accepts the same overrides as [textToGrid], including `lineHeight` in
+  /// pixels. Coordinates are baseline-anchored; alignment and automatic
+  /// wrapping are not applied, as with the other outline queries.
+  ///
+  /// Results use a bounded per-font cache shared with [textToGrid]. Moving
+  /// x/y reuses cell arrays; returned lists and cell states are read-only.
+  /// Characters follow Unicode code points, not shaped grapheme clusters.
+  ///
+  /// ```dart
+  /// final chars = textToCharGrids('Hello', 40, 200);
+  /// for (final char in chars) {
+  ///   for (final cell in char.filledCells) {
+  ///     square(cell.anchorX, cell.anchorY, cell.size);
+  ///   }
+  /// }
+  /// ```
+  List<Flut5TextGrid> textToCharGrids(
+    String content,
+    double x,
+    double y, {
+    Map<String, dynamic>? args,
+  }) {
+    const method = 'textToCharGrids';
+    _checkArgKeys(args, method, Flut5TextArg.gridKeys);
+    final f = _argFont(args, method) ?? _loadedFont;
+    if (f == null) {
+      Flut5Console.printLater(
+        'textToCharGrids() requires a Flut5Font. '
+        'Call await loadFont("path/to/font.ttf"), use a pubspec family with '
+        'textFont("Roboto"), or pass args: {Flut5TextArg.font: myFont}.',
+      );
+      return const [];
+    }
+    return f.textToCharGrids(
+      content,
+      x,
+      y,
+      _argDouble(args, Flut5TextArg.fontSize, method) ?? _fontSize,
+      cellSize: _argDouble(args, Flut5TextArg.cellSize, method),
+      letterSpacing:
+          _argDouble(args, Flut5TextArg.letterSpacing, method) ??
+          _letterSpacing ??
+          0,
+      lineHeight: _gridLineHeight(content, args, method),
+    );
+  }
+
+  double? _gridLineHeight(
+    String content,
+    Map<String, dynamic>? args,
+    String method,
+  ) {
+    final override = _argDouble(args, Flut5TextArg.lineHeight, method);
+    if (override != null) return override;
+    final size = _argDouble(args, Flut5TextArg.fontSize, method) ?? _fontSize;
+    if (_textLeading != null) return size * _textLeading!;
+    if (!content.contains('\n') && !content.contains('\r')) return null;
+    // An explicit outline font may have no registered Flutter family.
+    if (_argFont(args, method) != null) return size;
+    return _textCache.measureLineHeight(
+      fontFamily: _fontFamily,
+      fontSize: size,
+      fontWeight: _fontWeight,
+      fontStyle: _fontStyle,
+    );
   }
 
   // ── Measurement ───────────────────────────────────────────────────────
