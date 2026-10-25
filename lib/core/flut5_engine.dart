@@ -11,6 +11,7 @@ import '../math/flut5_math.dart';
 import '../math/flut5_noise.dart';
 import '../math/flut5_trigonometry.dart';
 import '../math/flut5_vector.dart';
+import '../physics/flut5_physics_engine.dart';
 import '../physics/flut5_spring.dart';
 import '../shape/flut5_2d_primitives.dart';
 import '../shape/flut5_fill.dart';
@@ -230,6 +231,11 @@ final class Flut5Engine
   /// UI management for rendering Flut5 UI elements.
   final Flut5UI ui = Flut5UI();
 
+  /// The physics world: creates particles (and future body types) and steps
+  /// them every frame. See [Flut5PhysicsEngine].
+  @override
+  final Flut5PhysicsEngine physicsEngine = Flut5PhysicsEngine();
+
   /// The rendering pipeline queue for deferred drawing.
   @override
   final Flut5RenderQueue renderQueue = Flut5RenderQueue();
@@ -310,7 +316,9 @@ final class Flut5Engine
           (hasStroke && strokeGradient != null && strokeGradientRect == null);
       final bounds = needsBounds ? path.getBounds() : Rect.zero;
       final Paint? fill = hasFill ? snapshotFillPaintForShape(bounds) : null;
-      final Paint? stroke = hasStroke ? snapshotStrokePaintForShape(bounds) : null;
+      final Paint? stroke = hasStroke
+          ? snapshotStrokePaintForShape(bounds)
+          : null;
       final dash = lineDashVal;
       if (stroke != null && dash != null) {
         // Dash the merged outline in one pass — the stroke stays a single
@@ -325,8 +333,12 @@ final class Flut5Engine
           ]);
         } else {
           renderQueue.enqueue(
-            PathRenderItem(dashed, null, stroke,
-                shadow: renderQueue.activeShadow),
+            PathRenderItem(
+              dashed,
+              null,
+              stroke,
+              shadow: renderQueue.activeShadow,
+            ),
           );
         }
       } else {
@@ -825,8 +837,8 @@ final class Flut5Engine
     final index = _calibrationIndex < 0
         ? 0
         : (_calibrationIndex >= ladder.length
-            ? ladder.length - 1
-            : _calibrationIndex);
+              ? ladder.length - 1
+              : _calibrationIndex);
     return ladder[index];
   }
 
@@ -1333,8 +1345,9 @@ final class Flut5Engine
     if (!adaptiveSnapshotThrottle) return _frameSnapshotInterval;
     final ema = _adaptiveIntervalEma;
     final adaptive = ema.isFinite ? ema.round() : _frameSnapshotInterval;
-    final floored =
-        adaptive > _frameSnapshotInterval ? adaptive : _frameSnapshotInterval;
+    final floored = adaptive > _frameSnapshotInterval
+        ? adaptive
+        : _frameSnapshotInterval;
     return floored > frameSnapshotMaxInterval
         ? frameSnapshotMaxInterval
         : floored;
@@ -1355,8 +1368,7 @@ final class Flut5Engine
   double? _frameSnapshotLastCaptureMs;
   (int, int)? _frameSnapshotLastPhysicalSize;
 
-  final _Flut5TrailRepaintNotifier _trailRepaint =
-      _Flut5TrailRepaintNotifier();
+  final _Flut5TrailRepaintNotifier _trailRepaint = _Flut5TrailRepaintNotifier();
 
   /// Fires whenever the trail snapshot is updated or cleared. The split-layer
   /// `TrailPainter` listens to this to repaint only when needed instead of
@@ -1590,7 +1602,8 @@ final class Flut5Engine
   /// Physical `(width, height)` of the most recent snapshot capture, after the
   /// [frameSnapshotMaxResolution] cap is applied. `null` until the first
   /// capture starts.
-  (int, int)? get frameSnapshotLastPhysicalSize => _frameSnapshotLastPhysicalSize;
+  (int, int)? get frameSnapshotLastPhysicalSize =>
+      _frameSnapshotLastPhysicalSize;
 
   /// Internal: called by the painter when it would have started a capture
   /// but [isFrameSnapshotInFlight] was still true. Bumps the dropped
@@ -1655,8 +1668,7 @@ final class Flut5Engine
     final start = _frameSnapshotCaptureStartMicros;
     if (start != null) {
       if (recordCost) {
-        final ms =
-            (_frameSnapshotClock.elapsedMicroseconds - start) / 1000.0;
+        final ms = (_frameSnapshotClock.elapsedMicroseconds - start) / 1000.0;
         _frameSnapshotLastCaptureMs = ms;
         _updateCalibration(ms);
         _updateAdaptiveThrottle(ms);
@@ -1712,8 +1724,7 @@ final class Flut5Engine
       // one async-delayed outlier can't collapse resolution in a single
       // jump, then snap down to the rung ladder for a clean resample ratio.
       final factor = math.sqrt(0.7 * budget / costEma).clamp(0.7, 1.0);
-      final snapped =
-          _rungAtOrBelow(_frameSnapshotResolutionScale * factor);
+      final snapped = _rungAtOrBelow(_frameSnapshotResolutionScale * factor);
       if (snapped < _frameSnapshotResolutionScale) {
         _frameSnapshotResolutionScale = snapped;
         _capturesSinceResolutionChange = 0;
@@ -1806,7 +1817,8 @@ class _Flut5TrailRepaintNotifier extends ChangeNotifier {
   /// layer for the frame it's deferred over.
   void fire() {
     final phase = SchedulerBinding.instance.schedulerPhase;
-    final duringFrame = phase == SchedulerPhase.persistentCallbacks ||
+    final duringFrame =
+        phase == SchedulerPhase.persistentCallbacks ||
         phase == SchedulerPhase.midFrameMicrotasks;
     if (!duringFrame) {
       notifyListeners();

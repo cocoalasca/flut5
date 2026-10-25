@@ -298,6 +298,8 @@ class _Flut5CanvasState extends State<Flut5Canvas>
     // Reset UI elements before setup so repeated setup runs, such as hot reload,
     // do not duplicate sketch-owned controls.
     widget.sketch.flut5.ui.clear();
+    // Same for physics bodies registered by a previous setup run.
+    widget.sketch.flut5.physicsEngine.clear();
 
     // Preload pubspec-registered font shape data before user setup so
     // textFont('Family') can drive both raster text and textToPoints/contours.
@@ -641,7 +643,10 @@ class Flut5Painter({required final Flut5Sketch sketch, super.repaint})
     // the smoothed rate the HUD reports.
     engine.noteFramePainted();
 
+    final physics = engine.physicsEngine;
+    if (physics.updateTiming == .beforeDraw) physics.update();
     sketch.draw();
+    if (physics.updateTiming == .afterDraw) physics.update();
 
     // Close any layout scopes draw() left open (missing endLayout()) — this
     // also closes the containers belonging to them — then any remaining

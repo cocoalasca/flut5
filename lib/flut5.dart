@@ -22,6 +22,7 @@ import 'text/flut5_text.dart';
 import 'text/flut5_text_grid.dart';
 import 'ui/flut5_ui.dart';
 import 'steering/flut5_steering.dart';
+import 'physics/flut5_physics_engine.dart';
 
 export 'core/flut5_color.dart';
 export 'core/flut5_container.dart';
@@ -41,6 +42,10 @@ export 'math/flut5_vector.dart';
 export 'math/flut5_math.dart';
 export 'math/flut5_trigonometry.dart';
 export 'math/flut5_noise.dart';
+export 'physics/flut5_physics_engine.dart';
+export 'physics/flut5_physics_body.dart';
+export 'physics/flut5_physics_particle.dart';
+export 'physics/flut5_physics_spring.dart';
 export 'physics/flut5_spring.dart';
 export 'core/flut5_sketch.dart';
 export 'core/flut5_canvas.dart';
@@ -352,6 +357,7 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
   // ── Subsystems ───────────────────────────────────────────────────────────
   Flut5Event get events => flut5.events;
   Flut5UI get ui => flut5.ui;
+  Flut5PhysicsEngine get physicsEngine => flut5.physicsEngine;
   Flut5RenderQueue get renderQueue => flut5.renderQueue;
 
   // ── Cursor ───────────────────────────────────────────────────────────────

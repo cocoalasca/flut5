@@ -31,7 +31,8 @@ mixin Flut5Blur {
   /// gradients, shadows, text, images) costs an offscreen layer per draw —
   /// to blur many such shapes as one, use [beginBlur]/[endBlur]. Like stroke
   /// weight, the radius scales with `scale()`. `background()` is never
-  /// blurred.
+  /// blurred. The layer is Flutter's own blur, with its Impeller limits —
+  /// see [beginBlur].
   ///
   /// ```dart
   /// blur(4);
@@ -54,6 +55,12 @@ mixin Flut5Blur {
   /// still batch, and the whole group costs one offscreen layer. A
   /// `background()` inside the group is blurred with it; its edges fade at
   /// the canvas border. `0` draws the group sharp.
+  ///
+  /// The group uses Flutter's built-in layer blur, the same one as the
+  /// `ImageFiltered` widget. On Impeller it trims the faint outer edge of
+  /// the halo and leaves a blur under about one device pixel sharp; this
+  /// includes a small radius inside a `beginPixelate()` scope, where the
+  /// radius shrinks by the block size. Skia draws an exact Gaussian.
   ///
   /// Like [push]/[pop], the group keeps its transforms to itself: [endBlur]
   /// restores the transform that was active here. Groups nest, also with
