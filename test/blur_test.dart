@@ -420,6 +420,49 @@ void main() {
       expect(actual, expected);
     });
 
+    test('bounding each layer to what it paints changes no pixel', () async {
+      // On Skia an unbounded layer covers the canvas and is blurred whole;
+      // the queue bounds it to the draw's stroke reach, shadow and halo.
+      // Ground truth: the same items through an unbounded layer.
+      void draw(Flut5Engine e) {
+        e.strokeJoin(StrokeJoin.miter);
+        e.triangle(30, 30, 90, 40, 40, 70); // sharp miter tips
+        e.shadow(12, 8, 6, 3, Colors.blue);
+        e.circle(130, 60, 40);
+        e.noShadow();
+        e.strokeWeight(9);
+        e.strokeCap(StrokeCap.square);
+        e.line(30, 140, 170, 170);
+        e.point(100, 120);
+      }
+
+      for (final scale in [1.0, .75]) {
+        final e = outlined()..blur(3);
+        draw(e);
+        final queued = items(e);
+        expect(queued.whereType<BlurRenderItem>(), hasLength(4));
+        final actual = await _pixels((canvas) {
+          canvas.scale(scale);
+          e.renderQueue.execute(canvas);
+        });
+        final expected = await _pixels((canvas) {
+          canvas.scale(scale);
+          for (final item in queued) {
+            if (item is! BlurRenderItem) {
+              item.execute(canvas);
+              continue;
+            }
+            canvas.saveLayer(null, item.layerPaint);
+            for (final inner in item.items) {
+              inner.execute(canvas);
+            }
+            canvas.restore();
+          }
+        });
+        expect(actual, expected, reason: 'scale $scale');
+      }
+    });
+
     test('a plain fill blurs like an exact Gaussian', () async {
       // White square on transparent: alpha is the square's coverage blurred
       // by a Gaussian of sigma = the radius, which integrates in closed form.

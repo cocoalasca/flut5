@@ -226,6 +226,47 @@ void main() {
       expect(e.physicsEngine.bodies, isEmpty);
     });
 
+    test('many removals keep creation order and drop springs at once', () {
+      final e = Flut5Engine();
+      final world = e.physicsEngine;
+      final ps = [
+        for (var i = 0; i < 10; i++) world.createParticle(i * 1.0, 0),
+      ];
+      final links = [
+        for (var i = 0; i + 1 < ps.length; i++)
+          world.createSpring(ps[i], ps[i + 1]),
+      ];
+      for (var i = 0; i < ps.length; i += 2) {
+        expect(world.remove(ps[i]), isTrue);
+      }
+      expect(world.remove(ps[0]), isFalse); // already removed
+      // Every spring touched a removed particle, so all of them are gone.
+      expect(world.remove(links[3]), isFalse);
+      expect(world.springs, isEmpty);
+      expect(world.particles, [for (var i = 1; i < 10; i += 2) ps[i]]);
+      expect(world.bodies, [for (var i = 1; i < 10; i += 2) ps[i]]);
+    });
+
+    test('a spring made after its particle was removed stays registered', () {
+      final e = Flut5Engine();
+      final world = e.physicsEngine;
+      final a = world.createParticle(0, 0);
+      final b = world.createParticle(10, 0);
+      world.remove(a);
+      final s = world.createSpring(a, b);
+      expect(world.springs, [s]);
+      expect(world.remove(s), isTrue);
+    });
+
+    test('removed bodies stop stepping before the lists are read', () {
+      final e = Flut5Engine();
+      final world = e.physicsEngine..setGravity(1);
+      final p = world.createParticle(0, 0);
+      world.remove(p);
+      world.update();
+      expect(p.y, 0.0);
+    });
+
     test('damped spring settles at rest length', () {
       final (e, s) = stretchedSpring();
       s.a.damping = 0.9;

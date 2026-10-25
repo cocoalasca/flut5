@@ -33,10 +33,10 @@ class TextRenderItem({
   /// Drop shadow drawn beneath the text, or `null` for none.
   final Flut5ShadowSpec? shadow,
 }) extends Flut5RenderItem {
-  /// Shared paint for GPU tinting — reconfigured in place each draw to avoid
-  /// per-frame allocations. Its `filterQuality` is stamped from
-  /// [Flut5TextCache.textBlitQuality] in [execute].
-  static final Paint _tintPaint = Paint();
+  /// GPU tint paints for the stroke and fill passes, rebuilt only when the
+  /// source paint changes — see [_GlyphTint].
+  static final _strokeTint = _GlyphTint();
+  static final _fillTint = _GlyphTint();
 
   /// Untinted blit paint used inside a gradient layer — white glyph pixels
   /// land on the offscreen as-is to act as the srcIn mask. `filterQuality`
@@ -92,7 +92,6 @@ class TextRenderItem({
   void execute(Canvas canvas) {
     final cache = Flut5TextCache.instance;
     final FilterQuality glyphQuality = cache.textBlitQuality;
-    _tintPaint.filterQuality = glyphQuality;
     _maskPaint.filterQuality = glyphQuality;
     double? painterWidth;
     double dx = x;
@@ -100,8 +99,9 @@ class TextRenderItem({
     // Shadow Pass (under everything): reuse the cached white glyph image the
     // text itself draws — the FILL silhouette when filled, otherwise the STROKE
     // raster — recolored to the shadow color and blurred, shifted by the offset.
-    // Reusing the text's own raster means NO new cache entry, and an outline-
-    // only text casts an outline shadow rather than a solid blob.
+    // Reusing the text's own raster means NO new cache entry (a blurred shadow
+    // bakes its silhouette onto that entry), and an outline-only text casts an
+    // outline shadow rather than a solid blob.
     final shadowSpec = shadow;
     if (shadowSpec != null) {
       final bool shadowStroke = fillPaint == null && strokePaint != null;
@@ -120,17 +120,15 @@ class TextRenderItem({
         strokeWidth: shadowStroke ? strokePaint!.strokeWidth : 0.0,
       );
       final sdx = _alignedX(x, cachedShadow.width);
-      final sdst = Rect.fromLTWH(
-        sdx - cachedShadow.leftPad,
-        y,
-        cachedShadow.drawWidth,
-        cachedShadow.height,
-      );
-      canvas.drawImageRect(
-        cachedShadow.image,
-        cachedShadow.srcRect,
-        sdst.shift(shadowSpec.offset),
-        shadowSpec.textTintPaint,
+      shadowSpec.paintText(
+        canvas,
+        cachedShadow,
+        Rect.fromLTWH(
+          sdx - cachedShadow.leftPad,
+          y,
+          cachedShadow.drawWidth,
+          cachedShadow.height,
+        ),
       );
     }
 
@@ -197,19 +195,11 @@ class TextRenderItem({
         }
         canvas.restore();
       } else {
-        _tintPaint
-          ..colorFilter = ColorFilter.mode(
-            strokePaint!.color,
-            ui.BlendMode.srcIn,
-          )
-          ..blendMode = strokePaint!.blendMode
-          ..maskFilter = strokePaint!.maskFilter
-          ..imageFilter = strokePaint!.imageFilter;
         canvas.drawImageRect(
           cachedStroke.image,
           cachedStroke.srcRect,
           dst,
-          _tintPaint,
+          _strokeTint.of(strokePaint!, glyphQuality),
         );
       }
     }
@@ -278,18 +268,36 @@ class TextRenderItem({
         }
         canvas.restore();
       } else {
-        _tintPaint
-          ..colorFilter = ColorFilter.mode(fillPaint!.color, ui.BlendMode.srcIn)
-          ..blendMode = fillPaint!.blendMode
-          ..maskFilter = fillPaint!.maskFilter
-          ..imageFilter = fillPaint!.imageFilter;
         canvas.drawImageRect(
           cachedFill.image,
           cachedFill.srcRect,
           dst,
-          _tintPaint,
+          _fillTint.of(fillPaint!, glyphQuality),
         );
       }
     }
+  }
+}
+
+/// The tint paint for one text pass: [of]'s source colour applied to the
+/// white glyph raster, with its blend mode and filters. Rebuilt only when
+/// the source paint or the glyph quality changes — queued paints are
+/// immutable snapshots, so identity stands for content, and the colour
+/// filter is a native object not worth rebuilding on every draw.
+class _GlyphTint {
+  Paint? _source;
+  FilterQuality? _quality;
+  final Paint _paint = Paint();
+
+  Paint of(Paint source, FilterQuality quality) {
+    if (identical(source, _source) && quality == _quality) return _paint;
+    _source = source;
+    _quality = quality;
+    return _paint
+      ..colorFilter = ColorFilter.mode(source.color, ui.BlendMode.srcIn)
+      ..blendMode = source.blendMode
+      ..maskFilter = source.maskFilter
+      ..imageFilter = source.imageFilter
+      ..filterQuality = quality;
   }
 }

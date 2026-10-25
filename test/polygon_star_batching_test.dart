@@ -32,14 +32,22 @@ void main() {
       expect(e.renderQueue.itemCount, 1);
     });
 
-    test('translucent fill falls back to per-shape items', () {
-      final e = Flut5Engine()
+    test('translucent fill batches only while the shapes keep clear', () {
+      Flut5Engine translucent() => Flut5Engine()
         ..fill(Colors.white.withValues(alpha: 0.5))
         ..noStroke();
-      e.polygon(20, 20, 6, 20);
-      e.star(60, 20, 10, 20, 5);
-      e.renderQueue.flushPending();
-      expect(e.renderQueue.itemCount, 2);
+      // Hexagon ends at x = 28.7, the star starts at 32.5: 3.8 px apart.
+      final apart = translucent()
+        ..polygon(20, 20, 6, 20)
+        ..star(42, 20, 10, 20, 5);
+      apart.renderQueue.flushPending();
+      expect(apart.renderQueue.itemCount, 1);
+      // 1.8 px apart — close enough to share an edge pixel.
+      final close = translucent()
+        ..polygon(20, 20, 6, 20)
+        ..star(40, 20, 10, 20, 5);
+      close.renderQueue.flushPending();
+      expect(close.renderQueue.itemCount, 2);
     });
 
     test('invalid sides/points enqueue nothing', () {

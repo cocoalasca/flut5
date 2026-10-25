@@ -63,7 +63,9 @@ export 'items/flut5_transform_render_item.dart';
 /// text, background, a shape with a different paint, or a primitive of
 /// a different kind) flushes the pending batches first. So does an outlined
 /// shape drawn over one already in the batch, when fill and stroke differ in
-/// colour — its fill has to cover the earlier outline.
+/// colour — its fill has to cover the earlier outline — and a translucent
+/// shape that comes within a few pixels of one already in the batch, which
+/// one by one would blend over it twice.
 ///
 /// Translation, rotation and uniform scale are folded into compatible geometry
 /// at append time, including across push/pop scopes. Uniform scale adjusts
@@ -172,7 +174,15 @@ class Flut5RenderQueue {
   // on the canvas. Saved states then become real canvas saves; folding can
   // resume relative to that canvas transform.
   _FoldTransform _fold = const _FoldTransform();
-  final List<(_FoldTransform, bool)> _foldStack = [];
+  // Per entry: the saved fold, whether it became a real canvas save, and for
+  // a real save the [_canvasLinear] it restores.
+  final List<(_FoldTransform, bool, bool)> _foldStack = [];
+
+  /// Whether the canvas itself carries a rotation, scale or matrix — one
+  /// materialized rather than folded into geometry. Queue coordinates then
+  /// stop being logical pixels, so distances measured in them say nothing
+  /// about which device pixels two shapes touch.
+  bool _canvasLinear = false;
   final Map<Paint, Map<double, Paint>> _scaledStrokes = Map.identity();
   // addPath consumes these synchronously. Only the destination path is queued.
   final Path _transformPath = Path();
@@ -202,7 +212,15 @@ class Flut5RenderQueue {
   // Shadows, dashes and shaders depend on the original local coordinate
   // system. Keep their existing canvas rendering rather than transforming
   // only the outline and silently changing their appearance.
-  void _prepareGeometry(Paint? fill, Paint? stroke, {bool points = false}) {
+  //
+  // [alone] is the caller's own verdict on whether the shape draws by itself,
+  // for shapes [_drawnAlone] alone does not decide.
+  void _prepareGeometry(
+    Paint? fill,
+    Paint? stroke, {
+    bool points = false,
+    bool? alone,
+  }) {
     if (!_fold.hasLinear) {
       // A shader is laid out in the sketch's coordinates. Moving only the
       // geometry would slide the shape out from under its gradient.
@@ -213,7 +231,7 @@ class Flut5RenderQueue {
     }
     if (_activeShadow != null ||
         (_hasDash && stroke != null && !points) ||
-        _drawnAlone(fill, stroke) ||
+        (alone ?? _drawnAlone(fill, stroke)) ||
         (points && stroke?.strokeCap != StrokeCap.round)) {
       _materializeTransforms();
     }
@@ -282,7 +300,7 @@ class Flut5RenderQueue {
 
   /// Records a `push()`. Saves the pending transform without emitting an item.
   void pushTransform() {
-    _foldStack.add((_fold, false));
+    _foldStack.add((_fold, false, false));
   }
 
   /// Records a `pop()`. Folded entries restore the pending transform silently;
@@ -316,9 +334,10 @@ class Flut5RenderQueue {
       );
       return;
     }
-    final (saved, real) = _foldStack.removeLast();
+    final (saved, real, linear) = _foldStack.removeLast();
     if (real) {
       _addItem(TransformRenderItem.pop());
+      _canvasLinear = linear;
     }
     _fold = saved;
   }
@@ -356,6 +375,7 @@ class Flut5RenderQueue {
       }
     }
     _materializeTransforms();
+    if (item.type != TransformType.translate) _canvasLinear = true;
     _addItem(item);
   }
 
@@ -367,12 +387,12 @@ class Flut5RenderQueue {
     flushPending();
     var previous = const _FoldTransform();
     for (int i = 0; i < _foldStack.length; i++) {
-      final (saved, real) = _foldStack[i];
+      final (saved, real, _) = _foldStack[i];
       if (real) continue;
       _emitFoldDelta(previous, saved);
       _items.add(TransformRenderItem.push());
       previous = saved;
-      _foldStack[i] = (const _FoldTransform(), true);
+      _foldStack[i] = (const _FoldTransform(), true, _canvasLinear);
     }
     _emitFoldDelta(previous, _fold);
     _fold = const _FoldTransform();
@@ -385,6 +405,7 @@ class Flut5RenderQueue {
       _items.add(TransformRenderItem.translate(delta.dx, delta.dy));
     } else {
       _items.add(TransformRenderItem.matrix(delta.matrix));
+      _canvasLinear = true;
     }
   }
 
@@ -483,9 +504,36 @@ class Flut5RenderQueue {
   }
 
   /// True when a shape painted with [fill]/[stroke] has to be its own item:
-  /// a paint [canBatchPaint] rejects, or an active blur.
-  bool _drawnAlone(Paint? fill, Paint? stroke) =>
-      _blurLayer != null || !canBatchPaint(fill) || !canBatchPaint(stroke);
+  /// an active blur, or a paint [canBatchPaint] rejects — unless all that
+  /// sets it apart is opacity and it may still batch with the shapes it
+  /// keeps clear of ([_batchesApart]).
+  ///
+  /// A translucent rect, oval or arc drawn alone goes through the canvas's
+  /// dedicated renderer for that shape; merged into a batch path its edges
+  /// are anti-aliased by the path renderer instead, exactly as an opaque
+  /// batch already draws them (measured on Impeller: up to 47 levels on
+  /// edge pixels, nothing else). Polygons and vertex shapes are paths either
+  /// way and come out identical.
+  bool _drawnAlone(Paint? fill, Paint? stroke) {
+    if (_blurLayer != null) return true;
+    if (canBatchPaint(fill) && canBatchPaint(stroke)) return false;
+    return !_batchesApart(fill, stroke);
+  }
+
+  /// True when translucent shapes painted with [fill]/[stroke] may share a
+  /// batch with the shapes they keep clear of — see [_keepsApart] for what
+  /// clear means.
+  ///
+  /// Not under a shadow (one shadow pass beneath the batch would land under
+  /// neighbours a shape-by-shape shadow covers), on a canvas carrying a
+  /// materialized scale (the clearance is measured in logical pixels), or in
+  /// a pixelate scope (whose pixels are whole blocks).
+  bool _batchesApart(Paint? fill, Paint? stroke) =>
+      _activeShadow == null &&
+      !_canvasLinear &&
+      _pixelateScopes == 0 &&
+      (fill == null || _plainPaint(fill)) &&
+      (stroke == null || _plainPaint(stroke));
 
   // One-entry memo for [_maskBlurredFill], keyed on the source paint's
   // identity — paint snapshots are immutable once queued and stay identical
@@ -546,6 +594,9 @@ class Flut5RenderQueue {
   /// own entry, and its kind.
   final List<({int depth, bool pixelate})> _scopes = [];
 
+  /// How many of [_scopes] are pixelate scopes.
+  int _pixelateScopes = 0;
+
   /// Whether this frame holds a pixelate scope, so other frames keep the
   /// plain replay. Blur scopes need nothing from the replay.
   bool _hasPixelate = false;
@@ -599,6 +650,7 @@ class Flut5RenderQueue {
     flushPending();
     pushTransform();
     _scopes.add((depth: _foldStack.length, pixelate: pixelate));
+    if (pixelate) _pixelateScopes++;
     _items.add(marker);
   }
 
@@ -629,6 +681,7 @@ class Flut5RenderQueue {
       popTransform();
     }
     _scopes.removeLast();
+    if (pixelate) _pixelateScopes--;
     popTransform();
     flushPending();
     _items.add(marker);
@@ -745,16 +798,19 @@ class Flut5RenderQueue {
   /// many shapes are combined into one path (overlapping regions blend
   /// once instead of per-shape), so those paints fall back to per-shape
   /// render items.
-  static bool canBatchPaint(Paint? paint) {
-    if (paint == null) return true;
-    if (paint.color.a != 1.0) return false;
-    if (paint.shader != null) return false;
-    if (paint.blendMode != BlendMode.srcOver) return false;
-    if (paint.maskFilter != null) return false;
-    if (paint.colorFilter != null) return false;
-    if (paint.imageFilter != null) return false;
-    return true;
-  }
+  ///
+  /// Translucent shapes still batch with the shapes they keep clear of — see
+  /// [_batchesApart].
+  static bool canBatchPaint(Paint? paint) =>
+      paint == null || (paint.color.a == 1.0 && _plainPaint(paint));
+
+  /// [canBatchPaint] with opacity left out: no shader, blend mode or filter.
+  static bool _plainPaint(Paint paint) =>
+      paint.shader == null &&
+      paint.blendMode == BlendMode.srcOver &&
+      paint.maskFilter == null &&
+      paint.colorFilter == null &&
+      paint.imageFilter == null;
 
   // ── Append entry points ───────────────────────────────────────────────
 
@@ -765,6 +821,24 @@ class Flut5RenderQueue {
       _lineCount == 0 &&
       _atlasCount == 0 &&
       !_pendingShapeHasContent;
+
+  /// Whether points painted with [paint] stand apart from the folded
+  /// geometry — blurred, or a paint whose shader or filter is laid out in
+  /// canvas coordinates. Opacity doesn't count: every point in a
+  /// [Canvas.drawRawPoints] run blends on its own, so a translucent run
+  /// draws exactly like its points one by one, wherever they overlap.
+  bool _pointsAlone(Paint paint) => _blurLayer != null || !_plainPaint(paint);
+
+  /// Whether a line painted with [paint] draws as its own item. Opacity only
+  /// counts under a shadow: a run casts its shadow beneath all of its lines,
+  /// where one by one each line's shadow would cover the lines before it.
+  /// Otherwise a run draws exactly like its segments one by one —
+  /// [Canvas.drawRawPoints] strokes and blends every segment on its own,
+  /// measured identical on Skia and on Impeller for every cap.
+  bool _lineAlone(Paint paint, bool opaque) =>
+      _blurLayer != null ||
+      !_plainPaint(paint) ||
+      (!opaque && _activeShadow != null);
 
   /// Append a point to the auto-batch buffer. Consecutive calls with the same
   /// [paint] reference coalesce; a change in paint identity flushes the prior
@@ -782,7 +856,7 @@ class Flut5RenderQueue {
       );
       return;
     }
-    _prepareGeometry(null, paint, points: true);
+    _prepareGeometry(null, paint, points: true, alone: _pointsAlone(paint));
     paint = _foldStroke(paint)!;
     final transformedX = _fold.x(x, y);
     y = _fold.y(x, y);
@@ -816,7 +890,9 @@ class Flut5RenderQueue {
       );
       return;
     }
-    _prepareGeometry(null, paint);
+    final opaque = paint.color.a == 1.0;
+    final alone = _lineAlone(paint, opaque);
+    _prepareGeometry(null, paint, alone: alone);
     paint = _foldStroke(paint)!;
     final transformedX1 = _fold.x(x1, y1);
     final transformedX2 = _fold.x(x2, y2);
@@ -834,7 +910,7 @@ class Flut5RenderQueue {
       );
       return;
     }
-    if (_drawnAlone(null, paint)) {
+    if (alone) {
       _addItem(
         LineRenderItem(
           Offset(x1, y1),
@@ -854,7 +930,10 @@ class Flut5RenderQueue {
     // nothing to — the line's shadow would vanish. Keep the line in the line
     // buffer there, where it casts its own stroke shadow. (Stroke-only
     // batches shadow via the stroke outline, so merging stays safe.)
-    if (_lineCount == 0 &&
+    // A translucent line stays in the line buffer too: a translucent shape
+    // batch only takes shapes that keep clear of each other.
+    if (opaque &&
+        _lineCount == 0 &&
         _pendingShapeHasContent &&
         identical(_pendingShapeStroke, paint) &&
         (_activeShadow == null || _pendingShapeFill == null)) {
@@ -886,7 +965,8 @@ class Flut5RenderQueue {
   /// Append a rectangle (or rounded rectangle) to the pending shape path.
   ///
   /// Falls back to a per-shape [RectRenderItem] when the paint can't be
-  /// safely merged (translucent, shader, filter, non-srcOver blend).
+  /// safely merged (shader, filter, non-srcOver blend, or translucent and
+  /// too close to a shape in the batch).
   void appendRect(Rect rect, RRect? rrect, Paint? fill, Paint? stroke) {
     _prepareGeometry(fill, stroke);
     if (_fold.hasLinear) {
@@ -1190,7 +1270,8 @@ class Flut5RenderQueue {
     Paint? stroke, {
     bool oriented = false,
   }) {
-    _prepareGeometry(fill, stroke);
+    final alone = _drawnAlone(fill, stroke);
+    _prepareGeometry(fill, stroke, alone: alone);
     if (_fold.hasLinear) {
       _appendTransformedPath(path, fill, stroke, oriented: oriented);
       return;
@@ -1205,7 +1286,7 @@ class Flut5RenderQueue {
       _emitDashed(off == Offset.zero ? path : path.shift(off), fill, stroke);
       return;
     }
-    if (_drawnAlone(fill, stroke)) {
+    if (alone) {
       final masked = _maskBlurredFill(fill, stroke);
       _addItem(
         PathRenderItem(
@@ -1384,7 +1465,7 @@ class Flut5RenderQueue {
       );
       return;
     }
-    _prepareGeometry(null, paint, points: true);
+    _prepareGeometry(null, paint, points: true, alone: _pointsAlone(paint));
     paint = _foldStroke(paint)!;
     if (_pendingPointPaint != null && !identical(_pendingPointPaint, paint)) {
       _flushPoints();
@@ -1542,7 +1623,8 @@ class Flut5RenderQueue {
   /// [turn] is the polygon's winding as [_polyTurn] reports it, for callers
   /// that already know; left out, it is measured when a fill needs it.
   void _appendPoly(int n, Paint? fill, Paint? stroke, {int? turn}) {
-    _prepareGeometry(fill, stroke);
+    final alone = _drawnAlone(fill, stroke);
+    _prepareGeometry(fill, stroke, alone: alone);
     stroke = _foldStroke(stroke);
     if (_clipRecordingPath != null) {
       _addPolyTo(_clipRecordingPath!, n, reversed: (turn ?? _polyTurn(n)) < 0);
@@ -1555,7 +1637,7 @@ class Flut5RenderQueue {
       _emitDashed(p, fill, stroke);
       return;
     }
-    if (_drawnAlone(fill, stroke)) {
+    if (alone) {
       final p = Path();
       _addPolyTo(p, n);
       final masked = _maskBlurredFill(fill, stroke);
@@ -1565,9 +1647,11 @@ class Flut5RenderQueue {
       );
       return;
     }
-    // Winding only matters to a fill, and not at all to a stacking batch,
-    // which keeps every shape off every other anyway.
-    if (fill != null && !_stacks(fill, stroke)) turn ??= _polyTurn(n);
+    // Winding only matters to a fill, and not at all to a stacking or
+    // translucent batch, which keeps every shape off every other anyway.
+    if (fill != null && !_stacks(fill, stroke) && !_keepsApart(fill, stroke)) {
+      turn ??= _polyTurn(n);
+    }
     // A counter-clockwise polygon goes in backwards — the same fill, pixel
     // for pixel, and it now adds to the shapes it overlaps instead of
     // cancelling them. A stroke's anti-aliasing does depend on direction, so
@@ -1819,7 +1903,7 @@ class Flut5RenderQueue {
         item is! BackgroundRenderItem &&
         item is! TransformRenderItem &&
         item is! ClipRenderItem) {
-      _items.add(BlurRenderItem([item], layer));
+      _items.add(BlurRenderItem([item], layer, sigma: _blurSigma));
     } else {
       _items.add(item);
     }
@@ -1836,7 +1920,7 @@ class Flut5RenderQueue {
     _flushPoints();
     _flushLines();
     _flushImages();
-    _items.add(BlurRenderItem(items, layer));
+    _items.add(BlurRenderItem(items, layer, sigma: _blurSigma));
   }
 
   /// Returns `true` when the last [BackgroundRenderItem] enqueued in this
@@ -2079,10 +2163,12 @@ class Flut5RenderQueue {
     // Fold state is per-frame — the canvas transform resets with the frame.
     _fold = const _FoldTransform();
     _foldStack.clear();
+    _canvasLinear = false;
     _scaledStrokes.clear();
     _lastBackground = null;
     _hasOpaqueFullCanvasBg = false;
     _scopes.clear();
+    _pixelateScopes = 0;
     _hasPixelate = false;
   }
 
@@ -2126,12 +2212,57 @@ class Flut5RenderQueue {
     return _stacksResult;
   }
 
+  /// Half the clearance, in logical pixels, kept between the drawn extents
+  /// of shapes in a translucent batch ([_keepsApart]).
+  ///
+  /// Measured on Impeller (Metal): translucent polygons two device pixels
+  /// apart render identically merged into one path and drawn one by one;
+  /// one pixel apart, shared edge pixels move by up to 4 levels. Three
+  /// logical pixels keep two device pixels down to a 0.67 trail capture
+  /// scale.
+  static const double _apartClearance = 1.5;
+
+  // One-entry memo for [_keepsApart], on paint identity like [_stacks].
+  Paint? _apartFill;
+  Paint? _apartStroke;
+  bool _apartResult = false;
+  double _apartPad = 0;
+
+  /// True when shapes painted with [fill]/[stroke] may only share a batch
+  /// with shapes they keep clear of — a translucent paint, which blends
+  /// twice where two shapes drawn one by one overlap and once where a
+  /// single path covers both. Clear means not sharing a device pixel, edge
+  /// anti-aliasing included: such a batch files every shape's box grown by
+  /// its stroke's reach and [_apartClearance], and closes as soon as a new
+  /// one lands on any of them.
+  bool _keepsApart(Paint? fill, Paint? stroke) {
+    if (!identical(fill, _apartFill) || !identical(stroke, _apartStroke)) {
+      _apartFill = fill;
+      _apartStroke = stroke;
+      _apartResult =
+          (fill != null && fill.color.a != 1.0) ||
+          (stroke != null && stroke.color.a != 1.0);
+      var pad = _apartClearance;
+      if (stroke != null) {
+        // How far the stroke reaches past the outline: half its width, out
+        // to a miter's tip at sharp corners or a square cap's corner.
+        final reach = stroke.strokeJoin == StrokeJoin.miter
+            ? math.max(stroke.strokeMiterLimit, math.sqrt2)
+            : math.sqrt2;
+        pad += stroke.strokeWidth / 2 * reach;
+      }
+      _apartPad = pad;
+    }
+    return _apartResult;
+  }
+
   /// True when [_beginShape] will read the box of a shape painted with
   /// [fill]/[stroke], so callers for whom the box is not free can skip it.
   bool _wantsBox(Paint? fill, Paint? stroke, bool oriented) =>
       _pendingShapeTracked ||
       (fill != null && !oriented) ||
-      _stacks(fill, stroke);
+      _stacks(fill, stroke) ||
+      _keepsApart(fill, stroke);
 
   /// Opens (or continues) the shape batch for [fill]/[stroke] and returns its
   /// path. Besides a change of paint, two things close the open batch, both
@@ -2142,6 +2273,8 @@ class Flut5RenderQueue {
   /// * the new shape, or one it lands on, is filled and not [oriented] — its
   ///   contours may wind counter-clockwise, and opposite windings cancel into
   ///   a hole where they overlap. Shapes that all wind clockwise only add up.
+  /// * the paint is translucent ([_keepsApart]) and the new shape comes
+  ///   within the clearance of any shape in the batch.
   ///
   /// [bounds] is the box of the geometry about to be added, in queue space
   /// and without stroke width; it is only read when [_wantsBox] holds, so
@@ -2157,6 +2290,18 @@ class Flut5RenderQueue {
   }) {
     final stacks = _stacks(fill, stroke);
     final unwound = fill != null && !oriented;
+    final apart = _keepsApart(fill, stroke);
+    if (apart) {
+      // Sorted first: a negative-size shape's box is inverted, and growing
+      // an inverted box shrinks it.
+      final b = bounds!;
+      bounds = Rect.fromLTRB(
+        math.min(b.left, b.right) - _apartPad,
+        math.min(b.top, b.bottom) - _apartPad,
+        math.max(b.left, b.right) + _apartPad,
+        math.max(b.top, b.bottom) + _apartPad,
+      );
+    }
     if (_pendingShapePath != null) {
       final bool split;
       if (!identical(_pendingShapeFill, fill) ||
@@ -2170,16 +2315,18 @@ class Flut5RenderQueue {
           bounds.top,
           bounds.right,
           bounds.bottom,
-          markedOnly: !stacks && !unwound,
+          markedOnly: !stacks && !unwound && !apart,
         );
       } else {
         // The batch kept no boxes, so a shape that must be tested can't
-        // join it.
+        // join it. (A translucent batch always keeps them.)
         split = unwound;
       }
       if (split) _flushShapes();
     }
-    if (_pendingShapePath == null) _pendingShapeTracked = stacks || unwound;
+    if (_pendingShapePath == null) {
+      _pendingShapeTracked = stacks || unwound || apart;
+    }
     if (_pendingShapeTracked) {
       _pendingShapeBoxes.add(
         bounds!.left,

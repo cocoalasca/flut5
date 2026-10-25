@@ -97,19 +97,53 @@ class Flut5CachedText(
     image.height.toDouble(),
   );
 
-  /// Decoded size of [image] in bytes, assuming RGBA. [ui.Image.width] and
-  /// [ui.Image.height] are pixel dimensions — already scaled by the device
-  /// pixel ratio — so this is the real GPU cost of the entry.
-  final int bytes;
+  /// Decoded size of [image] and of its baked shadows in bytes, assuming
+  /// RGBA. [ui.Image.width] and [ui.Image.height] are pixel dimensions —
+  /// already scaled by the device pixel ratio — so this is the real GPU cost
+  /// of the entry.
+  int get bytes => _imageBytes + _shadowBytes;
+  final int _imageBytes;
+  int _shadowBytes = 0;
+
+  /// Shadow silhouettes baked from [image], oldest first — see
+  /// [Flut5TextCache.bakedShadow]. They live and die with the entry.
+  Map<Object, Flut5ShadowRaster>? _shadows;
 
   /// LRU bookkeeping — last [Flut5TextCache._accessTick] this entry was used.
   int _lastUsedTick = 0;
 
-  this : bytes = image.width * image.height * 4;
+  this : _imageBytes = image.width * image.height * 4;
 
   void dispose() {
     image.dispose();
+    final shadows = _shadows;
+    if (shadows == null) return;
+    for (final shadow in shadows.values) {
+      shadow.image.dispose();
+    }
   }
+}
+
+/// A text raster's shadow silhouette, baked once — see
+/// [Flut5TextCache.bakedShadow].
+class Flut5ShadowRaster(
+  /// The silhouette, white, padded on every side of the raster by [pad].
+  final ui.Image image,
+
+  /// Logical pixels added on each side of the raster's draw rect.
+  final double pad,
+
+  /// Logical size of [image], padding included.
+  final Size size,
+) {
+  late final Rect srcRect = Rect.fromLTWH(
+    0,
+    0,
+    image.width.toDouble(),
+    image.height.toDouble(),
+  );
+
+  int get bytes => image.width * image.height * 4;
 }
 
 /// Composite key for cached rasterized text images.
@@ -611,6 +645,71 @@ class Flut5TextCache._() {
     _enforceTextureLimits();
 
     return cachedText;
+  }
+
+  /// Most shadow silhouettes kept per text raster. A shadow that changes
+  /// blur or spread every frame bakes anew each time; past this many, the
+  /// oldest bake is dropped.
+  static const int _shadowsPerText = 4;
+
+  /// [text]'s white raster passed once through [filter] — a shadow's spread
+  /// and blur — and kept with the entry under [key], so a shadow blits a
+  /// finished silhouette each frame instead of filtering the glyphs again.
+  /// Drawing the same shadow again — next frame, or under a new `shadow()`
+  /// call with the same [key] — reuses the bake. [reach] is how far
+  /// [filter] can spread the raster, in logical pixels.
+  ///
+  /// The silhouette is baked at the raster's own resolution with the glyphs
+  /// where a 1:1 draw puts them, so it lines up with the text exactly. Its
+  /// bytes count toward [cacheBytes] and leave with the entry.
+  Flut5ShadowRaster bakedShadow(
+    Flut5CachedText text,
+    Object key,
+    Paint filter,
+    double reach,
+  ) {
+    final shadows = text._shadows ??= <Object, Flut5ShadowRaster>{};
+    final hit = shadows[key];
+    if (hit != null) return hit;
+
+    final ratio = _cachedPixelRatio ?? 1.0;
+    // Whole pixels, so the glyphs keep the raster's pixel grid; two spare
+    // for the filters' edge rounding.
+    final padPx = (reach * ratio).ceil() + 2;
+    final pad = padPx / ratio;
+    final width = text.image.width + 2 * padPx;
+    final height = text.image.height + 2 * padPx;
+    final recorder = ui.PictureRecorder();
+    Canvas(recorder)
+      ..scale(ratio)
+      ..drawImageRect(
+        text.image,
+        text.srcRect,
+        Rect.fromLTWH(pad, pad, text.drawWidth, text.height),
+        filter,
+      );
+    final picture = recorder.endRecording();
+    final raster = Flut5ShadowRaster(
+      picture.toImageSync(width, height),
+      pad,
+      Size(width / ratio, height / ratio),
+    );
+    picture.dispose();
+
+    if (shadows.length >= _shadowsPerText) {
+      final oldest = shadows.remove(shadows.keys.first)!;
+      text._shadowBytes -= oldest.bytes;
+      _cacheBytes -= oldest.bytes;
+      oldest.image.dispose();
+    }
+    shadows[key] = raster;
+    text._shadowBytes += raster.bytes;
+    _cacheBytes += raster.bytes;
+    // Newest, so a byte overflow evicts other entries first — this one is
+    // about to be drawn.
+    text._lastUsedTick = ++_accessTick;
+    _enforceTextureLimits();
+    return raster;
   }
 
   /// Grows the texture cap, or evicts, when an insert overflows the cache.

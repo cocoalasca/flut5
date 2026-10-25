@@ -56,22 +56,82 @@ class Flut5ShadowSpec(
           ..maskFilter = _blurFilter)
       : null;
 
-  /// Tint paint for text shadows: recolours the cached white glyph image to
-  /// the shadow color, then applies spread and blur — see
-  /// [_buildRasterTintPaint]. Sampled at the text cache's blit quality so the
-  /// shadow resamples exactly like the glyphs it sits beneath.
-  late final Paint textTintPaint = _buildRasterTintPaint(
-    Flut5TextCache.instance.textBlitQuality,
-  );
+  /// Tint paint for text shadows: recolours a white glyph raster — or the
+  /// spread and blurred silhouette [paintText] bakes from one — to the shadow
+  /// color. Sampled at the text cache's blit quality so the shadow resamples
+  /// exactly like the glyphs it sits beneath.
+  late final Paint textTintPaint = Paint()
+    ..colorFilter = ColorFilter.mode(color, BlendMode.srcIn)
+    ..filterQuality = _textQuality;
 
-  /// Tint paint for image shadows — the same recolour/spread/blur pipeline as
-  /// [textTintPaint], sampled at the [FilterQuality.medium] images blit with.
-  /// A bitmap's own alpha is the silhouette, so a transparent PNG casts a
-  /// shadow shaped like its content rather than a rectangular blob.
+  final FilterQuality _textQuality = Flut5TextCache.instance.textBlitQuality;
+
+  /// Spread grows the glyphs by a morphological [ImageFilter.dilate], then
+  /// the blur softens them (CSS order). `null` when the shadow is neither.
+  ImageFilter? get _silhouetteFilter {
+    final blurred = blur > 0
+        ? ImageFilter.blur(
+            sigmaX: _blurSigma,
+            sigmaY: _blurSigma,
+            tileMode: TileMode.decal,
+          )
+        : null;
+    if (spread <= 0) return blurred;
+    final dilate = ImageFilter.dilate(radiusX: spread, radiusY: spread);
+    return blurred == null
+        ? dilate
+        : ImageFilter.compose(outer: blurred, inner: dilate);
+  }
+
+  late final Paint _textBakePaint = Paint()
+    ..imageFilter = _silhouetteFilter
+    ..filterQuality = _textQuality;
+
+  /// What tells baked silhouettes apart — by value, so a shadow set again
+  /// with the same numbers reuses the bakes of the last.
+  late final Object _textBakeKey = (blur, spread, _textQuality);
+
+  /// Draws the shadow of the white text raster [text] laid out at [dst]: the
+  /// raster recoloured, spread and blurred, shifted by [offset].
+  ///
+  /// Filtering every glyph every frame cost ~0.15 ms of GPU time per glyph
+  /// on Impeller (150 shadowed characters: 22 ms a frame). A spread or
+  /// blurred shadow is instead baked once into a silhouette kept with the
+  /// raster ([Flut5TextCache.bakedShadow]), so a frame only blits it.
+  void paintText(Canvas canvas, Flut5CachedText text, Rect dst) {
+    final at = dst.shift(offset);
+    if (blur <= 0 && spread <= 0) {
+      canvas.drawImageRect(text.image, text.srcRect, at, textTintPaint);
+      return;
+    }
+    final baked = Flut5TextCache.instance.bakedShadow(
+      text,
+      _textBakeKey,
+      _textBakePaint,
+      spread + (blur > 0 ? 3 * _blurSigma : 0),
+    );
+    canvas.drawImageRect(
+      baked.image,
+      baked.srcRect,
+      Rect.fromLTWH(
+        at.left - baked.pad,
+        at.top - baked.pad,
+        baked.size.width,
+        baked.size.height,
+      ),
+      textTintPaint,
+    );
+  }
+
+  /// Tint paint for image shadows: recolours the bitmap to the shadow color,
+  /// then applies spread and blur — see [_buildRasterTintPaint]. Sampled at
+  /// the [FilterQuality.medium] images blit with. A bitmap's own alpha is the
+  /// silhouette, so a transparent PNG casts a shadow shaped like its content
+  /// rather than a rectangular blob.
   late final Paint imageTintPaint = _buildRasterTintPaint(FilterQuality.medium);
 
-  /// Builds a shadow paint that recolours an existing raster — a glyph
-  /// texture or a bitmap — to the shadow color, then applies spread and blur.
+  /// Builds a shadow paint that recolours a bitmap to the shadow color, then
+  /// applies spread and blur.
   /// Spread is realized as a morphological [ImageFilter.dilate] composed
   /// inside the blur (grow first, soften after — CSS order), so no extra
   /// rasters are generated; when spread is `0` the cheaper [MaskFilter] blur

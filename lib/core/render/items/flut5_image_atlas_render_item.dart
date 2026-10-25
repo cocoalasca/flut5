@@ -49,6 +49,13 @@ class ImageAtlasRenderItem({
   /// [ImageRenderItem], so a frame full of sprite runs allocates no [Paint]s.
   static final Paint _blitPaint = Paint()..filterQuality = FilterQuality.medium;
 
+  /// Per-sprite transform for rotated sprites. [Canvas.transform] copies it,
+  /// so one buffer serves every sprite; only the four linear entries and the
+  /// translation are ever written.
+  static final Float64List _matrix = Float64List(16)
+    ..[10] = 1
+    ..[15] = 1;
+
   /// Number of blits merged into this item. Always >= 2 — the queue emits a
   /// drawImageRect item for a run of one (with its own transform if needed).
   int get spriteCount => transforms.length ~/ 4;
@@ -78,24 +85,7 @@ class ImageAtlasRenderItem({
     }
     // Queue data can still coalesce across rotations, but preserve the
     // primitive renderer for rotated quads. Only axis-aligned runs use atlas.
-    final matrix = Float64List.fromList([
-      1,
-      0,
-      0,
-      0,
-      0,
-      1,
-      0,
-      0,
-      0,
-      0,
-      1,
-      0,
-      0,
-      0,
-      0,
-      1,
-    ]);
+    final matrix = _matrix;
     var start = 0;
     for (var i = 0; i < transforms.length; i += 4) {
       if (transforms[i + 1] == 0) continue;

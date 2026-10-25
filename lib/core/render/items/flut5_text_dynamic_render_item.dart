@@ -33,10 +33,10 @@ class TextDynamicRenderItem({
   /// Drop shadow drawn beneath the text, or `null` for none.
   final Flut5ShadowSpec? shadow,
 }) extends Flut5RenderItem {
-  /// Shared paint for GPU tinting — reconfigured in place each draw to avoid
-  /// per-frame allocations. Its `filterQuality` is stamped from
-  /// [Flut5TextCache.textBlitQuality] in [execute].
-  static final Paint _tintPaint = Paint();
+  /// GPU tint paints for the stroke and fill passes, rebuilt only when the
+  /// source paint changes — see [_GlyphTint].
+  static final _strokeTint = _GlyphTint();
+  static final _fillTint = _GlyphTint();
 
   /// Untinted blit paint used inside a gradient layer — white glyph pixels
   /// land on the offscreen as-is to act as the srcIn mask. `filterQuality`
@@ -135,16 +135,18 @@ class TextDynamicRenderItem({
 
   /// Blits one laid-out line: a flat loop over the line's drawable glyphs
   /// with pre-baked offsets — one cache fetch per glyph, no measurement.
+  /// With [shadow], each glyph draws as that shadow instead of with [paint].
   void _drawGlyphs(
     Canvas canvas,
     Flut5TextCache cache,
     Flut5TextLine line,
     double startX,
     double y,
-    Paint paint,
+    Paint? paint,
     int paintingStyle,
-    double strokeWidth,
-  ) {
+    double strokeWidth, {
+    Flut5ShadowSpec? shadow,
+  }) {
     final spacing = _compositionSpacing;
     for (int i = 0; i < line.glyphs.length; i++) {
       final cached = cache.getOrCreate(
@@ -164,7 +166,11 @@ class TextDynamicRenderItem({
         cached.drawWidth,
         cached.height,
       );
-      canvas.drawImageRect(cached.image, cached.srcRect, dst, paint);
+      if (shadow != null) {
+        shadow.paintText(canvas, cached, dst);
+      } else {
+        canvas.drawImageRect(cached.image, cached.srcRect, dst, paint!);
+      }
     }
   }
 
@@ -174,7 +180,6 @@ class TextDynamicRenderItem({
 
     final cache = Flut5TextCache.instance;
     final FilterQuality glyphQuality = cache.textBlitQuality;
-    _tintPaint.filterQuality = glyphQuality;
     _maskPaint.filterQuality = glyphQuality;
 
     // Line height: composition-time value.
@@ -284,13 +289,12 @@ class TextDynamicRenderItem({
     // static TextRenderItem (whole block shadowed beneath everything) and CSS.
     // Re-blits each line's glyphs recolored to the shadow color and blurred,
     // reusing the raster the text itself draws (fill when filled, else
-    // stroke), so no new cache entry is created and an outline-only text
-    // casts an outline shadow. One save/translate wraps the whole pass.
+    // stroke), so no new cache entry is created — a blurred shadow bakes its
+    // silhouette onto that entry — and an outline-only text casts an outline
+    // shadow.
     final shadowSpec = shadow;
     if (shadowSpec != null) {
       final bool shadowStroke = fillPaint == null && strokePaint != null;
-      canvas.save();
-      canvas.translate(shadowSpec.offset.dx, shadowSpec.offset.dy);
       for (final line in lines) {
         if (maxHeight != null && (cursorY - y + lineHeight) > maxHeight!) break;
         if (line.glyphs.isEmpty) {
@@ -303,13 +307,13 @@ class TextDynamicRenderItem({
           line,
           _alignedX(x, _lineWidth(line)),
           cursorY,
-          shadowSpec.textTintPaint,
+          null,
           shadowStroke ? 1 : 0,
           shadowStroke ? strokePaint!.strokeWidth : 0.0,
+          shadow: shadowSpec,
         );
         cursorY += lineHeight;
       }
-      canvas.restore();
       cursorY = y;
     }
 
@@ -387,22 +391,13 @@ class TextDynamicRenderItem({
           }
           canvas.restore();
         } else {
-          _tintPaint
-            ..colorFilter = ColorFilter.mode(
-              strokePaint!.color,
-              ui.BlendMode.srcIn,
-            )
-            ..blendMode = strokePaint!.blendMode
-            ..maskFilter = strokePaint!.maskFilter
-            ..imageFilter = strokePaint!.imageFilter;
-
           _drawGlyphs(
             canvas,
             cache,
             line,
             lineStartX,
             cursorY,
-            _tintPaint,
+            _strokeTint.of(strokePaint!, glyphQuality),
             1,
             strokePaint!.strokeWidth,
           );
@@ -464,22 +459,13 @@ class TextDynamicRenderItem({
           }
           canvas.restore();
         } else {
-          _tintPaint
-            ..colorFilter = ColorFilter.mode(
-              fillPaint!.color,
-              ui.BlendMode.srcIn,
-            )
-            ..blendMode = fillPaint!.blendMode
-            ..maskFilter = fillPaint!.maskFilter
-            ..imageFilter = fillPaint!.imageFilter;
-
           _drawGlyphs(
             canvas,
             cache,
             line,
             lineStartX,
             cursorY,
-            _tintPaint,
+            _fillTint.of(fillPaint!, glyphQuality),
             0,
             0.0,
           );
@@ -492,5 +478,28 @@ class TextDynamicRenderItem({
     if (clip) {
       canvas.restore();
     }
+  }
+}
+
+/// The tint paint for one text pass: [of]'s source colour applied to the
+/// white glyph raster, with its blend mode and filters. Rebuilt only when
+/// the source paint or the glyph quality changes — queued paints are
+/// immutable snapshots, so identity stands for content, and the colour
+/// filter is a native object not worth rebuilding on every draw.
+class _GlyphTint {
+  Paint? _source;
+  FilterQuality? _quality;
+  final Paint _paint = Paint();
+
+  Paint of(Paint source, FilterQuality quality) {
+    if (identical(source, _source) && quality == _quality) return _paint;
+    _source = source;
+    _quality = quality;
+    return _paint
+      ..colorFilter = ColorFilter.mode(source.color, ui.BlendMode.srcIn)
+      ..blendMode = source.blendMode
+      ..maskFilter = source.maskFilter
+      ..imageFilter = source.imageFilter
+      ..filterQuality = quality;
   }
 }

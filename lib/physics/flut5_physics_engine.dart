@@ -49,6 +49,17 @@ final class Flut5PhysicsEngine {
   final List<Flut5PhysicsParticle> _particles = [];
   final List<Flut5PhysicsSpring> _springs = [];
 
+  // Removal is deferred so a frame that retires many particles pays one pass
+  // over the lists instead of one per particle: [remove] only unregisters
+  // the body here, and [_compact] drops it from the lists before they are
+  // next read (the public views compact on access) or stepped.
+  final Set<Flut5PhysicsBody> _registered = HashSet.identity();
+
+  /// Particles removed since the last [_compact]. A spring attached to one is
+  /// already gone, though it still sits in the lists.
+  final Set<Flut5PhysicsParticle> _removedParticles = HashSet.identity();
+  bool _pendingRemoval = false;
+
   /// When [update] runs each frame: before `draw()` (default), after it, or
   /// never ([PhysicsUpdateTiming.manual]).
   PhysicsUpdateTiming updateTiming = .beforeDraw;
@@ -80,22 +91,24 @@ final class Flut5PhysicsEngine {
 
   /// Every registered body of any kind, in creation order. Read-only view —
   /// add bodies with the `create…` methods and drop them with [remove].
-  late final List<Flut5PhysicsBody> bodies = UnmodifiableListView(_bodies);
+  late final List<Flut5PhysicsBody> bodies = _BodyListView(this, _bodies);
 
   /// Every registered particle, in creation order. Read-only view, safe to
   /// iterate in `draw()`.
-  late final List<Flut5PhysicsParticle> particles = UnmodifiableListView(
+  late final List<Flut5PhysicsParticle> particles = _BodyListView(
+    this,
     _particles,
   );
 
   /// Every registered spring, in creation order. Read-only view, safe to
   /// iterate in `draw()`.
-  late final List<Flut5PhysicsSpring> springs = UnmodifiableListView(_springs);
+  late final List<Flut5PhysicsSpring> springs = _BodyListView(this, _springs);
 
   /// Creates a [Flut5PhysicsParticle] at ([x], [y]), registers it and
   /// returns it.
   Flut5PhysicsParticle createParticle(double x, double y) {
     final particle = Flut5PhysicsParticle(x, y);
+    _registered.add(particle);
     _bodies.add(particle);
     _particles.add(particle);
     return particle;
@@ -107,7 +120,13 @@ final class Flut5PhysicsEngine {
     Flut5PhysicsParticle a,
     Flut5PhysicsParticle b,
   ) {
+    // A spring to a particle removed this frame would be dropped with it by
+    // the pending compaction — settle that first.
+    if (_removedParticles.contains(a) || _removedParticles.contains(b)) {
+      _compact();
+    }
     final spring = Flut5PhysicsSpring(a, b);
+    _registered.add(spring);
     _bodies.add(spring);
     _springs.add(spring);
     return spring;
@@ -118,19 +137,39 @@ final class Flut5PhysicsEngine {
   ///
   /// Removing a particle also removes every spring attached to it, so no
   /// spring keeps tugging toward a particle that no longer moves.
+  ///
+  /// Constant time, so retiring many particles a frame stays cheap: the
+  /// lists drop removed bodies in one pass, the next time they are read or
+  /// stepped. Like any list, they can't be changed while being iterated —
+  /// collect what to remove, then remove it after the loop.
   bool remove(Flut5PhysicsBody body) {
-    switch (body) {
-      case Flut5PhysicsParticle():
-        _particles.remove(body);
-        _springs.removeWhere((s) {
-          final attached = identical(s.a, body) || identical(s.b, body);
-          if (attached) _bodies.remove(s);
-          return attached;
-        });
-      case Flut5PhysicsSpring():
-        _springs.remove(body);
+    if (body is Flut5PhysicsSpring && !_springAttached(body)) return false;
+    if (!_registered.remove(body)) return false;
+    if (body is Flut5PhysicsParticle) _removedParticles.add(body);
+    _pendingRemoval = true;
+    return true;
+  }
+
+  /// Whether neither end of [spring] has been removed since the last
+  /// [_compact].
+  bool _springAttached(Flut5PhysicsSpring spring) =>
+      !_removedParticles.contains(spring.a) &&
+      !_removedParticles.contains(spring.b);
+
+  /// Drops removed bodies — and springs attached to removed particles — from
+  /// the lists, keeping creation order. One pass however many were removed.
+  void _compact() {
+    if (!_pendingRemoval) return;
+    _pendingRemoval = false;
+    if (_removedParticles.isNotEmpty) {
+      for (final spring in _springs) {
+        if (!_springAttached(spring)) _registered.remove(spring);
+      }
+      _removedParticles.clear();
     }
-    return _bodies.remove(body);
+    _bodies.removeWhere((b) => !_registered.contains(b));
+    _particles.removeWhere((p) => !_registered.contains(p));
+    _springs.removeWhere((s) => !_registered.contains(s));
   }
 
   /// Unregisters every body. The framework calls this before each `setup()`
@@ -139,6 +178,9 @@ final class Flut5PhysicsEngine {
     _bodies.clear();
     _particles.clear();
     _springs.clear();
+    _registered.clear();
+    _removedParticles.clear();
+    _pendingRemoval = false;
   }
 
   /// Steps every registered body by one frame in two passes: first every
@@ -148,6 +190,7 @@ final class Flut5PhysicsEngine {
   /// after `draw()` per [updateTiming]; call it yourself when that is
   /// [PhysicsUpdateTiming.manual].
   void update() {
+    _compact();
     for (final body in _bodies) {
       body.accumulateForces(this);
     }
@@ -155,4 +198,33 @@ final class Flut5PhysicsEngine {
       body.updatePhysics(this);
     }
   }
+}
+
+/// Read-only view of one of the engine's body lists that drops removed
+/// bodies before every read — see [Flut5PhysicsEngine.remove].
+final class _BodyListView<T extends Flut5PhysicsBody> extends ListBase<T> {
+  _BodyListView(this._engine, this._list);
+
+  final Flut5PhysicsEngine _engine;
+  final List<T> _list;
+
+  @override
+  int get length {
+    _engine._compact();
+    return _list.length;
+  }
+
+  @override
+  set length(int newLength) =>
+      throw UnsupportedError('Cannot change the length of a read-only list');
+
+  @override
+  T operator [](int index) {
+    _engine._compact();
+    return _list[index];
+  }
+
+  @override
+  void operator []=(int index, T value) =>
+      throw UnsupportedError('Cannot modify a read-only list');
 }

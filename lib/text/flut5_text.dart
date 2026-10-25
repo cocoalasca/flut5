@@ -699,16 +699,17 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
         ? strokeGradient
         : null;
 
-    Paint? queuedFill;
-    if (hasFill) {
-      queuedFill = getFillPaint().clone();
-      if (autoFillGrad != null) queuedFill.shader = null;
-    }
-    Paint? queuedStroke;
-    if (hasStroke) {
-      queuedStroke = getStrokePaint().clone();
-      if (autoStrokeGrad != null) queuedStroke.shader = null;
-    }
+    // Identity-stable snapshots, as in textDynamic — no per-call Paint clone.
+    final Paint? queuedFill = !hasFill
+        ? null
+        : autoFillGrad != null
+        ? snapshotFillPaintNoShader()
+        : snapshotFillPaint();
+    final Paint? queuedStroke = !hasStroke
+        ? null
+        : autoStrokeGrad != null
+        ? snapshotStrokePaintNoShader()
+        : snapshotStrokePaint();
 
     renderQueue.enqueue(
       TextRenderItem(

@@ -553,10 +553,11 @@ void main() {
       e.endShape(close: true);
     }
 
-    test('translucent shapes keep their own geometry', () {
+    test('shapes drawn alone keep their own geometry', () {
       final e = Flut5Engine()
-        ..fill(Colors.white.withValues(alpha: .5))
-        ..noStroke();
+        ..fill(Colors.white)
+        ..noStroke()
+        ..blendMode(BlendMode.multiply);
       blob(e, 0);
       blob(e, 100);
       e.renderQueue.flushPending();
@@ -589,6 +590,126 @@ void main() {
         e.renderQueue.items.single.bounds,
         const Rect.fromLTRB(0, 10, 230, 40),
       );
+    });
+  });
+
+  group('Translucent shapes', () {
+    // A translucent paint blends twice where two shapes drawn one by one
+    // overlap, once where a single path covers both. They share a batch
+    // only while no two of them come within the clearance.
+    Flut5Engine translucent() => Flut5Engine()
+      ..fill(Colors.white.withValues(alpha: .5))
+      ..noStroke();
+
+    void triangleAt(Flut5Engine e, double x, double y) =>
+        e.triangle(x, y, x + 20, y, x + 10, y + 16);
+
+    test('batch while apart, split when close', () {
+      final apart = translucent();
+      for (var i = 0; i < 6; i++) {
+        triangleAt(apart, i * 24.0, 0); // 4 px between boxes
+      }
+      expect(items(apart), 1);
+
+      final close = translucent();
+      for (var i = 0; i < 6; i++) {
+        triangleAt(close, i * 22.0, 0); // 2 px — inside the clearance
+      }
+      expect(items(close), 6);
+    });
+
+    test('the stroke reach counts toward the clearance', () {
+      final e = translucent()
+        ..stroke(Colors.blue.withValues(alpha: .5))
+        ..strokeWeight(4);
+      // 4 px between outlines, but each miter reaches several px past them.
+      triangleAt(e, 0, 0);
+      triangleAt(e, 24, 0);
+      expect(items(e), 2);
+    });
+
+    test('stay alone under a shadow, in a pixelate scope, or on a scaled '
+        'canvas', () {
+      final shadowed = translucent()..shadow(2, 2, 4);
+      triangleAt(shadowed, 0, 0);
+      triangleAt(shadowed, 40, 0);
+      expect(items(shadowed), 2);
+
+      final pixelated = translucent()..environment = SketchEnvironment();
+      pixelated.beginPixelate(4);
+      triangleAt(pixelated, 0, 0);
+      triangleAt(pixelated, 40, 0);
+      pixelated.endPixelate();
+      final kinds = [
+        for (final item in pixelated.renderQueue.items) item.runtimeType,
+      ];
+      expect(kinds.where((k) => k == PathRenderItem).length, 2);
+
+      final scaled = translucent()..scale(2, 3);
+      triangleAt(scaled, 0, 0);
+      triangleAt(scaled, 40, 0);
+      final paths = [
+        for (final item in (scaled..renderQueue.flushPending())
+            .renderQueue
+            .items)
+          if (item is PathRenderItem) item,
+      ];
+      expect(paths, hasLength(2));
+    });
+
+    test('fold rotations instead of emitting transforms', () {
+      final e = translucent();
+      for (var i = 0; i < 4; i++) {
+        e.push();
+        e.translate(20 + i * 40.0, 20);
+        e.rotate(0.3 * i);
+        e.triangle(-6, -6, 6, -6, 0, 6);
+        e.pop();
+      }
+      expect(items(e), 1);
+      expect(e.renderQueue.items.single, isA<PathRenderItem>());
+    });
+
+    test('rects, circles, ellipses and arcs batch apart too', () {
+      final apart = translucent()
+        ..rect(0, 0, 20, 20)
+        ..circle(40, 10, 20)
+        ..ellipse(70, 10, 20, 14)
+        ..arc(100, 10, 20, 20, 0, 3, ArcMode.pie)
+        ..rect(120, 0, 20, 20, 4);
+      expect(items(apart), 1);
+      expect(apart.renderQueue.items.single, isA<PathRenderItem>());
+
+      final close = translucent()
+        ..circle(10, 10, 20)
+        ..circle(32, 10, 20); // 2 px apart
+      expect(items(close), 2);
+    });
+
+    test('a negative size still keeps its clearance', () {
+      // An inverted box grown by the clearance would shrink instead.
+      final e = translucent()
+        ..circle(10, 10, 20)
+        ..circle(32, 10, -20);
+      expect(items(e), 2);
+    });
+
+    test('look exactly as drawn one at a time', () async {
+      final shapes = <_Draw>[
+        for (var i = 0; i < 8; i++)
+          (e) => e.triangle(
+            4 + i * 24.0,
+            30,
+            22 + i * 24.0,
+            34,
+            10 + i * 24.0,
+            52,
+          ),
+        (e) => e.star(40, 120, 10, 24, 5),
+        (e) => e.polygon(110, 120, 7, 24),
+      ];
+      final count = await matchesOneByOne(shapes, style: translucent);
+      expect(count, 1);
     });
   });
 }
