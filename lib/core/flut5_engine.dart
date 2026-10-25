@@ -11,12 +11,15 @@ import '../math/flut5_math.dart';
 import '../math/flut5_noise.dart';
 import '../math/flut5_trigonometry.dart';
 import '../math/flut5_vector.dart';
+import '../physics/flut5_spring.dart';
 import '../shape/flut5_2d_primitives.dart';
 import '../shape/flut5_fill.dart';
 import '../shape/flut5_stroke.dart';
 import '../shape/flut5_vertex.dart';
 import '../text/flut5_text.dart';
 import '../ui/flut5_ui.dart';
+import 'flut5_blur.dart';
+import 'flut5_pixelate.dart';
 import 'flut5_clip.dart';
 import 'flut5_color.dart';
 import 'flut5_shadow.dart';
@@ -48,11 +51,14 @@ final class Flut5Engine
         Flut5Stroke,
         Flut5Fill,
         Flut5Shadow,
+        Flut5Blur,
+        Flut5Pixelate,
         Flut5Text,
         Flut5ImageMixin,
         Flut52DPrimitives,
         Flut5Vertex,
         Flut5VectorMixin,
+        Flut5Spring,
         Flut5Transform,
         Flut5Clip,
         Flut5ContainerMixin,
@@ -313,10 +319,10 @@ final class Flut5Engine
         // coherent shadow (mirrors the queue's _emitDashed).
         final dashed = dashPath(path, dash, lineDashOffsetVal);
         if (fill != null) {
-          renderQueue.enqueue(
+          renderQueue.enqueueAll([
             PathRenderItem(path, fill, null, shadow: renderQueue.activeShadow),
-          );
-          renderQueue.enqueue(PathRenderItem(dashed, null, stroke));
+            PathRenderItem(dashed, null, stroke),
+          ]);
         } else {
           renderQueue.enqueue(
             PathRenderItem(dashed, null, stroke,

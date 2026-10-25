@@ -2,7 +2,6 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import '../core/flut5_console.dart';
-import '../core/render/flut5_render_queue.dart';
 import '../math/flut5_trigonometry.dart';
 import 'flut5_stroke.dart';
 import 'flut5_fill.dart';
@@ -399,7 +398,12 @@ mixin Flut52DPrimitives on Flut5Stroke, Flut5Fill, Flut5Trigonometry {
 
       case .chord:
         final path = Path()..arcTo(rect, radStart, sweepAngle, true)..close();
-        renderQueue.enqueue(PathRenderItem(path, fill, stroke));
+        renderQueue.appendShapePath(
+          path,
+          fill,
+          stroke,
+          oriented: sweepAngle >= 0 && w >= 0 && h >= 0,
+        );
 
       case .pie:
         renderQueue.appendArc(rect, radStart, sweepAngle, true, fill, stroke);

@@ -34,6 +34,11 @@ class _VertexBuffer {
   /// Number of recorded vertices.
   int count = 0;
 
+  /// True once a bezier, quadratic or curve vertex has been recorded. While
+  /// false every vertex is a plain point and vertex `i` sits at coords
+  /// `2i, 2i + 1`.
+  bool hasCurves = false;
+
   bool get isEmpty => count == 0;
   bool get isNotEmpty => count != 0;
 
@@ -41,6 +46,7 @@ class _VertexBuffer {
   void clear() {
     count = 0;
     _coordCount = 0;
+    hasCurves = false;
   }
 
   void _ensureCapacity(int extraCoords) {
@@ -72,12 +78,14 @@ class _VertexBuffer {
   }
 
   void addCurve(double x, double y) {
+    hasCurves = true;
     _addHeader(typeCurve, 2);
     _coords[_coordCount++] = x;
     _coords[_coordCount++] = y;
   }
 
   void addQuadratic(double cx, double cy, double x3, double y3) {
+    hasCurves = true;
     _addHeader(typeQuadratic, 4);
     _coords[_coordCount++] = cx;
     _coords[_coordCount++] = cy;
@@ -90,6 +98,7 @@ class _VertexBuffer {
     double x3, double y3,
     double x4, double y4,
   ) {
+    hasCurves = true;
     _addHeader(typeBezier, 6);
     _coords[_coordCount++] = x2;
     _coords[_coordCount++] = y2;
@@ -117,6 +126,38 @@ class _VertexBuffer {
     typeQuadratic => _coords[_offsets[i] + 3],
     _ => _coords[_offsets[i] + 1],
   };
+
+  /// Which way the polygon through vertices `start .. start + n - 1` winds:
+  /// `1` clockwise on screen, `-1` counter-clockwise, `0` when it does not
+  /// keep turning one way around the average of its points and so may cross
+  /// itself. Only valid while [hasCurves] is false. Mirrors the render
+  /// queue's own test for `triangle()` / `quad()`.
+  int turn(int start, int n) {
+    final c = _coords;
+    final from = start * 2, to = from + n * 2;
+    double cx = 0, cy = 0;
+    for (int i = from; i < to; i += 2) {
+      cx += c[i];
+      cy += c[i + 1];
+    }
+    cx /= n;
+    cy /= n;
+    bool cw = false, ccw = false;
+    double px = c[to - 2] - cx, py = c[to - 1] - cy;
+    for (int i = from; i < to; i += 2) {
+      final qx = c[i] - cx, qy = c[i + 1] - cy;
+      final cross = px * qy - py * qx;
+      if (cross > 0) {
+        cw = true;
+      } else if (cross < 0) {
+        ccw = true;
+      }
+      px = qx;
+      py = qy;
+    }
+    if (cw && ccw) return 0;
+    return ccw ? -1 : 1;
+  }
 }
 
 /// Shape kind constants for [beginShape].
@@ -181,6 +222,17 @@ mixin Flut5Vertex on Flut5Stroke, Flut5Fill {
   _VertexBuffer? _activeContour;
   ShapeMode? _shapeMode;
   bool _shapeActive = false;
+
+  /// Reused for every shape the render queue copies into a batch, so a frame
+  /// of `beginShape`/`endShape` calls builds no [Path] objects of its own.
+  final Path _scratchPath = Path();
+
+  /// The path to build the current shape into: the scratch path when the
+  /// queue will only copy from it, a fresh one when the queue keeps it.
+  Path _shapePath(Paint? fill, Paint? stroke) =>
+      renderQueue.mergesShapePath(fill, stroke)
+      ? (_scratchPath..reset())
+      : Path();
 
   // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -576,17 +628,43 @@ mixin Flut5Vertex on Flut5Stroke, Flut5Fill {
   }
 
   // ── Shape-mode renderers ──────────────────────────────────────────────
+  //
+  // A filled shape shares a batch path with whatever it overlaps only if its
+  // contours wind clockwise — opposite windings cancel into a hole. So where
+  // a contour's direction can be read off its points the shape is handed
+  // over as `oriented`, and a counter-clockwise contour of a shape that is
+  // filled but not stroked is written backwards to make it so: a fill
+  // rasterizes identically either way round. A stroke's anti-aliasing does
+  // not, so stroked contours are always written exactly as given.
 
   void _drawPolygon(Paint? fill, Paint? stroke, bool close) {
-    final path = Path();
-    _buildPath(path, _vertices, close);
+    final path = _shapePath(fill, stroke);
+    var oriented = false;
+    if (fill != null && _contours.isEmpty && !_vertices.hasCurves) {
+      final v = _vertices;
+      final turn = v.turn(0, v.count);
+      final reversed = turn < 0 && stroke == null;
+      oriented = turn > 0 || reversed;
+      if (reversed) {
+        final last = v.count - 1;
+        path.moveTo(v.endX(last), v.endY(last));
+        for (int i = last - 1; i >= 0; i--) {
+          path.lineTo(v.endX(i), v.endY(i));
+        }
+        if (close) path.close();
+      } else {
+        _buildPath(path, v, close);
+      }
+    } else {
+      _buildPath(path, _vertices, close);
 
-    // Add contour holes
-    for (final contour in _contours) {
-      _buildPath(path, contour, true);
+      // Add contour holes
+      for (final contour in _contours) {
+        _buildPath(path, contour, true);
+      }
     }
 
-    renderQueue.appendShapePath(path, fill, stroke);
+    renderQueue.appendShapePath(path, fill, stroke, oriented: oriented);
   }
 
   void _drawPoints(Paint? stroke) {
@@ -612,62 +690,117 @@ mixin Flut5Vertex on Flut5Stroke, Flut5Fill {
     }
   }
 
-  void _drawTriangles(Paint? fill, Paint? stroke) {
-    final path = Path();
-    for (int i = 0; i + 2 < _vertices.count; i += 3) {
-      path.moveTo(_vertices.endX(i), _vertices.endY(i));
-      path.lineTo(_vertices.endX(i + 1), _vertices.endY(i + 1));
-      path.lineTo(_vertices.endX(i + 2), _vertices.endY(i + 2));
-      path.close();
+  /// Adds the triangle through vertices [a], [b], [c] and returns whether
+  /// it went in clockwise. With [wind] its direction is measured, and with
+  /// [fix] a counter-clockwise one is written backwards.
+  bool _addTriangle(Path path, int a, int b, int c, bool wind, bool fix) {
+    final v = _vertices;
+    final ax = v.endX(a), ay = v.endY(a);
+    var clockwise = true;
+    if (wind &&
+        (v.endX(b) - ax) * (v.endY(c) - ay) -
+                (v.endY(b) - ay) * (v.endX(c) - ax) <
+            0) {
+      if (fix) {
+        final swap = b;
+        b = c;
+        c = swap;
+      } else {
+        clockwise = false;
+      }
     }
-    renderQueue.appendShapePath(path, fill, stroke);
+    path.moveTo(ax, ay);
+    path.lineTo(v.endX(b), v.endY(b));
+    path.lineTo(v.endX(c), v.endY(c));
+    path.close();
+    return clockwise;
+  }
+
+  /// Adds the quad through vertices [a], [b], [c], [d] and returns whether
+  /// it went in clockwise — never for a quad that crosses itself, which has
+  /// no single direction. [wind] and [fix] as in [_addTriangle].
+  bool _addQuad(Path path, int a, int b, int c, int d, bool wind, bool fix) {
+    final v = _vertices;
+    final ax = v.endX(a), ay = v.endY(a);
+    final bx = v.endX(b), by = v.endY(b);
+    final cx = v.endX(c), cy = v.endY(c);
+    final dx = v.endX(d), dy = v.endY(d);
+    var clockwise = true;
+    var reversed = false;
+    if (wind) {
+      final mx = (ax + bx + cx + dx) / 4, my = (ay + by + cy + dy) / 4;
+      double cross(double px, double py, double qx, double qy) =>
+          (px - mx) * (qy - my) - (py - my) * (qx - mx);
+      final s1 = cross(ax, ay, bx, by), s2 = cross(bx, by, cx, cy);
+      final s3 = cross(cx, cy, dx, dy), s4 = cross(dx, dy, ax, ay);
+      final ccw = s1 < 0 || s2 < 0 || s3 < 0 || s4 < 0;
+      if (ccw) {
+        final cw = s1 > 0 || s2 > 0 || s3 > 0 || s4 > 0;
+        reversed = fix && !cw;
+        clockwise = reversed;
+      }
+    }
+    path.moveTo(ax, ay);
+    if (reversed) {
+      path.lineTo(dx, dy);
+      path.lineTo(cx, cy);
+      path.lineTo(bx, by);
+    } else {
+      path.lineTo(bx, by);
+      path.lineTo(cx, cy);
+      path.lineTo(dx, dy);
+    }
+    path.close();
+    return clockwise;
+  }
+
+  void _drawTriangles(Paint? fill, Paint? stroke) {
+    final path = _shapePath(fill, stroke);
+    final wind = fill != null, fix = wind && stroke == null;
+    var oriented = true;
+    for (int i = 0; i + 2 < _vertices.count; i += 3) {
+      if (!_addTriangle(path, i, i + 1, i + 2, wind, fix)) oriented = false;
+    }
+    renderQueue.appendShapePath(path, fill, stroke, oriented: oriented);
   }
 
   void _drawTriangleStrip(Paint? fill, Paint? stroke) {
-    final path = Path();
+    final path = _shapePath(fill, stroke);
+    final wind = fill != null, fix = wind && stroke == null;
+    var oriented = true;
     for (int i = 0; i + 2 < _vertices.count; i++) {
-      path.moveTo(_vertices.endX(i), _vertices.endY(i));
-      path.lineTo(_vertices.endX(i + 1), _vertices.endY(i + 1));
-      path.lineTo(_vertices.endX(i + 2), _vertices.endY(i + 2));
-      path.close();
+      if (!_addTriangle(path, i, i + 1, i + 2, wind, fix)) oriented = false;
     }
-    renderQueue.appendShapePath(path, fill, stroke);
+    renderQueue.appendShapePath(path, fill, stroke, oriented: oriented);
   }
 
   void _drawTriangleFan(Paint? fill, Paint? stroke) {
-    final path = Path();
-    final cx = _vertices.endX(0);
-    final cy = _vertices.endY(0);
+    final path = _shapePath(fill, stroke);
+    final wind = fill != null, fix = wind && stroke == null;
+    var oriented = true;
     for (int i = 1; i + 1 < _vertices.count; i++) {
-      path.moveTo(cx, cy);
-      path.lineTo(_vertices.endX(i), _vertices.endY(i));
-      path.lineTo(_vertices.endX(i + 1), _vertices.endY(i + 1));
-      path.close();
+      if (!_addTriangle(path, 0, i, i + 1, wind, fix)) oriented = false;
     }
-    renderQueue.appendShapePath(path, fill, stroke);
+    renderQueue.appendShapePath(path, fill, stroke, oriented: oriented);
   }
 
   void _drawQuads(Paint? fill, Paint? stroke) {
-    final path = Path();
+    final path = _shapePath(fill, stroke);
+    final wind = fill != null, fix = wind && stroke == null;
+    var oriented = true;
     for (int i = 0; i + 3 < _vertices.count; i += 4) {
-      path.moveTo(_vertices.endX(i), _vertices.endY(i));
-      path.lineTo(_vertices.endX(i + 1), _vertices.endY(i + 1));
-      path.lineTo(_vertices.endX(i + 2), _vertices.endY(i + 2));
-      path.lineTo(_vertices.endX(i + 3), _vertices.endY(i + 3));
-      path.close();
+      if (!_addQuad(path, i, i + 1, i + 2, i + 3, wind, fix)) oriented = false;
     }
-    renderQueue.appendShapePath(path, fill, stroke);
+    renderQueue.appendShapePath(path, fill, stroke, oriented: oriented);
   }
 
   void _drawQuadStrip(Paint? fill, Paint? stroke) {
-    final path = Path();
+    final path = _shapePath(fill, stroke);
+    final wind = fill != null, fix = wind && stroke == null;
+    var oriented = true;
     for (int i = 0; i + 3 < _vertices.count; i += 2) {
-      path.moveTo(_vertices.endX(i), _vertices.endY(i));
-      path.lineTo(_vertices.endX(i + 1), _vertices.endY(i + 1));
-      path.lineTo(_vertices.endX(i + 3), _vertices.endY(i + 3));
-      path.lineTo(_vertices.endX(i + 2), _vertices.endY(i + 2));
-      path.close();
+      if (!_addQuad(path, i, i + 1, i + 3, i + 2, wind, fix)) oriented = false;
     }
-    renderQueue.appendShapePath(path, fill, stroke);
+    renderQueue.appendShapePath(path, fill, stroke, oriented: oriented);
   }
 }

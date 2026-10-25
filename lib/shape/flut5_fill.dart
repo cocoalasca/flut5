@@ -45,6 +45,11 @@ mixin Flut5Fill {
   int _fillVersion = 0;
   int get fillVersion => _fillVersion;
 
+  /// The color [fill] / [noFill] last wrote into the paint. Lets a repeated
+  /// call with the same value return early without trusting [fillColor],
+  /// which is a public field a sketch can assign directly.
+  Color _appliedFillColor = Colors.black;
+
   final Paint _fillPaint = Paint()
     ..color = Colors.black
     ..style = PaintingStyle.fill;
@@ -60,14 +65,17 @@ mixin Flut5Fill {
   int _snapshotFillNoShaderVersion = -1;
   int _snapshotFillNoShaderBlendVersion = -1;
 
-  /// Per-shape gradient paints for the auto-bounds path, keyed by
-  /// (gradient, shape rect). `createShader` allocates a native Skia object,
+  /// Per-shape gradient paints for the auto-bounds path, keyed by shape rect
+  /// for the one gradient in [_autoGradientFillSource] — hashing the gradient
+  /// itself on every shape cost more than the rest of the draw call.
+  /// `createShader` allocates a native Skia object,
   /// so shapes whose bounds repeat across frames (static geometry) reuse one
   /// paint instead of allocating a shader per shape per frame. Cleared when
   /// fill/blend state changes; capped so animated bounds (all-miss workloads)
   /// can't grow it without bound. Cached paints are never mutated after
   /// creation, so queued render items can hold them safely across frames.
-  final Map<(Gradient, Rect), Paint> _autoGradientFillPaints = {};
+  final Map<Rect, Paint> _autoGradientFillPaints = {};
+  Gradient? _autoGradientFillSource;
   int _autoGradientFillVersion = -1;
   int _autoGradientFillBlendVersion = -1;
   static const int _autoGradientPaintCacheCap = 256;
@@ -96,6 +104,14 @@ mixin Flut5Fill {
           'fill(): x/y/w/h are ignored when the first argument is a Color',
         );
       }
+      // Unchanged: keep the version, and with it the paint snapshot the render
+      // queue batches by — `fill(c)` inside a loop must not split the batch.
+      if (fillGradient == null &&
+          fillColor == input &&
+          _appliedFillColor == input) {
+        return;
+      }
+      _appliedFillColor = input;
       fillColor = input;
       fillGradient = null;
       fillGradientRect = null;
@@ -104,10 +120,20 @@ mixin Flut5Fill {
       _shaderGradient = null;
       _shaderRect = null;
     } else if (input is Gradient) {
-      fillGradient = input;
-      fillGradientRect = (x != null && y != null && w != null && h != null)
+      final rect = (x != null && y != null && w != null && h != null)
           ? Rect.fromLTWH(x, y, w, h)
           : null;
+      // Unchanged: keeping the version also keeps the per-shape shader cache,
+      // so `fill(gradient)` every frame stops rebuilding every shader.
+      if (fillGradient == input &&
+          fillGradientRect == rect &&
+          fillColor == Colors.black &&
+          _appliedFillColor == Colors.black) {
+        return;
+      }
+      fillGradient = input;
+      fillGradientRect = rect;
+      _appliedFillColor = Colors.black;
       fillColor = Colors.black;
       _fillPaint.color = Colors.black;
     } else {
@@ -126,6 +152,12 @@ mixin Flut5Fill {
         'noFill() cannot be called inside beginBatch/endBatch',
       );
     }
+    if (fillGradient == null &&
+        fillColor == Colors.transparent &&
+        _appliedFillColor == Colors.transparent) {
+      return;
+    }
+    _appliedFillColor = Colors.transparent;
     fillColor = Colors.transparent;
     fillGradient = null;
     fillGradientRect = null;
@@ -149,19 +181,20 @@ mixin Flut5Fill {
     // changes, and the cache epoch below must reflect that.
     final base = getFillPaint();
     if (_autoGradientFillVersion != _fillVersion ||
-        _autoGradientFillBlendVersion != blendVersion) {
+        _autoGradientFillBlendVersion != blendVersion ||
+        !identical(_autoGradientFillSource, gradient)) {
       _autoGradientFillPaints.clear();
+      _autoGradientFillSource = gradient;
       _autoGradientFillVersion = _fillVersion;
       _autoGradientFillBlendVersion = blendVersion;
     }
-    final key = (gradient, shapeBounds);
-    final cached = _autoGradientFillPaints[key];
+    final cached = _autoGradientFillPaints[shapeBounds];
     if (cached != null) return cached;
     if (_autoGradientFillPaints.length >= _autoGradientPaintCacheCap) {
       _autoGradientFillPaints.clear();
     }
     final clone = base.clone()..shader = gradient.createShader(shapeBounds);
-    _autoGradientFillPaints[key] = clone;
+    _autoGradientFillPaints[shapeBounds] = clone;
     return clone;
   }
 

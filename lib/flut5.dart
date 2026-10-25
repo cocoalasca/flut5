@@ -41,6 +41,7 @@ export 'math/flut5_vector.dart';
 export 'math/flut5_math.dart';
 export 'math/flut5_trigonometry.dart';
 export 'math/flut5_noise.dart';
+export 'physics/flut5_spring.dart';
 export 'core/flut5_sketch.dart';
 export 'core/flut5_canvas.dart';
 export 'core/flut5_clip.dart';
@@ -481,6 +482,16 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
   void shadowFill(Color color) => flut5.shadowFill(color);
   void noShadow() => flut5.noShadow();
 
+  // ── Blur ─────────────────────────────────────────────────────────────────
+  void blur(double radius) => flut5.blur(radius);
+  void noBlur() => flut5.noBlur();
+  void beginBlur(double radius) => flut5.beginBlur(radius);
+  void endBlur() => flut5.endBlur();
+
+  // ── Pixelate ─────────────────────────────────────────────────────────────
+  void beginPixelate(double blockSize) => flut5.beginPixelate(blockSize);
+  void endPixelate() => flut5.endPixelate();
+
   // ── Vertex API ───────────────────────────────────────────────────────────
   void beginShape([ShapeMode mode = .polygon]) => flut5.beginShape(mode);
   void vertex(double x, double y) => flut5.vertex(x, y);
@@ -552,6 +563,11 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
   // ── Vector ───────────────────────────────────────────────────────────────
   Flut5Vector createVector([double x = 0.0, double y = 0.0, double z = 0.0]) =>
       flut5.createVector(x, y, z);
+
+  // ── Physics ──────────────────────────────────────────────────────────────
+  double springConstant([double? k]) => flut5.springConstant(k);
+  Flut5Vector springForce(Flut5Vector position, Flut5Vector rest) =>
+      flut5.springForce(position, rest);
 
   // ── Transform ────────────────────────────────────────────────────────────
   void push() => flut5.push();

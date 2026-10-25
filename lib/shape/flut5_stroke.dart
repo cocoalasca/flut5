@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 import '../core/flut5_console.dart';
 import '../core/render/flut5_render_queue.dart';
@@ -60,6 +61,13 @@ mixin Flut5Stroke {
   int _strokeVersion = 0;
   int get strokeVersion => _strokeVersion;
 
+  /// What [stroke] / [noStroke] / [strokeWeight] last wrote into the paints.
+  /// Lets a repeated call with the same value return early without trusting
+  /// [strokeColor] and [strokeWeightVal], which are public fields a sketch
+  /// can assign directly.
+  Color _appliedStrokeColor = Colors.black;
+  double _appliedStrokeWeight = 1.0;
+
   final Paint _strokePaint = Paint()
     ..color = Colors.black
     ..style = PaintingStyle.stroke
@@ -88,13 +96,15 @@ mixin Flut5Stroke {
   int _snapshotStrokeNoShaderVersion = -1;
   int _snapshotStrokeNoShaderBlendVersion = -1;
 
-  /// Per-shape gradient paints for the auto-bounds path, keyed by
-  /// (gradient, shape rect). Mirrors `Flut5Fill._autoGradientFillPaints`:
+  /// Per-shape gradient paints for the auto-bounds path, keyed by shape rect
+  /// for the one gradient in [_autoGradientStrokeSource]. Mirrors
+  /// `Flut5Fill._autoGradientFillPaints`:
   /// repeated bounds reuse one paint instead of a `createShader` per shape
   /// per frame; cleared when stroke/blend state changes, capped so all-miss
   /// workloads can't grow it without bound. Cached paints are never mutated
   /// after creation.
-  final Map<(Gradient, Rect), Paint> _autoGradientStrokePaints = {};
+  final Map<Rect, Paint> _autoGradientStrokePaints = {};
+  Gradient? _autoGradientStrokeSource;
   int _autoGradientStrokeVersion = -1;
   int _autoGradientStrokeBlendVersion = -1;
   static const int _autoGradientPaintCacheCap = 256;
@@ -121,6 +131,14 @@ mixin Flut5Stroke {
           'stroke(): x/y/w/h are ignored when the first argument is a Color',
         );
       }
+      // Unchanged: keep the version, and with it the paint snapshot the render
+      // queue batches by — `stroke(c)` inside a loop must not split the batch.
+      if (strokeGradient == null &&
+          strokeColor == input &&
+          _appliedStrokeColor == input) {
+        return;
+      }
+      _appliedStrokeColor = input;
       strokeColor = input;
       strokeGradient = null;
       strokeGradientRect = null;
@@ -131,10 +149,19 @@ mixin Flut5Stroke {
       _shaderGradient = null;
       _shaderRect = null;
     } else if (input is Gradient) {
-      strokeGradient = input;
-      strokeGradientRect = (x != null && y != null && w != null && h != null)
+      final rect = (x != null && y != null && w != null && h != null)
           ? Rect.fromLTWH(x, y, w, h)
           : null;
+      // Unchanged: keeping the version also keeps the per-shape shader cache.
+      if (strokeGradient == input &&
+          strokeGradientRect == rect &&
+          strokeColor == Colors.black &&
+          _appliedStrokeColor == Colors.black) {
+        return;
+      }
+      strokeGradient = input;
+      strokeGradientRect = rect;
+      _appliedStrokeColor = Colors.black;
       strokeColor = Colors.black;
       _strokePaint.color = Colors.black;
       _strokeFillPaint.color = Colors.black;
@@ -154,6 +181,12 @@ mixin Flut5Stroke {
         'noStroke() cannot be called inside beginBatch/endBatch',
       );
     }
+    if (strokeGradient == null &&
+        strokeColor == Colors.transparent &&
+        _appliedStrokeColor == Colors.transparent) {
+      return;
+    }
+    _appliedStrokeColor = Colors.transparent;
     strokeColor = Colors.transparent;
     strokeGradient = null;
     strokeGradientRect = null;
@@ -176,6 +209,8 @@ mixin Flut5Stroke {
         'strokeWeight() cannot be called inside beginBatch/endBatch',
       );
     }
+    if (strokeWeightVal == weight && _appliedStrokeWeight == weight) return;
+    _appliedStrokeWeight = weight;
     strokeWeightVal = weight;
     _strokePaint.strokeWidth = weight;
     _strokeFillPaint.strokeWidth = weight;
@@ -189,6 +224,7 @@ mixin Flut5Stroke {
         'strokeCap() cannot be called inside beginBatch/endBatch',
       );
     }
+    if (_strokePaint.strokeCap == cap) return;
     _strokePaint.strokeCap = cap;
     _strokeFillPaint.strokeCap = cap;
     _strokeVersion++;
@@ -201,6 +237,7 @@ mixin Flut5Stroke {
         'strokeJoin() cannot be called inside beginBatch/endBatch',
       );
     }
+    if (_strokePaint.strokeJoin == join) return;
     _strokePaint.strokeJoin = join;
     _strokeFillPaint.strokeJoin = join;
     _strokeVersion++;
@@ -226,6 +263,13 @@ mixin Flut5Stroke {
         'setLineDash() cannot be called inside beginBatch/endBatch',
       );
     }
+    // Unchanged: skip the flush and version bump a dash change needs.
+    if (lineDashOffsetVal == offset &&
+        (pattern.isEmpty
+            ? lineDashVal == null
+            : listEquals(lineDashVal, pattern))) {
+      return;
+    }
     lineDashVal = pattern.isEmpty ? null : List<double>.unmodifiable(pattern);
     lineDashOffsetVal = offset;
     renderQueue.setDashState(lineDashVal, offset);
@@ -239,6 +283,7 @@ mixin Flut5Stroke {
         'noLineDash() cannot be called inside beginBatch/endBatch',
       );
     }
+    if (lineDashVal == null && lineDashOffsetVal == 0.0) return;
     lineDashVal = null;
     lineDashOffsetVal = 0.0;
     renderQueue.setDashState(null, 0.0);
@@ -290,19 +335,20 @@ mixin Flut5Stroke {
     // changes, and the cache epoch below must reflect that.
     final base = getStrokePaint();
     if (_autoGradientStrokeVersion != _strokeVersion ||
-        _autoGradientStrokeBlendVersion != blendVersion) {
+        _autoGradientStrokeBlendVersion != blendVersion ||
+        !identical(_autoGradientStrokeSource, gradient)) {
       _autoGradientStrokePaints.clear();
+      _autoGradientStrokeSource = gradient;
       _autoGradientStrokeVersion = _strokeVersion;
       _autoGradientStrokeBlendVersion = blendVersion;
     }
-    final key = (gradient, shapeBounds);
-    final cached = _autoGradientStrokePaints[key];
+    final cached = _autoGradientStrokePaints[shapeBounds];
     if (cached != null) return cached;
     if (_autoGradientStrokePaints.length >= _autoGradientPaintCacheCap) {
       _autoGradientStrokePaints.clear();
     }
     final clone = base.clone()..shader = gradient.createShader(shapeBounds);
-    _autoGradientStrokePaints[key] = clone;
+    _autoGradientStrokePaints[shapeBounds] = clone;
     return clone;
   }
 

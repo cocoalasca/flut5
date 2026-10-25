@@ -12,6 +12,7 @@ import 'flut5_render_item.dart';
 import 'items/flut5_multi_line_render_item.dart';
 import 'items/flut5_multi_point_render_item.dart';
 import 'items/flut5_path_render_item.dart';
+import 'items/flut5_pixelate_render_item.dart';
 import 'items/flut5_rect_render_item.dart';
 import 'items/flut5_circle_render_item.dart';
 import 'items/flut5_ellipse_render_item.dart';
@@ -20,12 +21,14 @@ import 'items/flut5_image_render_item.dart';
 import 'items/flut5_line_render_item.dart';
 import 'items/flut5_arc_render_item.dart';
 import 'items/flut5_background_render_item.dart';
+import 'items/flut5_blur_render_item.dart';
 import 'items/flut5_transform_render_item.dart';
 import 'items/flut5_clip_render_item.dart';
 export '../flut5_shadow.dart' show Flut5ShadowSpec;
 export 'flut5_render_item.dart';
 export 'items/flut5_arc_render_item.dart';
 export 'items/flut5_background_render_item.dart';
+export 'items/flut5_blur_render_item.dart';
 export 'items/flut5_circle_render_item.dart';
 export 'items/flut5_clip_render_item.dart';
 export 'items/flut5_ellipse_render_item.dart';
@@ -33,6 +36,7 @@ export 'items/flut5_image_atlas_render_item.dart';
 export 'items/flut5_image_render_item.dart';
 export 'items/flut5_line_render_item.dart';
 export 'items/flut5_path_render_item.dart';
+export 'items/flut5_pixelate_render_item.dart';
 export 'items/flut5_multi_line_render_item.dart';
 export 'items/flut5_multi_point_render_item.dart';
 export 'items/flut5_point_render_item.dart';
@@ -57,7 +61,9 @@ export 'items/flut5_transform_render_item.dart';
 ///
 /// Auto-batching preserves draw order: any non-batchable operation (path,
 /// text, background, a shape with a different paint, or a primitive of
-/// a different kind) flushes the pending batches first.
+/// a different kind) flushes the pending batches first. So does an outlined
+/// shape drawn over one already in the batch, when fill and stroke differ in
+/// colour — its fill has to cover the earlier outline.
 ///
 /// Translation, rotation and uniform scale are folded into compatible geometry
 /// at append time, including across push/pop scopes. Uniform scale adjusts
@@ -84,6 +90,18 @@ class Flut5RenderQueue {
   Paint? _pendingShapeStroke;
   bool _pendingShapeHasContent = false;
   Flut5ShadowSpec? _pendingShapeShadow;
+
+  // One path is not the same as its shapes drawn one by one where they
+  // overlap: it paints every fill and then every stroke, so an earlier outline
+  // would show through a later shape ([_stacks]), and it fills by winding, so
+  // a counter-clockwise shape would punch a hole in a clockwise one. Batches
+  // that can show either keep their shapes' boxes here ([_pendingShapeTracked])
+  // and close as soon as a new shape lands where that would happen.
+  final _ShapeOverlapIndex _pendingShapeBoxes = _ShapeOverlapIndex();
+  bool _pendingShapeTracked = false;
+  Paint? _stacksFill;
+  Paint? _stacksStroke;
+  bool _stacksResult = false;
 
   // ── Pending image atlas (same-source blits merged via drawRawAtlas) ───
   //
@@ -185,11 +203,17 @@ class Flut5RenderQueue {
   // system. Keep their existing canvas rendering rather than transforming
   // only the outline and silently changing their appearance.
   void _prepareGeometry(Paint? fill, Paint? stroke, {bool points = false}) {
-    if (!_fold.hasLinear) return;
+    if (!_fold.hasLinear) {
+      // A shader is laid out in the sketch's coordinates. Moving only the
+      // geometry would slide the shape out from under its gradient.
+      if (_hasFoldOffset && (fill?.shader != null || stroke?.shader != null)) {
+        _materializeTransforms();
+      }
+      return;
+    }
     if (_activeShadow != null ||
         (_hasDash && stroke != null && !points) ||
-        !canBatchPaint(fill) ||
-        !canBatchPaint(stroke) ||
+        _drawnAlone(fill, stroke) ||
         (points && stroke?.strokeCap != StrokeCap.round)) {
       _materializeTransforms();
     }
@@ -206,15 +230,49 @@ class Flut5RenderQueue {
     );
   }
 
-  void _appendTransformedPath(Path path, Paint? fill, Paint? stroke) {
+  /// [localBounds] is [path]'s box before the fold; omit it to have the path
+  /// measured, which only happens when the batch needs it. [oriented] as in
+  /// [_beginShape] — the fold never mirrors, so it carries over unchanged.
+  void _appendTransformedPath(
+    Path path,
+    Paint? fill,
+    Paint? stroke, {
+    Rect? localBounds,
+    bool oriented = true,
+  }) {
     if (fill == null && stroke == null) return;
+    stroke = _foldStroke(stroke);
+    final bounds = _wantsBox(fill, stroke, oriented)
+        ? _fold.bounds(localBounds ?? path.getBounds())
+        : null;
     _fold.writeMatrix(_transformMatrix);
     _beginShape(
       fill,
-      _foldStroke(stroke),
+      stroke,
+      bounds,
+      oriented: oriented,
     ).addPath(path, Offset.zero, matrix4: _transformMatrix);
     _pendingShapeHasContent = true;
   }
+
+  /// True when a rect or oval built from [rect] traces counter-clockwise:
+  /// flipped on exactly one axis, by a negative width *or* height.
+  static bool _backwards(Rect rect) =>
+      (rect.left > rect.right) != (rect.top > rect.bottom);
+
+  /// [rect] sorted so it traces clockwise like every other batched shape.
+  ///
+  /// Only for geometry that is filled and not stroked: a fill rasterizes
+  /// identically either way round, a stroke's anti-aliasing does not. Stroked
+  /// shapes are left as given and reported through `oriented` instead.
+  static Rect _clockwise(Rect rect) => _backwards(rect)
+      ? Rect.fromLTRB(
+          math.min(rect.left, rect.right),
+          math.min(rect.top, rect.bottom),
+          math.max(rect.left, rect.right),
+          math.max(rect.top, rect.bottom),
+        )
+      : rect;
 
   // ── Background bookkeeping (kept O(1) instead of scanning _items) ─────
   BackgroundRenderItem? _lastBackground;
@@ -230,6 +288,14 @@ class Flut5RenderQueue {
   /// Records a `pop()`. Folded entries restore the pending transform silently;
   /// materialized (`real`) entries emit a canvas restore.
   void popTransform() {
+    if (_scopes.isNotEmpty && _foldStack.length == _scopes.last.depth) {
+      final name = _scopeName(_scopes.last.pixelate);
+      Flut5Console.printLater(
+        'pop() inside begin$name()/end$name() has no push() inside the scope '
+        'to match and was ignored.',
+      );
+      return;
+    }
     if (_foldStack.isEmpty) {
       // Unbalanced pop — legacy behavior: emit a raw restore and let
       // Canvas ignore it at baseline depth.
@@ -368,12 +434,230 @@ class Flut5RenderQueue {
     _activeShadow = shadow;
   }
 
+  // ── Blur state ────────────────────────────────────────────────────────
+  //
+  // Persistent render-setting state like the shadow (set by the sketch's
+  // blur()/noBlur()), so it is deliberately NOT reset by [clear]. While
+  // active, every draw is blurred on its own — a plain fill through a mask
+  // filter ([_maskBlurredFill]), anything else in its own [BlurRenderItem]
+  // layer — and nothing batches: one blurred path is not its shapes blurred one by one wherever
+  // their halos meet, and the blur's own sampling depends on what the layer
+  // holds. `null` means no blur — the batched fast path runs unchanged.
+  Paint? _blurLayer;
+  double _blurSigma = 0;
+
+  /// The active blur's Gaussian sigma in logical pixels, `0` when off.
+  double get activeBlur => _blurSigma;
+
+  /// Updates the active blur. A [sigma] that is not a positive finite number
+  /// turns it off. Unchanged values return early, keeping the layer paint
+  /// identity-stable; a change flushes pending batches first, like
+  /// [setShadowState].
+  void setBlurState(double sigma) {
+    if (!(sigma.isFinite && sigma > 0)) sigma = 0;
+    if (sigma == _blurSigma) return;
+    flushPending();
+    _blurSigma = sigma;
+    _maskSource = null;
+    _maskPaint = null;
+    _blurLayer = sigma == 0 ? null : _layerPaintFor(sigma);
+  }
+
+  // One-entry memo for [_layerPaintFor], shared by blur() and beginBlur().
+  Paint? _layerPaint;
+  double _layerPaintSigma = 0;
+
+  /// A layer paint that blurs by [sigma], reused while [sigma] repeats.
+  Paint _layerPaintFor(double sigma) {
+    final cached = _layerPaint;
+    if (cached != null && sigma == _layerPaintSigma) return cached;
+    _layerPaintSigma = sigma;
+    // Decal, not the default clamp: the layer holds just the drawn content,
+    // and clamping would stretch its edge pixels outward instead of fading.
+    return _layerPaint = Paint()
+      ..imageFilter = ui.ImageFilter.blur(
+        sigmaX: sigma,
+        sigmaY: sigma,
+        tileMode: TileMode.decal,
+      );
+  }
+
+  /// True when a shape painted with [fill]/[stroke] has to be its own item:
+  /// a paint [canBatchPaint] rejects, or an active blur.
+  bool _drawnAlone(Paint? fill, Paint? stroke) =>
+      _blurLayer != null || !canBatchPaint(fill) || !canBatchPaint(stroke);
+
+  // One-entry memo for [_maskBlurredFill], keyed on the source paint's
+  // identity — paint snapshots are immutable once queued and stay identical
+  // while the fill doesn't change. Cleared by [setBlurState].
+  Paint? _maskSource;
+  Paint? _maskPaint;
+
+  /// [fill] carrying the active blur as a [MaskFilter], or `null` when the
+  /// shape needs a [BlurRenderItem] layer instead.
+  ///
+  /// A plain fill blurs the same either way — it is one colour over one
+  /// coverage mask — and the mask route is the cheap one: no offscreen
+  /// layer, and Impeller blurs rects, rounded rects and circles
+  /// analytically. Measured on Impeller it is also the closer of the two to
+  /// an exact Gaussian. A stroke, gradient, shadow, blend mode or filter
+  /// keeps the layer: a stroke blurs together with its fill there, and
+  /// Impeller's mask blur misses stroked corners at small radii.
+  Paint? _maskBlurredFill(Paint? fill, Paint? stroke) {
+    final layer = _blurLayer;
+    if (layer == null ||
+        fill == null ||
+        stroke != null ||
+        _activeShadow != null ||
+        fill.shader != null ||
+        fill.blendMode != BlendMode.srcOver ||
+        fill.maskFilter != null ||
+        fill.colorFilter != null ||
+        fill.imageFilter != null) {
+      return null;
+    }
+    if (identical(fill, _maskSource)) return _maskPaint;
+    _maskSource = fill;
+    return _maskPaint = Paint.from(fill)
+      ..maskFilter = MaskFilter.blur(BlurStyle.normal, _blurSigma);
+  }
+
   // ── Save-stack imbalance warning throttle ─────────────────────────────
   //
   // Tracks whether an "unbalanced canvas stack" warning has already been
   // emitted, so a sketch that leaks a push()/clip() every frame warns once
   // rather than 60×/sec. Reset back to false the first balanced frame.
   bool _warnedSaveImbalance = false;
+
+  // ── Pixelate and blur scopes ──────────────────────────────────────────
+  //
+  // A scope is a pair of marker items. A blur scope's markers open and close
+  // one blurred layer; a pixelate scope's are read by the replay, which
+  // renders what lies between them at block resolution (see
+  // [_PixelatePass]). Markers, not a wrapper item, because containers patch
+  // queued items by index and a wrapper would have to move the scope's items.
+  //
+  // Both kinds act as push()/pop(): what lies between the markers replays
+  // inside a layer or onto the low-resolution canvas, so a transform
+  // materialized in there is undone when the scope closes and must not
+  // outlive it in the fold either. Scopes nest but cannot cross.
+
+  /// Each open scope, innermost last: the fold-stack depth just above its
+  /// own entry, and its kind.
+  final List<({int depth, bool pixelate})> _scopes = [];
+
+  /// Whether this frame holds a pixelate scope, so other frames keep the
+  /// plain replay. Blur scopes need nothing from the replay.
+  bool _hasPixelate = false;
+  bool _warnedOpenScope = false;
+  bool _warnedScopeLeak = false;
+
+  static String _scopeName(bool pixelate) => pixelate ? 'Pixelate' : 'Blur';
+
+  /// Opens a pixelate scope of [blockSize] logical pixels over a canvas of
+  /// [width]×[height]. Pending batches flush first, so nothing drawn before
+  /// the scope joins a batch inside it.
+  void beginPixelate(double blockSize, double width, double height) {
+    _beginScope(
+      PixelateBeginRenderItem(blockSize, width, height),
+      pixelate: true,
+    );
+    _hasPixelate = true;
+  }
+
+  /// Closes the innermost pixelate scope, restoring the transform active at
+  /// [beginPixelate]. A push() left open inside the scope is popped here.
+  void endPixelate() => _endScope(PixelateEndRenderItem(), pixelate: true);
+
+  /// Opens a blur scope: everything until [endBlur] draws into one layer,
+  /// blurred as a whole by a Gaussian of [sigma] when it closes. A [sigma]
+  /// that is not a positive finite number blurs nothing but still scopes
+  /// transforms. Pending batches flush first, as for [beginPixelate].
+  void beginBlur(double sigma) {
+    final blurs = sigma.isFinite && sigma > 0;
+    _beginScope(
+      BlurBeginRenderItem(blurs ? _layerPaintFor(sigma) : null),
+      pixelate: false,
+    );
+  }
+
+  /// Closes the innermost blur scope, restoring the transform active at
+  /// [beginBlur]. A push() left open inside the scope is popped here.
+  void endBlur() => _endScope(BlurEndRenderItem(), pixelate: false);
+
+  void _beginScope(Flut5RenderItem marker, {required bool pixelate}) {
+    if (_clipRecordingPath != null) {
+      throw StateError(
+        'begin${_scopeName(pixelate)}() cannot be used inside a clip().',
+      );
+    }
+    // Put the transforms folded so far on the frame canvas. Left folded, the
+    // first materialization inside the scope would emit them between the
+    // markers, where closing the scope undoes them, and lose them for
+    // everything drawn after it.
+    _materializeTransforms();
+    flushPending();
+    pushTransform();
+    _scopes.add((depth: _foldStack.length, pixelate: pixelate));
+    _items.add(marker);
+  }
+
+  void _endScope(Flut5RenderItem marker, {required bool pixelate}) {
+    final name = _scopeName(pixelate);
+    if (_scopes.isEmpty) {
+      throw FlutterError('end$name() called without begin$name()');
+    }
+    final scope = _scopes.last;
+    if (scope.pixelate != pixelate) {
+      final open = _scopeName(scope.pixelate);
+      throw FlutterError(
+        'end$name() called while a begin$open() scope is open — close it '
+        'with end$open() first. Scopes nest but cannot cross.',
+      );
+    }
+    if (_clipRecordingPath != null) {
+      throw StateError('end$name() cannot be used inside a clip().');
+    }
+    if (_foldStack.length > scope.depth && !_warnedScopeLeak) {
+      _warnedScopeLeak = true;
+      Flut5Console.printLater(
+        'end$name() closed ${_foldStack.length - scope.depth} push() left '
+        'open inside the scope. Add the missing pop() to fix it.',
+      );
+    }
+    while (_foldStack.length > scope.depth) {
+      popTransform();
+    }
+    _scopes.removeLast();
+    popTransform();
+    flushPending();
+    _items.add(marker);
+  }
+
+  /// Closes every scope still open, with a one-time warning — the replay
+  /// calls this so a forgotten end*() still draws, mirroring the save-stack
+  /// auto-restore in [_balanceSaveStack].
+  void _closeOpenScopes() {
+    if (_scopes.isEmpty) {
+      _warnedOpenScope = false;
+      return;
+    }
+    if (!_warnedOpenScope) {
+      _warnedOpenScope = true;
+      final name = _scopeName(_scopes.last.pixelate);
+      Flut5Console.printLater(
+        'begin$name() was left open this frame and was closed at the end of '
+        'draw(). Add the missing end$name() to fix it.',
+      );
+    }
+    while (_scopes.isNotEmpty) {
+      final pixelate = _scopes.last.pixelate;
+      _endScope(
+        pixelate ? PixelateEndRenderItem() : BlurEndRenderItem(),
+        pixelate: pixelate,
+      );
+    }
+  }
 
   // ── Clip mask recording ───────────────────────────────────────────────
   //
@@ -514,6 +798,8 @@ class Flut5RenderQueue {
     _ensurePointCapacity(_pointCount + 2);
     _pointBuffer[_pointCount++] = x;
     _pointBuffer[_pointCount++] = y;
+    // Blurred points draw one by one — the run never grows past this point.
+    if (_blurLayer != null) _addItem(_takePoints());
   }
 
   /// Append a line segment to the auto-batch buffer. Consecutive calls with
@@ -548,7 +834,7 @@ class Flut5RenderQueue {
       );
       return;
     }
-    if (!canBatchPaint(paint)) {
+    if (_drawnAlone(null, paint)) {
       _addItem(
         LineRenderItem(
           Offset(x1, y1),
@@ -575,6 +861,11 @@ class Flut5RenderQueue {
       _pendingShapePath!
         ..moveTo(x1, y1)
         ..lineTo(x2, y2);
+      // The line strokes with the batch, after every fill — a later shape
+      // drawn across it has to split off to cover it.
+      if (_stacks(_pendingShapeFill, paint)) {
+        _pendingShapeBoxes.add(x1, y1, x2, y2);
+      }
       return;
     }
     if (_pendingLinePaint != null && !identical(_pendingLinePaint, paint)) {
@@ -601,7 +892,15 @@ class Flut5RenderQueue {
     if (_fold.hasLinear) {
       if (fill == null && stroke == null) return;
       if (rrect == null) {
-        final path = _beginShape(fill, _foldStroke(stroke));
+        stroke = _foldStroke(stroke);
+        if (stroke == null) rect = _clockwise(rect);
+        final oriented = !_backwards(rect);
+        final path = _beginShape(
+          fill,
+          stroke,
+          _wantsBox(fill, stroke, oriented) ? _fold.bounds(rect) : null,
+          oriented: oriented,
+        );
         path.moveTo(_fold.x(rect.left, rect.top), _fold.y(rect.left, rect.top));
         path.lineTo(
           _fold.x(rect.right, rect.top),
@@ -621,7 +920,13 @@ class Flut5RenderQueue {
         _transformPath
           ..reset()
           ..addRRect(rrect);
-        _appendTransformedPath(_transformPath, fill, stroke);
+        _appendTransformedPath(
+          _transformPath,
+          fill,
+          stroke,
+          localBounds: rrect.outerRect,
+          oriented: rrect.width >= 0 && rrect.height >= 0,
+        );
       }
       return;
     }
@@ -634,7 +939,7 @@ class Flut5RenderQueue {
       if (rrect != null) {
         _clipRecordingPath!.addRRect(rrect);
       } else {
-        _clipRecordingPath!.addRect(rect);
+        _clipRecordingPath!.addRect(_clockwise(rect));
       }
       return;
     }
@@ -646,17 +951,35 @@ class Flut5RenderQueue {
       _emitDashed(outline, fill, stroke);
       return;
     }
-    if (!canBatchPaint(fill) || !canBatchPaint(stroke)) {
+    if (_drawnAlone(fill, stroke)) {
+      final masked = _maskBlurredFill(fill, stroke);
       _addItem(
-        RectRenderItem(rect, rrect, fill, stroke, shadow: _activeShadow),
+        RectRenderItem(
+          rect,
+          rrect,
+          masked ?? fill,
+          stroke,
+          shadow: _activeShadow,
+        ),
+        blurred: masked != null,
       );
       return;
     }
-    final path = _beginShape(fill, stroke);
     if (rrect != null) {
-      path.addRRect(rrect);
+      _beginShape(
+        fill,
+        stroke,
+        rrect.outerRect,
+        oriented: rrect.width >= 0 && rrect.height >= 0,
+      ).addRRect(rrect);
     } else {
-      path.addRect(rect);
+      if (stroke == null) rect = _clockwise(rect);
+      _beginShape(
+        fill,
+        stroke,
+        rect,
+        oriented: !_backwards(rect),
+      ).addRect(rect);
     }
     _pendingShapeHasContent = true;
   }
@@ -670,10 +993,11 @@ class Flut5RenderQueue {
         _fold.x(center.dx, center.dy),
         _fold.y(center.dx, center.dy),
       );
-      _beginShape(
-        fill,
-        _foldStroke(stroke),
-      ).addOval(Rect.fromCircle(center: placed, radius: radius * _fold.scale));
+      final oval = Rect.fromCircle(
+        center: placed,
+        radius: radius * _fold.scale,
+      );
+      _beginShape(fill, _foldStroke(stroke), oval).addOval(oval);
       _pendingShapeHasContent = true;
       return;
     }
@@ -695,16 +1019,22 @@ class Flut5RenderQueue {
       );
       return;
     }
-    if (!canBatchPaint(fill) || !canBatchPaint(stroke)) {
+    if (_drawnAlone(fill, stroke)) {
+      final masked = _maskBlurredFill(fill, stroke);
       _addItem(
-        CircleRenderItem(center, radius, fill, stroke, shadow: _activeShadow),
+        CircleRenderItem(
+          center,
+          radius,
+          masked ?? fill,
+          stroke,
+          shadow: _activeShadow,
+        ),
+        blurred: masked != null,
       );
       return;
     }
-    _beginShape(
-      fill,
-      stroke,
-    ).addOval(Rect.fromCircle(center: center, radius: radius));
+    final oval = Rect.fromCircle(center: center, radius: radius);
+    _beginShape(fill, stroke, oval).addOval(oval);
     _pendingShapeHasContent = true;
   }
 
@@ -712,17 +1042,24 @@ class Flut5RenderQueue {
   void appendEllipse(Rect rect, Paint? fill, Paint? stroke) {
     _prepareGeometry(fill, stroke);
     if (_fold.hasLinear) {
+      if (stroke == null) rect = _clockwise(rect);
       _transformPath
         ..reset()
         ..addOval(rect);
-      _appendTransformedPath(_transformPath, fill, stroke);
+      _appendTransformedPath(
+        _transformPath,
+        fill,
+        stroke,
+        localBounds: rect,
+        oriented: !_backwards(rect),
+      );
       return;
     }
     if (_hasFoldOffset) {
       rect = rect.shift(Offset(_foldDx, _foldDy));
     }
     if (_clipRecordingPath != null) {
-      _clipRecordingPath!.addOval(rect);
+      _clipRecordingPath!.addOval(_clockwise(rect));
       return;
     }
     if (fill == null && stroke == null) return;
@@ -730,11 +1067,16 @@ class Flut5RenderQueue {
       _emitDashed(Path()..addOval(rect), fill, stroke);
       return;
     }
-    if (!canBatchPaint(fill) || !canBatchPaint(stroke)) {
-      _addItem(EllipseRenderItem(rect, fill, stroke, shadow: _activeShadow));
+    if (_drawnAlone(fill, stroke)) {
+      final masked = _maskBlurredFill(fill, stroke);
+      _addItem(
+        EllipseRenderItem(rect, masked ?? fill, stroke, shadow: _activeShadow),
+        blurred: masked != null,
+      );
       return;
     }
-    _beginShape(fill, stroke).addOval(rect);
+    if (stroke == null) rect = _clockwise(rect);
+    _beginShape(fill, stroke, rect, oriented: !_backwards(rect)).addOval(rect);
     _pendingShapeHasContent = true;
   }
 
@@ -752,12 +1094,20 @@ class Flut5RenderQueue {
     Paint? stroke,
   ) {
     _prepareGeometry(fill, stroke);
+    // A backwards sweep (or a mirrored oval) traces the arc counter-clockwise.
+    final oriented = sweepAngle >= 0 && rect.width >= 0 && rect.height >= 0;
     if (_fold.hasLinear) {
       final path = _transformPath..reset();
       if (useCenter) path.moveTo(rect.center.dx, rect.center.dy);
       path.arcTo(rect, startAngle, sweepAngle, !useCenter);
       if (useCenter) path.close();
-      _appendTransformedPath(path, fill, stroke);
+      _appendTransformedPath(
+        path,
+        fill,
+        stroke,
+        localBounds: rect,
+        oriented: oriented,
+      );
       return;
     }
     if (_hasFoldOffset) {
@@ -791,21 +1141,24 @@ class Flut5RenderQueue {
       _emitDashed(outline, fill, stroke);
       return;
     }
-    if (!canBatchPaint(fill) || !canBatchPaint(stroke)) {
+    if (_drawnAlone(fill, stroke)) {
+      final masked = _maskBlurredFill(fill, stroke);
       _addItem(
         ArcRenderItem(
           rect,
           startAngle,
           sweepAngle,
           useCenter,
-          fill,
+          masked ?? fill,
           stroke,
           shadow: _activeShadow,
         ),
+        blurred: masked != null,
       );
       return;
     }
-    final path = _beginShape(fill, stroke);
+    // The whole oval's box: an arc and its pie slice both stay inside it.
+    final path = _beginShape(fill, stroke, rect, oriented: oriented);
     if (useCenter) {
       final cx = rect.left + rect.width * 0.5;
       final cy = rect.top + rect.height * 0.5;
@@ -823,10 +1176,23 @@ class Flut5RenderQueue {
   /// Used by the vertex API to merge custom shapes with surrounding basic
   /// shapes when [paint] identity matches. Falls back to a per-shape
   /// [PathRenderItem] when the paint can't be safely merged.
-  void appendShapePath(Path path, Paint? fill, Paint? stroke) {
+  ///
+  /// Pass [oriented] when every contour of [path] is known to wind clockwise
+  /// on screen, the way rects and ovals are added. Without it a filled [path]
+  /// only shares a batch with shapes it does not overlap, since opposite
+  /// windings would cancel into a hole.
+  ///
+  /// [path] is copied when it merges and kept when it does not — see
+  /// [mergesShapePath] before handing over one that will be reused.
+  void appendShapePath(
+    Path path,
+    Paint? fill,
+    Paint? stroke, {
+    bool oriented = false,
+  }) {
     _prepareGeometry(fill, stroke);
     if (_fold.hasLinear) {
-      _appendTransformedPath(path, fill, stroke);
+      _appendTransformedPath(path, fill, stroke, oriented: oriented);
       return;
     }
     final off = _hasFoldOffset ? Offset(_foldDx, _foldDy) : Offset.zero;
@@ -839,20 +1205,37 @@ class Flut5RenderQueue {
       _emitDashed(off == Offset.zero ? path : path.shift(off), fill, stroke);
       return;
     }
-    if (!canBatchPaint(fill) || !canBatchPaint(stroke)) {
+    if (_drawnAlone(fill, stroke)) {
+      final masked = _maskBlurredFill(fill, stroke);
       _addItem(
         PathRenderItem(
           off == Offset.zero ? path : path.shift(off),
-          fill,
+          masked ?? fill,
           stroke,
           shadow: _activeShadow,
         ),
+        blurred: masked != null,
       );
       return;
     }
-    final pending = _beginShape(fill, stroke);
+    final pending = _beginShape(
+      fill,
+      stroke,
+      _wantsBox(fill, stroke, oriented) ? path.getBounds().shift(off) : null,
+      oriented: oriented,
+    );
     pending.addPath(path, off);
     _pendingShapeHasContent = true;
+  }
+
+  /// True when [appendShapePath] would copy a path painted with [fill] and
+  /// [stroke] into a batch or clip mask rather than keep the [Path] object —
+  /// i.e. when the caller may reuse one scratch path for every shape.
+  bool mergesShapePath(Paint? fill, Paint? stroke) {
+    if (_clipRecordingPath != null) return true;
+    if (fill == null && stroke == null) return true;
+    if (_hasDash && stroke != null) return false;
+    return !_drawnAlone(fill, stroke);
   }
 
   /// Append a bitmap blit sampling [src] (image pixels) into [dst] (user
@@ -932,11 +1315,12 @@ class Flut5RenderQueue {
   /// conditions an `RSTransform` can represent.
   ///
   /// A shadow disqualifies the blit outright (the silhouette needs its own
-  /// pass), and the scale must be uniform: `RSTransform` holds one scale
-  /// factor, so a stretch that scales x and y differently has no
-  /// representation. Degenerate rects fall out rather than dividing by zero.
+  /// pass), as does a blur (each blit blurs alone), and the scale must be
+  /// uniform: `RSTransform` holds one scale factor, so a stretch that scales
+  /// x and y differently has no representation. Degenerate rects fall out
+  /// rather than dividing by zero.
   bool _canAtlas(Rect src, Rect dst) {
-    if (_activeShadow != null) return false;
+    if (_activeShadow != null || _blurLayer != null) return false;
     if (src.width <= 0 || src.height <= 0) return false;
     if (!dst.width.isFinite || !dst.height.isFinite) return false;
     final scaleX = dst.width / src.width;
@@ -1020,6 +1404,8 @@ class Flut5RenderQueue {
       _pointBuffer.setRange(_pointCount, _pointCount + coords.length, coords);
       _pointCount += coords.length;
     }
+    // One call is one draw: under blur its points share a layer, alone.
+    if (_blurLayer != null) _addItem(_takePoints());
   }
 
   /// Append a closed polygon (triangle, quad, etc.) defined by a sequence of
@@ -1111,7 +1497,8 @@ class Flut5RenderQueue {
       _polyXs[i] = cx + radius * math.cos(a);
       _polyYs[i] = cy + radius * math.sin(a);
     }
-    _appendPoly(sides, fill, stroke);
+    // Generated clockwise — no need to measure it.
+    _appendPoly(sides, fill, stroke, turn: 1);
   }
 
   /// Append a [points]-pointed star centered at ([cx], [cy]), outer vertices
@@ -1140,16 +1527,25 @@ class Flut5RenderQueue {
       _polyXs[i] = cx + r * math.cos(a);
       _polyYs[i] = cy + r * math.sin(a);
     }
-    _appendPoly(n, fill, stroke);
+    // Clockwise as generated unless a negative radius folds it over itself.
+    _appendPoly(
+      n,
+      fill,
+      stroke,
+      turn: innerRadius > 0 && outerRadius > 0 ? 1 : null,
+    );
   }
 
   /// Shared polygon implementation reading the first [n] points from the
   /// poly scratch buffers. Applies the fold offset while building the path.
-  void _appendPoly(int n, Paint? fill, Paint? stroke) {
+  ///
+  /// [turn] is the polygon's winding as [_polyTurn] reports it, for callers
+  /// that already know; left out, it is measured when a fill needs it.
+  void _appendPoly(int n, Paint? fill, Paint? stroke, {int? turn}) {
     _prepareGeometry(fill, stroke);
     stroke = _foldStroke(stroke);
     if (_clipRecordingPath != null) {
-      _addPolyTo(_clipRecordingPath!, n);
+      _addPolyTo(_clipRecordingPath!, n, reversed: (turn ?? _polyTurn(n)) < 0);
       return;
     }
     if (fill == null && stroke == null) return;
@@ -1159,17 +1555,102 @@ class Flut5RenderQueue {
       _emitDashed(p, fill, stroke);
       return;
     }
-    if (!canBatchPaint(fill) || !canBatchPaint(stroke)) {
+    if (_drawnAlone(fill, stroke)) {
       final p = Path();
       _addPolyTo(p, n);
-      _addItem(PathRenderItem(p, fill, stroke, shadow: _activeShadow));
+      final masked = _maskBlurredFill(fill, stroke);
+      _addItem(
+        PathRenderItem(p, masked ?? fill, stroke, shadow: _activeShadow),
+        blurred: masked != null,
+      );
       return;
     }
-    _addPolyTo(_beginShape(fill, stroke), n);
+    // Winding only matters to a fill, and not at all to a stacking batch,
+    // which keeps every shape off every other anyway.
+    if (fill != null && !_stacks(fill, stroke)) turn ??= _polyTurn(n);
+    // A counter-clockwise polygon goes in backwards — the same fill, pixel
+    // for pixel, and it now adds to the shapes it overlaps instead of
+    // cancelling them. A stroke's anti-aliasing does depend on direction, so
+    // a stroked one is left as given and kept off whatever it overlaps.
+    final reversed = turn == -1 && stroke == null;
+    final oriented = turn == null || turn == 1 || reversed;
+    _addPolyTo(
+      _beginShape(
+        fill,
+        stroke,
+        _wantsBox(fill, stroke, oriented) ? _polyBounds(n) : null,
+        oriented: oriented,
+      ),
+      n,
+      reversed: reversed,
+    );
     _pendingShapeHasContent = true;
   }
 
-  void _addPolyTo(Path p, int n) {
+  /// Which way the first [n] scratch points wind: `1` clockwise on screen
+  /// (the direction rects and ovals are added in), `-1` counter-clockwise,
+  /// `0` when the polygon does not keep turning one way around the average
+  /// of its points — it may cross itself, so no single direction describes it.
+  ///
+  /// Sweeping one way around a point is what makes every region the polygon
+  /// encloses wind with the same sign, which is all a batch needs. It holds
+  /// for every triangle and convex polygon, and for stars and blobs.
+  int _polyTurn(int n) {
+    double cx = 0, cy = 0;
+    for (int i = 0; i < n; i++) {
+      cx += _polyXs[i];
+      cy += _polyYs[i];
+    }
+    cx /= n;
+    cy /= n;
+    bool cw = false, ccw = false;
+    double px = _polyXs[n - 1] - cx, py = _polyYs[n - 1] - cy;
+    for (int i = 0; i < n; i++) {
+      final qx = _polyXs[i] - cx, qy = _polyYs[i] - cy;
+      final cross = px * qy - py * qx;
+      if (cross > 0) {
+        cw = true;
+      } else if (cross < 0) {
+        ccw = true;
+      }
+      px = qx;
+      py = qy;
+    }
+    if (cw && ccw) return 0;
+    return ccw ? -1 : 1;
+  }
+
+  /// Folded box of the first [n] points in the poly scratch buffers.
+  Rect _polyBounds(int n) {
+    double l = double.infinity, t = double.infinity;
+    double r = double.negativeInfinity, b = double.negativeInfinity;
+    for (int i = 0; i < n; i++) {
+      final x = _fold.x(_polyXs[i], _polyYs[i]);
+      final y = _fold.y(_polyXs[i], _polyYs[i]);
+      if (x < l) l = x;
+      if (x > r) r = x;
+      if (y < t) t = y;
+      if (y > b) b = y;
+    }
+    return Rect.fromLTRB(l, t, r, b);
+  }
+
+  void _addPolyTo(Path p, int n, {bool reversed = false}) {
+    if (reversed) {
+      final last = n - 1;
+      p.moveTo(
+        _fold.x(_polyXs[last], _polyYs[last]),
+        _fold.y(_polyXs[last], _polyYs[last]),
+      );
+      for (int i = last - 1; i >= 0; i--) {
+        p.lineTo(
+          _fold.x(_polyXs[i], _polyYs[i]),
+          _fold.y(_polyXs[i], _polyYs[i]),
+        );
+      }
+      p.close();
+      return;
+    }
     p.moveTo(_fold.x(_polyXs[0], _polyYs[0]), _fold.y(_polyXs[0], _polyYs[0]));
     for (int i = 1; i < n; i++) {
       p.lineTo(
@@ -1302,10 +1783,28 @@ class Flut5RenderQueue {
     _addItem(item);
   }
 
+  /// [enqueue] for one draw the caller had to split into several [items] —
+  /// a dashed shape's solid fill and dashed stroke. Under blur they share a
+  /// single layer, so they still blur as one shape.
+  void enqueueAll(List<Flut5RenderItem> items) {
+    if (_clipRecordingPath != null) {
+      enqueue(items.first);
+      return;
+    }
+    _materializeTransforms();
+    _addItems(items);
+  }
+
   /// Internal add: flushes pending batches and appends [item]. Used by the
   /// append* fallback branches, whose item coordinates already carry the
   /// fold offset — materializing here would apply the translation twice.
-  void _addItem(Flut5RenderItem item) {
+  ///
+  /// Under blur a draw is wrapped in its own [BlurRenderItem], unless it is
+  /// [blurred] already (see [_maskBlurredFill]). Backgrounds, clips and
+  /// transforms are not draws: they stay bare, where the trail bookkeeping,
+  /// the container's placeholder patching and the canvas save stack expect
+  /// them.
+  void _addItem(Flut5RenderItem item, {bool blurred = false}) {
     _flushShapes();
     _flushPoints();
     _flushLines();
@@ -1314,7 +1813,30 @@ class Flut5RenderQueue {
       _lastBackground = item;
       if (item.isOpaqueFullCanvas) _hasOpaqueFullCanvasBg = true;
     }
-    _items.add(item);
+    final layer = _blurLayer;
+    if (layer != null &&
+        !blurred &&
+        item is! BackgroundRenderItem &&
+        item is! TransformRenderItem &&
+        item is! ClipRenderItem) {
+      _items.add(BlurRenderItem([item], layer));
+    } else {
+      _items.add(item);
+    }
+  }
+
+  /// [_addItem] for the parts of one draw, which share a blur layer.
+  void _addItems(List<Flut5RenderItem> items) {
+    final layer = _blurLayer;
+    if (layer == null || items.length == 1) {
+      items.forEach(_addItem);
+      return;
+    }
+    _flushShapes();
+    _flushPoints();
+    _flushLines();
+    _flushImages();
+    _items.add(BlurRenderItem(items, layer));
   }
 
   /// Returns `true` when the last [BackgroundRenderItem] enqueued in this
@@ -1406,13 +1928,18 @@ class Flut5RenderQueue {
   /// entry depth so the host `CustomPainter` (or `PictureRecorder`) doesn't
   /// throw.
   void execute(Canvas canvas) {
+    _closeOpenScopes();
     _flushShapes();
     _flushPoints();
     _flushLines();
     _flushImages();
     final baseline = canvas.getSaveCount();
-    for (final item in _items) {
-      item.execute(canvas);
+    if (_hasPixelate) {
+      _replayPixelated(canvas, skipBackgrounds: false);
+    } else {
+      for (final item in _items) {
+        item.execute(canvas);
+      }
     }
     _balanceSaveStack(canvas, baseline);
   }
@@ -1439,16 +1966,49 @@ class Flut5RenderQueue {
   /// apply the translucent background fade (the snapshot rebuild already
   /// incorporates it).
   void executeForeground(Canvas canvas) {
+    _closeOpenScopes();
     _flushShapes();
     _flushPoints();
     _flushLines();
     _flushImages();
     final baseline = canvas.getSaveCount();
-    for (final item in _items) {
-      if (item is BackgroundRenderItem) continue;
-      item.execute(canvas);
+    if (_hasPixelate) {
+      _replayPixelated(canvas, skipBackgrounds: true);
+    } else {
+      for (final item in _items) {
+        if (item is BackgroundRenderItem) continue;
+        item.execute(canvas);
+      }
     }
     _balanceSaveStack(canvas, baseline);
+  }
+
+  /// The replay for a frame holding pixelate scopes: items between a pair of
+  /// markers draw onto that scope's low-resolution canvas, which is drawn
+  /// back onto its parent when the scope closes.
+  ///
+  /// A background inside a scope is pixelated like any other draw here. The
+  /// split replay never sees that case: the opening marker counts as content
+  /// for [backgroundsPrecedeContent], so the painter falls back to [execute].
+  void _replayPixelated(Canvas canvas, {required bool skipBackgrounds}) {
+    final base = Matrix4.fromFloat64List(canvas.getTransform());
+    final passes = <_PixelatePass>[];
+    var target = canvas;
+    for (final item in _items) {
+      if (item is PixelateBeginRenderItem) {
+        final pass = _PixelatePass(
+          item,
+          target,
+          passes.isEmpty ? base : passes.last.logical,
+        );
+        passes.add(pass);
+        target = pass.canvas;
+      } else if (item is PixelateEndRenderItem) {
+        if (passes.isNotEmpty) target = passes.removeLast().end();
+      } else if (!skipBackgrounds || item is! BackgroundRenderItem) {
+        item.execute(target);
+      }
+    }
   }
 
   /// Pops the canvas save stack back down to [baseline] when the frame's
@@ -1504,6 +2064,8 @@ class Flut5RenderQueue {
     _pendingShapeStroke = null;
     _pendingShapeHasContent = false;
     _pendingShapeShadow = null;
+    _pendingShapeBoxes.clear();
+    _pendingShapeTracked = false;
     // Atlas run: drop the sprites but keep the Float32List backing buffers,
     // same bargain as the point/line buffers above.
     _atlasCount = 0;
@@ -1520,6 +2082,8 @@ class Flut5RenderQueue {
     _scaledStrokes.clear();
     _lastBackground = null;
     _hasOpaqueFullCanvasBg = false;
+    _scopes.clear();
+    _hasPixelate = false;
   }
 
   // ── Internals ─────────────────────────────────────────────────────────
@@ -1537,18 +2101,93 @@ class Flut5RenderQueue {
     // shadow instead of one per pass. Callers pass fold-baked outlines, so no
     // transform materialization here (_addItem, not enqueue).
     if (fill != null) {
-      _addItem(PathRenderItem(outline, fill, null, shadow: shadow));
-      _addItem(PathRenderItem(dashed, null, stroke));
+      _addItems([
+        PathRenderItem(outline, fill, null, shadow: shadow),
+        PathRenderItem(dashed, null, stroke),
+      ]);
     } else {
       _addItem(PathRenderItem(dashed, null, stroke, shadow: shadow));
     }
   }
 
-  Path _beginShape(Paint? fill, Paint? stroke) {
-    if (_pendingShapePath != null &&
-        (!identical(_pendingShapeFill, fill) ||
-            !identical(_pendingShapeStroke, stroke))) {
-      _flushShapes();
+  /// True when a batch painted with [fill] and [stroke] can show its
+  /// all-fills-then-all-strokes order: both are drawn and they differ in
+  /// colour. Fill-only, stroke-only and single-colour batches look the same
+  /// in either order, so they never need to split on overlap.
+  ///
+  /// Memoized on paint identity — queued paints are immutable snapshots.
+  bool _stacks(Paint? fill, Paint? stroke) {
+    if (fill == null || stroke == null) return false;
+    if (!identical(fill, _stacksFill) || !identical(stroke, _stacksStroke)) {
+      _stacksFill = fill;
+      _stacksStroke = stroke;
+      _stacksResult = fill.color != stroke.color;
+    }
+    return _stacksResult;
+  }
+
+  /// True when [_beginShape] will read the box of a shape painted with
+  /// [fill]/[stroke], so callers for whom the box is not free can skip it.
+  bool _wantsBox(Paint? fill, Paint? stroke, bool oriented) =>
+      _pendingShapeTracked ||
+      (fill != null && !oriented) ||
+      _stacks(fill, stroke);
+
+  /// Opens (or continues) the shape batch for [fill]/[stroke] and returns its
+  /// path. Besides a change of paint, two things close the open batch, both
+  /// because one path is not its shapes drawn one by one:
+  ///
+  /// * [_stacks] holds and the new shape lands on any shape in the batch —
+  ///   its fill has to cover their outlines.
+  /// * the new shape, or one it lands on, is filled and not [oriented] — its
+  ///   contours may wind counter-clockwise, and opposite windings cancel into
+  ///   a hole where they overlap. Shapes that all wind clockwise only add up.
+  ///
+  /// [bounds] is the box of the geometry about to be added, in queue space
+  /// and without stroke width; it is only read when [_wantsBox] holds, so
+  /// callers that would have to compute it may pass `null` otherwise.
+  ///
+  /// The unstroked box is enough: the part of an earlier outline that reaches
+  /// into a shape it merely touches lies under that shape's own outline.
+  Path _beginShape(
+    Paint? fill,
+    Paint? stroke,
+    Rect? bounds, {
+    bool oriented = true,
+  }) {
+    final stacks = _stacks(fill, stroke);
+    final unwound = fill != null && !oriented;
+    if (_pendingShapePath != null) {
+      final bool split;
+      if (!identical(_pendingShapeFill, fill) ||
+          !identical(_pendingShapeStroke, stroke)) {
+        split = true;
+      } else if (_pendingShapeTracked) {
+        // A clockwise shape in a non-stacking batch only has the unwound
+        // shapes to avoid; everything else has every shape to avoid.
+        split = _pendingShapeBoxes.overlaps(
+          bounds!.left,
+          bounds.top,
+          bounds.right,
+          bounds.bottom,
+          markedOnly: !stacks && !unwound,
+        );
+      } else {
+        // The batch kept no boxes, so a shape that must be tested can't
+        // join it.
+        split = unwound;
+      }
+      if (split) _flushShapes();
+    }
+    if (_pendingShapePath == null) _pendingShapeTracked = stacks || unwound;
+    if (_pendingShapeTracked) {
+      _pendingShapeBoxes.add(
+        bounds!.left,
+        bounds.top,
+        bounds.right,
+        bounds.bottom,
+        marked: unwound,
+      );
     }
     _flushPoints();
     _flushLines();
@@ -1564,19 +2203,23 @@ class Flut5RenderQueue {
 
   void _flushPoints() {
     if (_pointCount == 0) return;
+    _items.add(_takePoints());
+  }
+
+  /// Closes the open point run and returns it as an item. The run must hold
+  /// at least one point.
+  MultiPointRenderItem _takePoints() {
     // sublist copies — decouples the item from the reusable buffer so later
     // frames can overwrite _pointBuffer in place.
-    final snapshot = _pointBuffer.sublist(0, _pointCount);
-    _items.add(
-      MultiPointRenderItem(
-        snapshot,
-        _pendingPointPaint!,
-        shadow: _pendingPointShadow,
-      ),
+    final item = MultiPointRenderItem(
+      _pointBuffer.sublist(0, _pointCount),
+      _pendingPointPaint!,
+      shadow: _pendingPointShadow,
     );
     _pointCount = 0;
     _pendingPointPaint = null;
     _pendingPointShadow = null;
+    return item;
   }
 
   void _flushLines() {
@@ -1595,6 +2238,8 @@ class Flut5RenderQueue {
   }
 
   void _flushShapes() {
+    _pendingShapeBoxes.clear();
+    _pendingShapeTracked = false;
     if (!_pendingShapeHasContent) {
       _pendingShapePath = null;
       _pendingShapeFill = null;
@@ -1661,6 +2306,174 @@ extension Flut5PaintCloner on Paint {
       ..imageFilter = imageFilter
       ..isAntiAlias = isAntiAlias
       ..filterQuality = filterQuality;
+  }
+}
+
+/// Boxes of the shapes in the open shape batch, for asking whether a new
+/// shape lands on one already in it. Boxes that only touch do not overlap.
+///
+/// A handful of boxes are scanned directly. Past [_scanLimit] they are filed
+/// on a uniform grid by the cell their centre falls in, and a query walks the
+/// cells its box can reach once widened by the largest half-extent on file.
+/// Cells hash into a flat table, so two cells may share a chain — every
+/// candidate still gets the exact box test, so a collision costs a
+/// comparison, never a wrong answer.
+///
+/// [overlaps] may answer `true` when deciding would be expensive: a box far
+/// larger than the grid was sized for, a crowded cell, or coordinates that
+/// cannot be hashed. The queue then closes the batch — one extra draw call —
+/// and the next batch sizes a fresh grid from the shapes that follow, so the
+/// per-shape cost stays bounded whatever the sketch draws.
+class _ShapeOverlapIndex {
+  static const int _scanLimit = 16;
+  static const int _firstSlots = 64;
+  static const int _maxCells = 16;
+  static const int _maxTests = 96;
+  static const double _coordLimit = 1e9;
+
+  // Doubles, not float32: touching shapes must compare exactly as drawn.
+  Float64List _boxes = Float64List(_scanLimit * 4);
+  Int32List _next = Int32List(_scanLimit);
+  // Per box: 1 when added as `marked`, for queries that only avoid those.
+  Uint8List _marks = Uint8List(_scanLimit);
+  // Slot → newest box filed there, -1 when empty. Only the first `_mask + 1`
+  // slots are live; the list keeps its largest size across batches so a
+  // small batch never pays to reset a big batch's table.
+  Int32List _heads = Int32List(_firstSlots);
+  int _mask = 0;
+  int _count = 0;
+  // Zero until the grid is built.
+  double _cellW = 0;
+  double _cellH = 0;
+  double _maxHalfW = 0;
+  double _maxHalfH = 0;
+  bool _undecidable = false;
+
+  void clear() {
+    _count = 0;
+    _cellW = 0;
+    _cellH = 0;
+    _maxHalfW = 0;
+    _maxHalfH = 0;
+    _undecidable = false;
+  }
+
+  // Also false for NaN.
+  static bool _hashable(double l, double t, double r, double b) =>
+      l > -_coordLimit &&
+      t > -_coordLimit &&
+      r < _coordLimit &&
+      b < _coordLimit;
+
+  int _slot(int cx, int cy) => ((cx * 73856093) ^ (cy * 19349663)) & _mask;
+
+  /// Whether the box lands on one already added — on any of them, or with
+  /// [markedOnly] just on those added as `marked`.
+  bool overlaps(
+    double x1,
+    double y1,
+    double x2,
+    double y2, {
+    bool markedOnly = false,
+  }) {
+    if (_undecidable) return true;
+    if (_count == 0) return false;
+    final l = math.min(x1, x2), r = math.max(x1, x2);
+    final t = math.min(y1, y2), b = math.max(y1, y2);
+    if (!_hashable(l, t, r, b)) return true;
+    final boxes = _boxes, marks = _marks;
+    if (_cellW == 0) {
+      for (int o = 0, end = _count * 4; o < end; o += 4) {
+        if (markedOnly && marks[o >> 2] == 0) continue;
+        if (l < boxes[o + 2] &&
+            boxes[o] < r &&
+            t < boxes[o + 3] &&
+            boxes[o + 1] < b) {
+          return true;
+        }
+      }
+      return false;
+    }
+    final cx0 = ((l - _maxHalfW) / _cellW).floor();
+    final cx1 = ((r + _maxHalfW) / _cellW).floor();
+    final cy0 = ((t - _maxHalfH) / _cellH).floor();
+    final cy1 = ((b + _maxHalfH) / _cellH).floor();
+    if ((cx1 - cx0 + 1) * (cy1 - cy0 + 1) > _maxCells) return true;
+    final heads = _heads, next = _next;
+    int tests = 0;
+    for (int cx = cx0; cx <= cx1; cx++) {
+      for (int cy = cy0; cy <= cy1; cy++) {
+        for (int i = heads[_slot(cx, cy)]; i >= 0; i = next[i]) {
+          if (++tests > _maxTests) return true;
+          if (markedOnly && marks[i] == 0) continue;
+          final o = i * 4;
+          if (l < boxes[o + 2] &&
+              boxes[o] < r &&
+              t < boxes[o + 3] &&
+              boxes[o + 1] < b) {
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  void add(double x1, double y1, double x2, double y2, {bool marked = false}) {
+    final l = math.min(x1, x2), r = math.max(x1, x2);
+    final t = math.min(y1, y2), b = math.max(y1, y2);
+    if (!_hashable(l, t, r, b)) {
+      _undecidable = true;
+      return;
+    }
+    if (_count == _next.length) {
+      _boxes = Float64List(_count * 8)..setRange(0, _count * 4, _boxes);
+      _next = Int32List(_count * 2)..setRange(0, _count, _next);
+      _marks = Uint8List(_count * 2)..setRange(0, _count, _marks);
+    }
+    _marks[_count] = marked ? 1 : 0;
+    final o = _count * 4;
+    _boxes[o] = l;
+    _boxes[o + 1] = t;
+    _boxes[o + 2] = r;
+    _boxes[o + 3] = b;
+    final halfW = (r - l) * 0.5, halfH = (b - t) * 0.5;
+    if (halfW > _maxHalfW) _maxHalfW = halfW;
+    if (halfH > _maxHalfH) _maxHalfH = halfH;
+    final i = _count++;
+    if (_cellW == 0) {
+      if (_count > _scanLimit) {
+        // Two shape-widths per cell: a query for a typical shape reaches two
+        // cells per axis, each holding a handful of non-overlapping shapes.
+        _cellW = math.max(_maxHalfW * 4, 1.0);
+        _cellH = math.max(_maxHalfH * 4, 1.0);
+        _regrid(_firstSlots);
+      }
+    } else if (_count > (_mask + 1) >> 1) {
+      _regrid((_mask + 1) * 2);
+    } else {
+      _file(i);
+    }
+  }
+
+  /// Resets the table to [slots] (a power of two) and files every box.
+  void _regrid(int slots) {
+    if (_heads.length < slots) _heads = Int32List(slots);
+    _heads.fillRange(0, slots, -1);
+    _mask = slots - 1;
+    for (int j = 0; j < _count; j++) {
+      _file(j);
+    }
+  }
+
+  void _file(int i) {
+    final o = i * 4;
+    final slot = _slot(
+      ((_boxes[o] + _boxes[o + 2]) * 0.5 / _cellW).floor(),
+      ((_boxes[o + 1] + _boxes[o + 3]) * 0.5 / _cellH).floor(),
+    );
+    _next[i] = _heads[slot];
+    _heads[slot] = i;
   }
 }
 
@@ -1762,5 +2575,91 @@ class _TransformedImageRenderItem(
     canvas.transform(_matrix);
     item.execute(canvas);
     canvas.restore();
+  }
+}
+
+/// One open pixelate scope during a replay.
+///
+/// [canvas] records the scope at one pixel per block: its transform maps the
+/// scope's local coordinates to logical pixels, then divides by the block
+/// size, so block (i, j) covers logical
+/// `[i·size, (i+1)·size) × [j·size, (j+1)·size)` whatever transform is
+/// active. [end] rasterizes that and draws it back over the logical canvas
+/// rect with nearest-neighbour sampling, so each block stays one flat colour.
+///
+/// A degenerate scope (block below one logical pixel, empty canvas, or a
+/// transform that collapses the plane) passes its items straight through to
+/// the parent canvas.
+class _PixelatePass {
+  _PixelatePass(PixelateBeginRenderItem scope, this.parent, Matrix4 logical)
+    : logical = logical,
+      canvas = parent {
+    final size = scope.blockSize;
+    if (!(size >= 1) || !size.isFinite) return;
+    final cols = (scope.width / size).ceil();
+    final rows = (scope.height / size).ceil();
+    if (cols < 1 || rows < 1) return;
+    final current = Matrix4.fromFloat64List(parent.getTransform());
+    final fromLogical = Matrix4.zero();
+    final fromCurrent = Matrix4.zero();
+    if (fromLogical.copyInverse(logical) == 0 ||
+        fromCurrent.copyInverse(current) == 0) {
+      return;
+    }
+    final blocks = Matrix4.diagonal3Values(1 / size, 1 / size, 1);
+    _cols = cols;
+    _rows = rows;
+    _size = size;
+    // Scope-local → logical (logical⁻¹ · current) → blocks.
+    final toBlocks = blocks.multiplied(fromLogical)..multiply(current);
+    // From the parent's transform back to logical: current⁻¹ · logical.
+    _back = fromCurrent..multiply(logical);
+    final recorder = _recorder = ui.PictureRecorder();
+    canvas = Canvas(recorder)..transform(toBlocks.storage);
+    this.logical = blocks;
+  }
+
+  static final Paint _blockPaint = Paint()..filterQuality = FilterQuality.none;
+
+  final Canvas parent;
+
+  /// Where the scope's items draw.
+  Canvas canvas;
+
+  /// Logical pixels → [canvas] pixels, before any transform inside the
+  /// scope. The base a nested scope builds its grid on.
+  Matrix4 logical;
+
+  ui.PictureRecorder? _recorder;
+  late final Matrix4 _back;
+  late final int _cols;
+  late final int _rows;
+  late final double _size;
+
+  /// Draws the pixelated scope onto [parent] and returns it.
+  Canvas end() {
+    final recorder = _recorder;
+    if (recorder == null) return parent;
+    // Items balance their own saves; a push() left open in the scope must
+    // not leak into the recording.
+    while (canvas.getSaveCount() > 1) {
+      canvas.restore();
+    }
+    final picture = recorder.endRecording();
+    final image = picture.toImageSync(_cols, _rows);
+    picture.dispose();
+    parent
+      ..save()
+      ..transform(_back.storage)
+      ..drawImageRect(
+        image,
+        Rect.fromLTWH(0, 0, _cols.toDouble(), _rows.toDouble()),
+        Rect.fromLTWH(0, 0, _cols * _size, _rows * _size),
+        _blockPaint,
+      )
+      ..restore();
+    // The recorded frame keeps its own reference to the pixels.
+    image.dispose();
+    return parent;
   }
 }
