@@ -13,6 +13,7 @@ import '../math/flut5_trigonometry.dart';
 import '../math/flut5_vector.dart';
 import '../physics/flut5_physics_engine.dart';
 import '../physics/flut5_spring.dart';
+import '../physics/flut5_window_bounds.dart';
 import '../shape/flut5_2d_primitives.dart';
 import '../shape/flut5_fill.dart';
 import '../shape/flut5_stroke.dart';
@@ -60,6 +61,7 @@ final class Flut5Engine
         Flut5Vertex,
         Flut5VectorMixin,
         Flut5Spring,
+        Flut5WindowBounds,
         Flut5Transform,
         Flut5Clip,
         Flut5ContainerMixin,
@@ -234,7 +236,9 @@ final class Flut5Engine
   /// The physics world: creates particles (and future body types) and steps
   /// them every frame. See [Flut5PhysicsEngine].
   @override
-  final Flut5PhysicsEngine physicsEngine = Flut5PhysicsEngine();
+  late final Flut5PhysicsEngine physicsEngine = Flut5PhysicsEngine(
+    windowSize: () => size,
+  );
 
   /// The rendering pipeline queue for deferred drawing.
   @override

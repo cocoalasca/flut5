@@ -1,3 +1,5 @@
+import 'dart:ui' show Size;
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flut5/flut5.dart';
 
@@ -9,6 +11,11 @@ import 'package:flut5/flut5.dart';
   final s = e.physicsEngine.createSpring(a, b)..restLength = 50;
   return (e, s);
 }
+
+/// An engine whose window is 200 × 100.
+Flut5Engine windowed() =>
+    Flut5Engine()
+      ..environment = const SketchEnvironment().withSize(const Size(200, 100));
 
 void main() {
   group('Flut5PhysicsParticle', () {
@@ -275,6 +282,143 @@ void main() {
         e.physicsEngine.update();
       }
       expect(s.a.position.distanceTo(s.b.position), closeTo(50, 0.01));
+    });
+  });
+
+  group('Window bounds', () {
+    test('off by default: particles leave the window', () {
+      final e = windowed();
+      final p = e.physicsEngine.createParticle(195, 50)..velocity.x = 10;
+      e.physicsEngine.update();
+      expect(p.x, 205.0);
+      expect(e.windowBoundsRestitution(), 1.0);
+    });
+
+    test('mirrors the overshoot and reverses velocity', () {
+      final e = windowed()..windowBoundsCollision();
+      final p = e.physicsEngine.createParticle(195, 50)..velocity.x = 10;
+      e.physicsEngine.update();
+      expect(p.x, 195.0);
+      expect(p.velocity.x, -10.0);
+    });
+
+    test('restitution scales the rebound', () {
+      final e = windowed()
+        ..windowBoundsCollision()
+        ..windowBoundsRestitution(0.5);
+      final p = e.physicsEngine.createParticle(5, 95)
+        ..velocity.setValues(-10, 10, 0);
+      e.physicsEngine.update();
+      expect(p.x, 2.5); // 5 past the left edge, half of it bounced back
+      expect(p.velocity.x, 5.0);
+      expect(p.y, 97.5);
+      expect(p.velocity.y, -5.0);
+    });
+
+    test('restitution 0 stops the particle on the wall', () {
+      final e = windowed()
+        ..windowBoundsCollision()
+        ..windowBoundsRestitution(0);
+      final p = e.physicsEngine.createParticle(50, 5)..velocity.y = -10;
+      e.physicsEngine.update();
+      expect(p.y, 0.0);
+      expect(p.velocity.y, 0.0);
+    });
+
+    test('only the selected edges collide', () {
+      final e = windowed()..windowBoundsCollision(top: false, right: false);
+      final up = e.physicsEngine.createParticle(50, 5)..velocity.y = -10;
+      final right = e.physicsEngine.createParticle(195, 50)..velocity.x = 10;
+      final left = e.physicsEngine.createParticle(5, 50)..velocity.x = -10;
+      e.physicsEngine.update();
+      expect(up.y, -5.0);
+      expect(right.x, 205.0);
+      expect(left.x, 5.0);
+      expect(left.velocity.x, 10.0);
+    });
+
+    test('all switches every edge; named edges override it', () {
+      final e = windowed()..windowBoundsCollision(all: false, bottom: true);
+      final up = e.physicsEngine.createParticle(50, 5)..velocity.y = -10;
+      final down = e.physicsEngine.createParticle(50, 95)..velocity.y = 10;
+      e.physicsEngine.update();
+      expect(up.y, -5.0);
+      expect(down.y, 95.0);
+      expect(down.velocity.y, -10.0);
+
+      e.windowBoundsCollision(all: false);
+      down.velocity.y = 10;
+      e.physicsEngine.update();
+      expect(down.y, 105.0); // floor gone too: falls through
+    });
+
+    test('noWindowBoundsCollision opens every edge again', () {
+      final e = windowed()
+        ..windowBoundsCollision()
+        ..noWindowBoundsCollision();
+      final p = e.physicsEngine.createParticle(195, 50)..velocity.x = 10;
+      e.physicsEngine.update();
+      expect(p.x, 205.0);
+    });
+
+    test('the particle edge, not its center, touches the wall', () {
+      final e = windowed()..windowBoundsCollision();
+      final p = e.physicsEngine.createParticle(180, 50)
+        ..radius = 15
+        ..velocity.x = 10;
+      e.physicsEngine.update();
+      expect(p.x, 180.0); // hit at 185, bounced 5 back
+      expect(p.velocity.x, -10.0);
+    });
+
+    test('a particle resting on the floor stays put without jitter', () {
+      final e = windowed()
+        ..windowBoundsCollision()
+        ..windowBoundsRestitution(0.6);
+      final world = e.physicsEngine..setGravity(0.2);
+      final p = world.createParticle(100, 10)..radius = 10;
+      for (var i = 0; i < 2000; i++) {
+        world.update();
+      }
+      for (var i = 0; i < 10; i++) {
+        world.update();
+        expect(p.y, 90.0);
+        expect(p.velocity.y, 0.0);
+      }
+    });
+
+    test('restitution 1 keeps bouncing to the same height under gravity', () {
+      final e = windowed()..windowBoundsCollision();
+      final world = e.physicsEngine..setGravity(0.2);
+      final p = world.createParticle(100, 10);
+      var highest = double.infinity;
+      for (var i = 0; i < 5000; i++) {
+        world.update();
+        if (i > 4000) highest = p.y < highest ? p.y : highest;
+      }
+      expect(highest, closeTo(10, 1));
+    });
+
+    test('a particle pushed outside by a resize is put back on the edge', () {
+      final e = windowed()..windowBoundsCollision();
+      final p = e.physicsEngine.createParticle(300, 50)..velocity.x = -2;
+      e.physicsEngine.update();
+      expect(p.x, 200.0);
+      expect(p.velocity.x, -2.0);
+    });
+
+    test('no window yet: bounds do nothing', () {
+      final e = Flut5Engine()..windowBoundsCollision();
+      final p = e.physicsEngine.createParticle(5, 5)..velocity.x = -10;
+      e.physicsEngine.update();
+      expect(p.x, -5.0);
+    });
+
+    test('negative restitution is rejected', () {
+      expect(
+        () => windowed().windowBoundsRestitution(-0.1),
+        throwsArgumentError,
+      );
     });
   });
 }

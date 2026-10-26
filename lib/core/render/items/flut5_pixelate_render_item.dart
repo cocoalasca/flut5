@@ -13,11 +13,16 @@ import '../flut5_render_item.dart';
 ///
 /// [width] and [height] are the canvas size in logical pixels when the scope
 /// opened; the snapshot covers the whole canvas.
+///
+/// With a [palette], every block's average colour is snapped to the nearest
+/// palette colour before it is drawn back. The list is the queue's own
+/// unmodifiable copy, never empty.
 class PixelateBeginRenderItem(
   final double blockSize,
   final double width,
-  final double height,
-) extends Flut5RenderItem {
+  final double height, {
+  final List<Color>? palette,
+}) extends Flut5RenderItem {
   @override
   void execute(Canvas canvas) {}
 }

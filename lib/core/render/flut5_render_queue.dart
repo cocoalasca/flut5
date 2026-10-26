@@ -9,6 +9,7 @@ import '../../text/flut5_font.dart';
 import '../flut5_shadow.dart';
 import 'flut5_dash.dart';
 import 'flut5_render_item.dart';
+import 'flut5_shaders.dart';
 import 'items/flut5_multi_line_render_item.dart';
 import 'items/flut5_multi_point_render_item.dart';
 import 'items/flut5_path_render_item.dart';
@@ -26,6 +27,7 @@ import 'items/flut5_transform_render_item.dart';
 import 'items/flut5_clip_render_item.dart';
 export '../flut5_shadow.dart' show Flut5ShadowSpec;
 export 'flut5_render_item.dart';
+export 'flut5_shaders.dart';
 export 'items/flut5_arc_render_item.dart';
 export 'items/flut5_background_render_item.dart';
 export 'items/flut5_blur_render_item.dart';
@@ -600,6 +602,7 @@ class Flut5RenderQueue {
   /// Whether this frame holds a pixelate scope, so other frames keep the
   /// plain replay. Blur scopes need nothing from the replay.
   bool _hasPixelate = false;
+  final _PaletteImages _palettes = _PaletteImages();
   bool _warnedOpenScope = false;
   bool _warnedScopeLeak = false;
 
@@ -608,9 +611,22 @@ class Flut5RenderQueue {
   /// Opens a pixelate scope of [blockSize] logical pixels over a canvas of
   /// [width]×[height]. Pending batches flush first, so nothing drawn before
   /// the scope joins a batch inside it.
-  void beginPixelate(double blockSize, double width, double height) {
+  ///
+  /// A non-empty [palette] snaps every block to its nearest colour. It is
+  /// copied, so changing the list afterwards leaves this frame alone.
+  void beginPixelate(
+    double blockSize,
+    double width,
+    double height, {
+    List<Color>? palette,
+  }) {
+    final colors = palette == null || palette.isEmpty
+        ? null
+        : List<Color>.unmodifiable(palette);
+    // Flut5Canvas starts this; it covers queues replayed elsewhere.
+    if (colors != null) Flut5Shaders.load();
     _beginScope(
-      PixelateBeginRenderItem(blockSize, width, height),
+      PixelateBeginRenderItem(blockSize, width, height, palette: colors),
       pixelate: true,
     );
     _hasPixelate = true;
@@ -2084,6 +2100,7 @@ class Flut5RenderQueue {
           item,
           target,
           passes.isEmpty ? base : passes.last.logical,
+          _palettes,
         );
         passes.add(pass);
         target = pass.canvas;
@@ -2170,6 +2187,7 @@ class Flut5RenderQueue {
     _scopes.clear();
     _pixelateScopes = 0;
     _hasPixelate = false;
+    _palettes.endFrame();
   }
 
   // ── Internals ─────────────────────────────────────────────────────────
@@ -2738,8 +2756,13 @@ class _TransformedImageRenderItem(
 /// transform that collapses the plane) passes its items straight through to
 /// the parent canvas.
 class _PixelatePass {
-  _PixelatePass(PixelateBeginRenderItem scope, this.parent, Matrix4 logical)
-    : logical = logical,
+  _PixelatePass(
+    PixelateBeginRenderItem scope,
+    this.parent,
+    Matrix4 logical,
+    this._palettes,
+  ) : logical = logical,
+      _palette = scope.palette,
       canvas = parent {
     final size = scope.blockSize;
     if (!(size >= 1) || !size.isFinite) return;
@@ -2778,6 +2801,8 @@ class _PixelatePass {
   Matrix4 logical;
 
   ui.PictureRecorder? _recorder;
+  final List<Color>? _palette;
+  final _PaletteImages _palettes;
   late final Matrix4 _back;
   late final int _cols;
   late final int _rows;
@@ -2793,8 +2818,22 @@ class _PixelatePass {
       canvas.restore();
     }
     final picture = recorder.endRecording();
-    final image = picture.toImageSync(_cols, _rows);
+    var image = picture.toImageSync(_cols, _rows);
     picture.dispose();
+    final palette = _palette;
+    if (palette != null) {
+      if (Flut5Shaders.palette == null && Flut5Shaders.isLoading) {
+        // Not ready yet: draw nothing rather than the unmatched colours.
+        // The canvas draws every frame, so the scope appears once it lands.
+        image.dispose();
+        return parent;
+      }
+      final snapped = _snap(image, palette);
+      if (snapped != null) {
+        image.dispose();
+        image = snapped;
+      }
+    }
     parent
       ..save()
       ..transform(_back.storage)
@@ -2808,5 +2847,102 @@ class _PixelatePass {
     // The recorded frame keeps its own reference to the pixels.
     image.dispose();
     return parent;
+  }
+
+  static bool _warnedNoShader = false;
+
+  /// [blocks] with every pixel — every block — snapped to the nearest
+  /// colour of [palette], or `null` when the palette shader failed to load.
+  /// Runs at one pixel per block, so it costs a few thousand shader runs,
+  /// not a screenful.
+  ui.Image? _snap(ui.Image blocks, List<Color> palette) {
+    final program = Flut5Shaders.palette;
+    if (program == null) {
+      if (!_warnedNoShader) {
+        _warnedNoShader = true;
+        Flut5Console.printLater(
+          'beginPixelate(): the palette shader is unavailable, so the scope '
+          'was drawn without its palette.',
+        );
+      }
+      return null;
+    }
+    final shader = program.fragmentShader()
+      ..setFloat(0, _cols.toDouble())
+      ..setFloat(1, _rows.toDouble())
+      ..setFloat(2, palette.length.toDouble())
+      ..setImageSampler(0, blocks)
+      ..setImageSampler(1, _palettes.lookup(palette));
+    final recorder = ui.PictureRecorder();
+    Canvas(recorder).drawRect(
+      Rect.fromLTWH(0, 0, _cols.toDouble(), _rows.toDouble()),
+      Paint()..shader = shader,
+    );
+    final picture = recorder.endRecording();
+    final snapped = picture.toImageSync(_cols, _rows);
+    picture.dispose();
+    shader.dispose();
+    return snapped;
+  }
+}
+
+/// Palette textures for [_PixelatePass._snap], one pixel per colour, keyed
+/// by the colours themselves — a sketch passing a fresh list literal every
+/// frame still reuses one texture.
+///
+/// Kept for the frames that use them: [endFrame] drops every palette the
+/// frame just ended did not draw with, so the cache grows to what a frame
+/// needs and an animated palette never piles up textures.
+class _PaletteImages {
+  Map<_PaletteKey, ui.Image> _current = {};
+  Map<_PaletteKey, ui.Image> _previous = {};
+
+  ui.Image lookup(List<Color> palette) {
+    final key = _PaletteKey(palette);
+    final hit = _current[key] ?? _previous.remove(key);
+    if (hit != null) return _current[key] = hit;
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    // `src` stores each colour exactly, alpha included.
+    final paint = Paint()..blendMode = BlendMode.src;
+    for (var i = 0; i < palette.length; i++) {
+      canvas.drawRect(
+        Rect.fromLTWH(i.toDouble(), 0, 1, 1),
+        paint..color = palette[i],
+      );
+    }
+    final picture = recorder.endRecording();
+    final image = picture.toImageSync(palette.length, 1);
+    picture.dispose();
+    return _current[key] = image;
+  }
+
+  void endFrame() {
+    // Recorded frames hold their own references, so disposing is safe.
+    for (final image in _previous.values) {
+      image.dispose();
+    }
+    _previous = _current;
+    _current = {};
+  }
+}
+
+class _PaletteKey {
+  _PaletteKey(this.colors) : hashCode = Object.hashAll(colors);
+
+  final List<Color> colors;
+
+  @override
+  final int hashCode;
+
+  @override
+  bool operator ==(Object other) {
+    if (other is! _PaletteKey || other.hashCode != hashCode) return false;
+    final a = colors, b = other.colors;
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
   }
 }

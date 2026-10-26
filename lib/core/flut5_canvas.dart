@@ -134,6 +134,10 @@ class _Flut5CanvasState extends State<Flut5Canvas>
   void initState() {
     super.initState();
     Flut5TextCache.instance.trackFrames();
+    // Started, not awaited: an engine asset load never completes under a
+    // widget test's fake clock, so waiting would stall setup(). It normally
+    // lands before the first frame; see Flut5Shaders.
+    Flut5Shaders.load();
     _ticker = createTicker(_onTick);
     _ticker.start();
     _painter = Flut5Painter(sketch: widget.sketch, repaint: _repaint);

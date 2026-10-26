@@ -47,6 +47,7 @@ export 'physics/flut5_physics_body.dart';
 export 'physics/flut5_physics_particle.dart';
 export 'physics/flut5_physics_spring.dart';
 export 'physics/flut5_spring.dart';
+export 'physics/flut5_window_bounds.dart';
 export 'core/flut5_sketch.dart';
 export 'core/flut5_canvas.dart';
 export 'core/flut5_clip.dart';
@@ -495,7 +496,8 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
   void endBlur() => flut5.endBlur();
 
   // ── Pixelate ─────────────────────────────────────────────────────────────
-  void beginPixelate(double blockSize) => flut5.beginPixelate(blockSize);
+  void beginPixelate(double blockSize, [List<Color>? palette]) =>
+      flut5.beginPixelate(blockSize, palette);
   void endPixelate() => flut5.endPixelate();
 
   // ── Vertex API ───────────────────────────────────────────────────────────
@@ -574,6 +576,22 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
   double springConstant([double? k]) => flut5.springConstant(k);
   Flut5Vector springForce(Flut5Vector position, Flut5Vector rest) =>
       flut5.springForce(position, rest);
+  void windowBoundsCollision({
+    bool all = true,
+    bool? left,
+    bool? top,
+    bool? right,
+    bool? bottom,
+  }) => flut5.windowBoundsCollision(
+    all: all,
+    left: left,
+    top: top,
+    right: right,
+    bottom: bottom,
+  );
+  void noWindowBoundsCollision() => flut5.noWindowBoundsCollision();
+  double windowBoundsRestitution([double? e]) =>
+      flut5.windowBoundsRestitution(e);
 
   // ── Transform ────────────────────────────────────────────────────────────
   void push() => flut5.push();

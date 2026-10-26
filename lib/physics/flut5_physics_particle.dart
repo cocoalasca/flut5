@@ -33,6 +33,12 @@ final class Flut5PhysicsParticle(double x, double y) extends Flut5PhysicsBody {
   /// speed over time.
   double damping = 1.0;
 
+  /// Collision radius. With `windowBoundsCollision()` on, the particle bounces
+  /// when its edge — this far from [position] — touches a window edge, so
+  /// match it to the size you draw: `circle(p.x, p.y, p.radius * 2)`.
+  /// Defaults to `0`, a point.
+  double radius = 0.0;
+
   /// Shorthand for `position.x`.
   double get x => position.x;
   set x(double v) => position.x = v;

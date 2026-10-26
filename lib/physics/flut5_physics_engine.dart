@@ -1,4 +1,6 @@
 import 'dart:collection';
+import 'dart:math' as math;
+import 'dart:ui' show Size;
 
 import '../math/flut5_vector.dart';
 import 'flut5_physics_body.dart';
@@ -44,7 +46,13 @@ enum PhysicsUpdateTiming {
 ///   // physicsEngine.update() runs before the next draw() (default)
 /// }
 /// ```
-final class Flut5PhysicsEngine {
+///
+/// [windowSize] reports the sketch's canvas size for
+/// [windowBoundsCollision]; the sketch's engine wires it up. Without it the
+/// window bounds never collide.
+final class Flut5PhysicsEngine({Size Function()? windowSize}) {
+  final Size Function()? _windowSize = windowSize;
+
   final List<Flut5PhysicsBody> _bodies = [];
   final List<Flut5PhysicsParticle> _particles = [];
   final List<Flut5PhysicsSpring> _springs = [];
@@ -75,6 +83,59 @@ final class Flut5PhysicsEngine {
   /// Sets [gravity] to straight down (`0, y`) with strength [y]. Negative
   /// values pull up; `0` turns gravity off. Replaces any custom x component.
   void setGravity(double y) => gravity = Flut5Vector(0, y);
+
+  bool _boundsLeft = false;
+  bool _boundsTop = false;
+  bool _boundsRight = false;
+  bool _boundsBottom = false;
+
+  /// Makes particles bounce off the edges of the window. Off by default.
+  ///
+  /// Called with no arguments it enables all four edges; pass `false` for an
+  /// edge to leave it open, so particles fly out through it. [all] switches
+  /// every edge at once, and any edge you also name overrides it:
+  ///
+  /// ```dart
+  /// physicsEngine.windowBoundsCollision();              // closed box
+  /// physicsEngine.windowBoundsCollision(all: false);    // no walls
+  /// physicsEngine.windowBoundsCollision(top: false);    // open-top box
+  /// physicsEngine.windowBoundsCollision(all: false, bottom: true); // floor only
+  /// ```
+  ///
+  /// Each call replaces the previous selection. A particle's edge — its
+  /// `radius` away from its center — is what touches the wall, and how much
+  /// speed survives the bounce is [windowBoundsRestitution]. Turn the walls
+  /// off again with [noWindowBoundsCollision].
+  void windowBoundsCollision({
+    bool all = true,
+    bool? left,
+    bool? top,
+    bool? right,
+    bool? bottom,
+  }) {
+    _boundsLeft = left ?? all;
+    _boundsTop = top ?? all;
+    _boundsRight = right ?? all;
+    _boundsBottom = bottom ?? all;
+  }
+
+  /// Turns off every window edge, same as `windowBoundsCollision(all: false)`.
+  void noWindowBoundsCollision() => windowBoundsCollision(all: false);
+
+  double _windowBoundsRestitution = 1.0;
+
+  /// How bouncy the window edges are: the share of a particle's speed into
+  /// a wall that it keeps, reversed, after hitting it. `1` (default) bounces
+  /// back at full speed, `0.5` at half, `0` stops dead against the wall;
+  /// above `1` every bounce adds energy. Must be >= 0. Sketches usually set
+  /// it with `windowBoundsRestitution(e)`.
+  double get windowBoundsRestitution => _windowBoundsRestitution;
+  set windowBoundsRestitution(double e) {
+    if (e < 0) {
+      throw ArgumentError.value(e, 'e', 'Restitution must be >= 0');
+    }
+    _windowBoundsRestitution = e;
+  }
 
   double _springConstant = 0.1;
 
@@ -186,9 +247,10 @@ final class Flut5PhysicsEngine {
   /// Steps every registered body by one frame in two passes: first every
   /// body's `accumulateForces` (springs call `applyForce` on their
   /// particles), then every body's `updatePhysics` (each particle runs its
-  /// `euler` step with [gravity] and resets its acceleration). Runs automatically before or
-  /// after `draw()` per [updateTiming]; call it yourself when that is
-  /// [PhysicsUpdateTiming.manual].
+  /// `euler` step with [gravity] and resets its acceleration). Particles that
+  /// end up past an edge enabled with [windowBoundsCollision] then bounce off
+  /// it. Runs automatically before or after `draw()` per [updateTiming]; call
+  /// it yourself when that is [PhysicsUpdateTiming.manual].
   void update() {
     _compact();
     for (final body in _bodies) {
@@ -196,6 +258,76 @@ final class Flut5PhysicsEngine {
     }
     for (final body in _bodies) {
       body.updatePhysics(this);
+    }
+    if (_boundsLeft || _boundsTop || _boundsRight || _boundsBottom) {
+      _collideWindowBounds();
+    }
+  }
+
+  /// Bounces every particle that crossed an enabled window edge this frame.
+  ///
+  /// The overshoot is mirrored back inside (scaled by the restitution), not
+  /// clamped onto the wall: clamping drops the part of the step spent past
+  /// the wall, so under gravity a ball with restitution `1` would sink lower
+  /// every bounce. A particle reaching a wall with no more speed than one
+  /// frame of gravity toward it is resting on it — it stops there instead of
+  /// hopping in place forever.
+  void _collideWindowBounds() {
+    final size = _windowSize?.call();
+    if (size == null || size.isEmpty) return;
+
+    // A disabled edge sits at infinity, so no particle ever crosses it.
+    final minX = _boundsLeft ? 0.0 : double.negativeInfinity;
+    final minY = _boundsTop ? 0.0 : double.negativeInfinity;
+    final maxX = _boundsRight ? size.width : double.infinity;
+    final maxY = _boundsBottom ? size.height : double.infinity;
+    final e = _windowBoundsRestitution;
+    final gx = gravity.x;
+    final gy = gravity.y;
+
+    for (final p in _particles) {
+      final r = p.radius;
+      final x = p.position.x;
+      if (x < minX + r) {
+        _bounce(p, 0, minX + r, -1, gx, e);
+      } else if (x > maxX - r) {
+        _bounce(p, 0, maxX - r, 1, gx, e);
+      }
+      final y = p.position.y;
+      if (y < minY + r) {
+        _bounce(p, 1, minY + r, -1, gy, e);
+      } else if (y > maxY - r) {
+        _bounce(p, 1, maxY - r, 1, gy, e);
+      }
+    }
+  }
+
+  /// Bounces [p] along [axis] (0 = x, 1 = y) off the wall at [wall], which
+  /// [p] has crossed. [side] is `1` for a wall on the high side of the axis
+  /// (right, bottom) and `-1` for one on the low side, so `value * side` is
+  /// positive toward the wall. [g] is gravity along [axis].
+  static void _bounce(
+    Flut5PhysicsParticle p,
+    int axis,
+    double wall,
+    double side,
+    double g,
+    double e,
+  ) {
+    final position = p.position;
+    final velocity = p.velocity;
+    final speed = velocity[axis] * side;
+    if (speed <= 0) {
+      // Already heading back inside, e.g. the window shrank past it.
+      position[axis] = wall;
+    } else if (speed <= g * side) {
+      // No faster than one frame of gravity toward the wall: resting on it.
+      position[axis] = wall;
+      velocity[axis] = 0;
+    } else {
+      final overshoot = (position[axis] - wall) * side;
+      position[axis] = wall - math.min(overshoot, speed) * e * side;
+      velocity[axis] = -velocity[axis] * e;
     }
   }
 }
