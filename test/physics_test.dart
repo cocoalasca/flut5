@@ -559,4 +559,154 @@ void main() {
       expect(() => e.particleCollision(iterations: 0), throwsArgumentError);
     });
   });
+
+  group('Rotation', () {
+    /// A radius-10 particle resting on the floor of a 200 × 100 window,
+    /// sliding right at 3 px/frame, under gravity 0.2. Only the floor
+    /// collides, with restitution 0.
+    (Flut5PhysicsEngine, Flut5PhysicsParticle) slidingOnFloor(
+      PhysicsRotationMode mode,
+    ) {
+      final e = windowed()
+        ..windowBoundsCollision(all: false, bottom: true)
+        ..windowBoundsRestitution(0);
+      final world = e.physicsEngine
+        ..setGravity(0.2)
+        ..rotationMode = mode;
+      final p = world.createParticle(50, 90)
+        ..radius = 10
+        ..velocity.x = 3;
+      return (world, p);
+    }
+
+    test('none by default: the engine never turns particles', () {
+      final (world, p) = slidingOnFloor(.none);
+      p.angularVelocity = 0.5;
+      for (var i = 0; i < 30; i++) {
+        world.update();
+      }
+      expect(
+        Flut5Engine().physicsEngine.rotationMode,
+        PhysicsRotationMode.none,
+      );
+      expect(p.angle, 0.0);
+      expect(p.angularVelocity, 0.5); // left alone
+      expect(p.velocity.x, 3.0); // no friction either
+    });
+
+    test('cosmetic eases spin 5% a frame toward velocity.x / radius', () {
+      final world = Flut5Engine().physicsEngine..rotationMode = .cosmetic;
+      final p = world.createParticle(50, 50)
+        ..radius = 10
+        ..velocity.x = 2;
+      world.update();
+      expect(p.angularVelocity, closeTo(0.01, 1e-12)); // 5% of 0.2
+      expect(p.angle, closeTo(0.01, 1e-12));
+      for (var i = 0; i < 500; i++) {
+        world.update();
+      }
+      expect(p.angularVelocity, closeTo(0.2, 1e-9)); // rolling spin
+    });
+
+    test('cosmetic spin coasts to a stop with the particle', () {
+      final world = Flut5Engine().physicsEngine..rotationMode = .cosmetic;
+      final p = world.createParticle(50, 50)
+        ..radius = 10
+        ..angularVelocity = 0.2;
+      world.update();
+      expect(p.angularVelocity, closeTo(0.19, 1e-12));
+      for (var i = 0; i < 500; i++) {
+        world.update();
+      }
+      expect(p.angularVelocity, closeTo(0, 1e-9));
+    });
+
+    test('cosmetic leaves particles without a radius alone', () {
+      final world = Flut5Engine().physicsEngine..rotationMode = .cosmetic;
+      final p = world.createParticle(50, 50)..velocity.x = 2;
+      world.update();
+      expect(p.angle, 0.0);
+    });
+
+    test('cosmetic never changes how particles move', () {
+      final (world, p) = slidingOnFloor(.cosmetic);
+      for (var i = 0; i < 30; i++) {
+        world.update();
+      }
+      expect(p.velocity.x, 3.0);
+      expect(p.angularVelocity, greaterThan(0));
+    });
+
+    test('physical: a ball sliding on the floor ends up rolling', () {
+      final (world, p) = slidingOnFloor(.physical);
+      for (var i = 0; i < 200; i++) {
+        world.update();
+      }
+      // A solid disc that starts sliding rolls on at two thirds the speed.
+      expect(p.velocity.x, closeTo(2, 1e-9));
+      expect(p.angularVelocity * p.radius, closeTo(p.velocity.x, 1e-9));
+      expect(p.angle, greaterThan(0));
+    });
+
+    test('physical with friction 0: nothing grips, nothing turns', () {
+      final (world, p) = slidingOnFloor(.physical);
+      world.friction = 0;
+      for (var i = 0; i < 30; i++) {
+        world.update();
+      }
+      expect(p.velocity.x, 3.0);
+      expect(p.angularVelocity, 0.0);
+    });
+
+    test('physical: a spinning ball kicks sideways when it lands', () {
+      final e = windowed()
+        ..windowBoundsCollision()
+        ..windowBoundsRestitution(0.5);
+      final world = e.physicsEngine
+        ..setGravity(0.2)
+        ..rotationMode = .physical;
+      final p = world.createParticle(100, 50)
+        ..radius = 10
+        ..angularVelocity = 0.3; // clockwise
+      for (var i = 0; i < 40; i++) {
+        world.update();
+      }
+      expect(p.velocity.x, greaterThan(0));
+      expect(p.angularVelocity, lessThan(0.3));
+    });
+
+    test('physical: damping slows spin too', () {
+      final world = Flut5Engine().physicsEngine..rotationMode = .physical;
+      final p = world.createParticle(50, 50)
+        ..damping = 0.5
+        ..angularVelocity = 1;
+      world.update();
+      expect(p.angularVelocity, 0.5);
+      expect(p.angle, 0.5);
+    });
+
+    test('physical: a grazing hit spins both particles the same way', () {
+      Flut5PhysicsParticle grazed(PhysicsRotationMode mode) {
+        final e = Flut5Engine()..particleCollision();
+        final world = e.physicsEngine..rotationMode = mode;
+        final a = world.createParticle(100, 50)
+          ..radius = 5
+          ..velocity.x = 2;
+        final b = world.createParticle(108, 55)..radius = 5;
+        world.update();
+        expect(b.angularVelocity, closeTo(a.angularVelocity, 1e-12));
+        return a;
+      }
+
+      expect(grazed(.physical).angularVelocity, greaterThan(0));
+      expect(grazed(.none).angularVelocity, 0.0);
+    });
+
+    test('negative friction is rejected', () {
+      expect(
+        () => Flut5Engine().physicsEngine.friction = -0.1,
+        throwsArgumentError,
+      );
+    });
+  });
 }

@@ -1,4 +1,4 @@
-import 'flut5_physics_engine.dart';
+import 'engine/flut5_physics_engine.dart';
 
 /// Collisions for the Flut5 Engine's particles: against the window edges
 /// and against each other.
@@ -42,11 +42,13 @@ mixin Flut5Collision {
   void noWindowBoundsCollision() => physicsEngine.noWindowBoundsCollision();
 
   /// Get-or-set accessor for the window edges' restitution (p5-style, like
-  /// `springConstant`). Called with [e] it assigns (must be >= 0); called
-  /// with no argument it returns the current value. Defaults to `1`, a
+  /// `springConstant`). Called with [restitution] it assigns (must be >= 0);
+  /// called with no argument it returns the current value. Defaults to `1`, a
   /// bounce at full speed; `0` stops particles dead against the wall.
-  double windowBoundsRestitution([double? e]) {
-    if (e != null) physicsEngine.windowBoundsRestitution = e;
+  double windowBoundsRestitution([double? restitution]) {
+    if (restitution != null) {
+      physicsEngine.windowBoundsRestitution = restitution;
+    }
     return physicsEngine.windowBoundsRestitution;
   }
 
@@ -61,12 +63,12 @@ mixin Flut5Collision {
   void noParticleCollision() => physicsEngine.noParticleCollision();
 
   /// Get-or-set accessor for the restitution of collisions between
-  /// particles (p5-style, like `springConstant`). Called with [e] it assigns
-  /// (must be >= 0); called with no argument it returns the current value.
-  /// Defaults to `1`, a perfectly elastic bounce; `0` stops them dead along
-  /// the hit.
-  double particleRestitution([double? e]) {
-    if (e != null) physicsEngine.particleRestitution = e;
+  /// particles (p5-style, like `springConstant`). Called with [restitution]
+  /// it assigns (must be >= 0); called with no argument it returns the
+  /// current value. Defaults to `1`, a perfectly elastic bounce; `0` stops
+  /// them dead along the hit.
+  double particleRestitution([double? restitution]) {
+    if (restitution != null) physicsEngine.particleRestitution = restitution;
     return physicsEngine.particleRestitution;
   }
 }

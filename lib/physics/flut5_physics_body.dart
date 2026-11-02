@@ -1,4 +1,4 @@
-import 'flut5_physics_engine.dart';
+import 'engine/flut5_physics_engine.dart';
 
 /// Base type for everything the engine's physics registry steps each frame.
 ///

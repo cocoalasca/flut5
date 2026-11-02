@@ -1,6 +1,6 @@
 import '../math/flut5_vector.dart';
 import 'flut5_physics_body.dart';
-import 'flut5_physics_engine.dart';
+import 'engine/flut5_physics_engine.dart';
 
 /// A point mass with position, velocity and acceleration.
 ///
@@ -33,7 +33,8 @@ final class Flut5PhysicsParticle(double x, double y) extends Flut5PhysicsBody {
 
   /// Per-frame velocity multiplier. `1.0` (default) applies no damping;
   /// `0.0` fully stops velocity every frame; values in between bleed off
-  /// speed over time.
+  /// speed over time. With [PhysicsRotationMode.physical] it slows
+  /// [angularVelocity] the same way.
   double damping = 1.0;
 
   /// Collision radius: the particle's edge is this far from [position]. With
@@ -43,6 +44,19 @@ final class Flut5PhysicsParticle(double x, double y) extends Flut5PhysicsBody {
   /// `circle(p.x, p.y, p.radius * 2)`. Defaults to `0`, a point, which
   /// collides only with particles that have a radius.
   double radius = 0.0;
+
+  /// How far the particle has turned, in radians, clockwise on screen — draw
+  /// it with `rotate(p.angle)` (convert with `degrees(p.angle)` first under
+  /// `angleMode = AngleMode.degrees`). Rotation is in the screen plane.
+  /// The engine only changes it when `physicsEngine.rotationMode` isn't
+  /// [PhysicsRotationMode.none].
+  double angle = 0.0;
+
+  /// How fast the particle turns, in radians per frame, clockwise on screen.
+  /// Eased toward the rolling spin in [PhysicsRotationMode.cosmetic]; in
+  /// [PhysicsRotationMode.physical] friction changes it and you can set it
+  /// yourself to throw a spinning ball.
+  double angularVelocity = 0.0;
 
   /// Shorthand for `position.x`.
   double get x => position.x;
@@ -77,8 +91,29 @@ final class Flut5PhysicsParticle(double x, double y) extends Flut5PhysicsBody {
     acceleration.setZero();
   }
 
+  /// Share of the gap to the rolling spin [PhysicsRotationMode.cosmetic]
+  /// closes each frame — the classic `angleV *= 0.95` smoothing.
+  static const double _cosmeticSpinEasing = 0.05;
+
   /// Integration pass: runs [euler] with the world's
-  /// [Flut5PhysicsEngine.gravity].
+  /// [Flut5PhysicsEngine.gravity], then turns the particle per the world's
+  /// [Flut5PhysicsEngine.rotationMode].
   @override
-  void updatePhysics(Flut5PhysicsEngine physics) => euler(physics.gravity);
+  void updatePhysics(Flut5PhysicsEngine physics) {
+    euler(physics.gravity);
+    switch (physics.rotationMode) {
+      case .none:
+        return;
+      case .cosmetic:
+        // Ease toward the spin of rolling along a floor — one radius of
+        // travel per radian — so spin follows speed with a short lag and
+        // coasts to a stop when the particle does.
+        final rollingSpin = radius > 0 ? velocity.x / radius : 0.0;
+        angularVelocity +=
+            (rollingSpin - angularVelocity) * _cosmeticSpinEasing;
+      case .physical:
+        angularVelocity *= damping;
+    }
+    angle += angularVelocity;
+  }
 }

@@ -1,5 +1,5 @@
 import '../math/flut5_vector.dart';
-import 'flut5_physics_engine.dart';
+import 'engine/flut5_physics_engine.dart';
 import 'flut5_physics_spring.dart';
 
 /// Spring physics (Hooke's law) for the Flut5 Engine.

@@ -2,7 +2,7 @@ import 'dart:math' as math;
 
 import '../math/flut5_vector.dart';
 import 'flut5_physics_body.dart';
-import 'flut5_physics_engine.dart';
+import 'engine/flut5_physics_engine.dart';
 import 'flut5_physics_particle.dart';
 
 /// A spring linking two particles (Hooke's law).

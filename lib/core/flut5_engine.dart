@@ -11,7 +11,7 @@ import '../math/flut5_math.dart';
 import '../math/flut5_noise.dart';
 import '../math/flut5_trigonometry.dart';
 import '../math/flut5_vector.dart';
-import '../physics/flut5_physics_engine.dart';
+import '../physics/engine/flut5_physics_engine.dart';
 import '../physics/flut5_spring.dart';
 import '../physics/flut5_collision.dart';
 import '../shape/flut5_2d_primitives.dart';

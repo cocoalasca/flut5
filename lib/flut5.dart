@@ -22,7 +22,7 @@ import 'text/flut5_text.dart';
 import 'text/flut5_text_grid.dart';
 import 'ui/flut5_ui.dart';
 import 'steering/flut5_steering.dart';
-import 'physics/flut5_physics_engine.dart';
+import 'physics/engine/flut5_physics_engine.dart';
 
 export 'core/flut5_color.dart';
 export 'core/flut5_container.dart';
@@ -42,7 +42,7 @@ export 'math/flut5_vector.dart';
 export 'math/flut5_math.dart';
 export 'math/flut5_trigonometry.dart';
 export 'math/flut5_noise.dart';
-export 'physics/flut5_physics_engine.dart';
+export 'physics/engine/flut5_physics_engine.dart';
 export 'physics/flut5_physics_body.dart';
 export 'physics/flut5_physics_particle.dart';
 export 'physics/flut5_physics_spring.dart';
@@ -590,12 +590,13 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
     bottom: bottom,
   );
   void noWindowBoundsCollision() => flut5.noWindowBoundsCollision();
-  double windowBoundsRestitution([double? e]) =>
-      flut5.windowBoundsRestitution(e);
+  double windowBoundsRestitution([double? restitution]) =>
+      flut5.windowBoundsRestitution(restitution);
   void particleCollision({int iterations = 2}) =>
       flut5.particleCollision(iterations: iterations);
   void noParticleCollision() => flut5.noParticleCollision();
-  double particleRestitution([double? e]) => flut5.particleRestitution(e);
+  double particleRestitution([double? restitution]) =>
+      flut5.particleRestitution(restitution);
 
   // ── Transform ────────────────────────────────────────────────────────────
   void push() => flut5.push();
