@@ -25,7 +25,10 @@ final class Flut5PhysicsParticle(double x, double y) extends Flut5PhysicsBody {
   final Flut5Vector acceleration = Flut5Vector.zero();
 
   /// Mass. Forces passed to [applyForce] are divided by it (`a = F / m`), so a
-  /// heavier particle responds less to the same force. Defaults to `1`.
+  /// heavier particle responds less to the same force — and, with
+  /// `particleCollision()` on, gets pushed around less by lighter particles.
+  /// Defaults to `1`. For mass that grows with size, set it from the radius:
+  /// `p.mass = p.radius * p.radius`.
   double mass = 1.0;
 
   /// Per-frame velocity multiplier. `1.0` (default) applies no damping;
@@ -33,10 +36,12 @@ final class Flut5PhysicsParticle(double x, double y) extends Flut5PhysicsBody {
   /// speed over time.
   double damping = 1.0;
 
-  /// Collision radius. With `windowBoundsCollision()` on, the particle bounces
-  /// when its edge — this far from [position] — touches a window edge, so
-  /// match it to the size you draw: `circle(p.x, p.y, p.radius * 2)`.
-  /// Defaults to `0`, a point.
+  /// Collision radius: the particle's edge is this far from [position]. With
+  /// `windowBoundsCollision()` on it bounces when its edge touches a window
+  /// edge, and with `particleCollision()` on when it touches another
+  /// particle's edge. Match it to the size you draw:
+  /// `circle(p.x, p.y, p.radius * 2)`. Defaults to `0`, a point, which
+  /// collides only with particles that have a radius.
   double radius = 0.0;
 
   /// Shorthand for `position.x`.

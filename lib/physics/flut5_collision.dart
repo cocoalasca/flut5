@@ -1,17 +1,21 @@
 import 'flut5_physics_engine.dart';
 
-/// Window edges as physics walls, for the Flut5 Engine.
+/// Collisions for the Flut5 Engine's particles: against the window edges
+/// and against each other.
 ///
-/// Off by default. Turn them on once, usually in `setup()`:
+/// Both are off by default. Turn them on once, usually in `setup()`:
 ///
 /// ```dart
 /// windowBoundsCollision();            // all four edges
 /// windowBoundsCollision(top: false);  // open-top box
 /// windowBoundsCollision(all: false, bottom: true); // floor only
 /// windowBoundsRestitution(0.8);       // lose 20% of the speed per bounce
+///
+/// particleCollision();                // particles bounce off each other
+/// particleRestitution(0.9);
 /// ```
-mixin Flut5WindowBounds {
-  /// The physics world, provided by [Flut5Engine]. Holds the window-bounds
+mixin Flut5Collision {
+  /// The physics world, provided by [Flut5Engine]. Holds the collision
   /// settings.
   Flut5PhysicsEngine get physicsEngine;
 
@@ -44,5 +48,25 @@ mixin Flut5WindowBounds {
   double windowBoundsRestitution([double? e]) {
     if (e != null) physicsEngine.windowBoundsRestitution = e;
     return physicsEngine.windowBoundsRestitution;
+  }
+
+  /// Makes particles bounce off each other — every particle with a `radius`
+  /// against every other. [iterations] (default `2`) repeats the pass per
+  /// frame: steadier piles, at that many times the cost. See
+  /// [Flut5PhysicsEngine.particleCollision].
+  void particleCollision({int iterations = 2}) =>
+      physicsEngine.particleCollision(iterations: iterations);
+
+  /// Lets particles pass through each other again.
+  void noParticleCollision() => physicsEngine.noParticleCollision();
+
+  /// Get-or-set accessor for the restitution of collisions between
+  /// particles (p5-style, like `springConstant`). Called with [e] it assigns
+  /// (must be >= 0); called with no argument it returns the current value.
+  /// Defaults to `1`, a perfectly elastic bounce; `0` stops them dead along
+  /// the hit.
+  double particleRestitution([double? e]) {
+    if (e != null) physicsEngine.particleRestitution = e;
+    return physicsEngine.particleRestitution;
   }
 }

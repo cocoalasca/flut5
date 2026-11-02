@@ -1,5 +1,6 @@
 import 'dart:collection';
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui' show Size;
 
 import '../math/flut5_vector.dart';
@@ -137,6 +138,51 @@ final class Flut5PhysicsEngine({Size Function()? windowSize}) {
     _windowBoundsRestitution = e;
   }
 
+  bool _particleCollision = false;
+  int _collisionIterations = 2;
+
+  /// Makes particles bounce off each other. Off by default.
+  ///
+  /// Two particles touch when the distance between their centers is less
+  /// than the sum of their `radius`es, so a particle with radius `0` only
+  /// collides with ones that have a radius. On contact they are pushed apart
+  /// until they just touch — the lighter one moving more — and, if they were
+  /// approaching, exchange an impulse along the line between their centers:
+  /// heavier particles push lighter ones around, and how much of their
+  /// approach speed bounces back is [particleRestitution].
+  ///
+  /// Every pair is tested each frame, so the cost grows with the square of
+  /// the particle count. [iterations] repeats the collision pass (and the
+  /// window walls, if on) that many times per frame: piles and stacks
+  /// overlap less and settle faster with more, at that many times the cost.
+  /// Defaults to `2`; `1` is the plain single pass. Turn collisions off again
+  /// with [noParticleCollision].
+  void particleCollision({int iterations = 2}) {
+    if (iterations < 1) {
+      throw ArgumentError.value(iterations, 'iterations', 'Must be >= 1');
+    }
+    _particleCollision = true;
+    _collisionIterations = iterations;
+  }
+
+  /// Turns off collisions between particles.
+  void noParticleCollision() => _particleCollision = false;
+
+  double _particleRestitution = 1.0;
+
+  /// How bouncy collisions between particles are: the share of their
+  /// approach speed that bounces back. `1` (default) is a perfectly elastic
+  /// bounce, `0` makes them stick together along the hit; above `1` every
+  /// hit adds energy. Must be >= 0. Sketches usually set it with
+  /// `particleRestitution(e)`.
+  double get particleRestitution => _particleRestitution;
+  set particleRestitution(double e) {
+    if (e < 0) {
+      throw ArgumentError.value(e, 'e', 'Restitution must be >= 0');
+    }
+    _particleRestitution = e;
+  }
+
   double _springConstant = 0.1;
 
   /// Global spring stiffness `k`, used by `springForce` and by every
@@ -247,8 +293,9 @@ final class Flut5PhysicsEngine({Size Function()? windowSize}) {
   /// Steps every registered body by one frame in two passes: first every
   /// body's `accumulateForces` (springs call `applyForce` on their
   /// particles), then every body's `updatePhysics` (each particle runs its
-  /// `euler` step with [gravity] and resets its acceleration). Particles that
-  /// end up past an edge enabled with [windowBoundsCollision] then bounce off
+  /// `euler` step with [gravity] and resets its acceleration). Then, with
+  /// [particleCollision] on, overlapping particles bounce off each other, and
+  /// particles past an edge enabled with [windowBoundsCollision] bounce off
   /// it. Runs automatically before or after `draw()` per [updateTiming]; call
   /// it yourself when that is [PhysicsUpdateTiming.manual].
   void update() {
@@ -259,9 +306,138 @@ final class Flut5PhysicsEngine({Size Function()? windowSize}) {
     for (final body in _bodies) {
       body.updatePhysics(this);
     }
-    if (_boundsLeft || _boundsTop || _boundsRight || _boundsBottom) {
+    final bounds = _boundsLeft || _boundsTop || _boundsRight || _boundsBottom;
+    if (_particleCollision) {
+      // Walls run inside every pass, not once after them all: a particle a
+      // collision pushed into a wall is pushed back out before the next
+      // pass, so a pile resting on the floor is held up by it.
+      for (var pass = 0; pass < _collisionIterations; pass++) {
+        _collideParticles();
+        if (bounds) _collideWindowBounds();
+      }
+    } else if (bounds) {
       _collideWindowBounds();
     }
+  }
+
+  /// Each particle's x, y, z and radius, packed while the collision pass
+  /// runs so the pair loop walks one flat buffer instead of chasing every
+  /// particle's position object. Grows with the particle count.
+  Float64List _packed = Float64List(0);
+
+  /// Separates every overlapping pair of particles and bounces the ones that
+  /// are approaching each other, testing each pair once.
+  void _collideParticles() {
+    final particles = _particles;
+    final n = particles.length;
+    if (_packed.length < n * 4) _packed = Float64List(n * 8);
+    final s = _packed;
+    for (var i = 0, k = 0; i < n; i++, k += 4) {
+      final p = particles[i];
+      final position = p.position;
+      s[k] = position.x;
+      s[k + 1] = position.y;
+      s[k + 2] = position.z;
+      s[k + 3] = p.radius;
+    }
+
+    final e = _particleRestitution;
+    for (var i = 0, ka = 0; i < n; i++, ka += 4) {
+      var ax = s[ka], ay = s[ka + 1], az = s[ka + 2];
+      final ra = s[ka + 3];
+      for (var j = i + 1, kb = ka + 4; j < n; j++, kb += 4) {
+        final minDist = ra + s[kb + 3];
+        final dx = s[kb] - ax;
+        final dy = s[kb + 1] - ay;
+        final dz = s[kb + 2] - az;
+        final distSq = dx * dx + dy * dy + dz * dz;
+        if (distSq >= minDist * minDist) continue;
+        _collide(
+          particles[i],
+          particles[j],
+          s,
+          ka,
+          kb,
+          dx,
+          dy,
+          dz,
+          distSq,
+          minDist,
+          e,
+        );
+        // The collision moved a; keep testing from where it is now.
+        ax = s[ka];
+        ay = s[ka + 1];
+        az = s[ka + 2];
+      }
+    }
+
+    for (var i = 0, k = 0; i < n; i++, k += 4) {
+      particles[i].position.setValues(s[k], s[k + 1], s[k + 2]);
+    }
+  }
+
+  /// Resolves one overlapping pair. [ka] and [kb] are the pair's offsets in
+  /// the packed buffer [s], where their positions are moved; [dx], [dy],
+  /// [dz] run from [a] to [b], [distSq] is their squared length and
+  /// [minDist] the distance at which the two just touch.
+  static void _collide(
+    Flut5PhysicsParticle a,
+    Flut5PhysicsParticle b,
+    Float64List s,
+    int ka,
+    int kb,
+    double dx,
+    double dy,
+    double dz,
+    double distSq,
+    double minDist,
+    double e,
+  ) {
+    final dist = math.sqrt(distSq);
+    // Unit normal from a to b. Particles exactly on top of each other have
+    // no direction between them; split them along x so they don't stay
+    // stuck together.
+    var nx = 1.0, ny = 0.0, nz = 0.0;
+    if (dist > 0) {
+      nx = dx / dist;
+      ny = dy / dist;
+      nz = dz / dist;
+    }
+
+    final invMassA = 1 / a.mass;
+    final invMassB = 1 / b.mass;
+    final invMassSum = invMassA + invMassB;
+
+    // Push them apart until they just touch, the lighter one moving more.
+    final push = (minDist - dist) / invMassSum;
+    final pushA = push * invMassA;
+    final pushB = push * invMassB;
+    s[ka] -= nx * pushA;
+    s[ka + 1] -= ny * pushA;
+    s[ka + 2] -= nz * pushA;
+    s[kb] += nx * pushB;
+    s[kb + 1] += ny * pushB;
+    s[kb + 2] += nz * pushB;
+
+    // Speed at which b moves away from a along the normal; negative means
+    // they are closing in, so bounce them with an impulse along the normal.
+    final va = a.velocity;
+    final vb = b.velocity;
+    final separation =
+        (vb.x - va.x) * nx + (vb.y - va.y) * ny + (vb.z - va.z) * nz;
+    if (separation >= 0) return;
+    final impulse = -(1 + e) * separation / invMassSum;
+    final impulseA = impulse * invMassA;
+    final impulseB = impulse * invMassB;
+    va
+      ..x -= nx * impulseA
+      ..y -= ny * impulseA
+      ..z -= nz * impulseA;
+    vb
+      ..x += nx * impulseB
+      ..y += ny * impulseB
+      ..z += nz * impulseB;
   }
 
   /// Bounces every particle that crossed an enabled window edge this frame.

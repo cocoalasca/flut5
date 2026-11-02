@@ -421,4 +421,142 @@ void main() {
       );
     });
   });
+
+  group('Particle collision', () {
+    /// Two particles of radius 5 on a horizontal line, [gap] apart after
+    /// this frame's step, closing in at [speed] each.
+    (Flut5Engine, Flut5PhysicsParticle, Flut5PhysicsParticle) headOn({
+      double massA = 1,
+      double massB = 1,
+      double vy = 0,
+    }) {
+      final e = Flut5Engine()..particleCollision();
+      final a = e.physicsEngine.createParticle(100, 50)
+        ..radius = 5
+        ..mass = massA
+        ..velocity.setValues(2, vy, 0);
+      final b = e.physicsEngine.createParticle(110, 50)
+        ..radius = 5
+        ..mass = massB
+        ..velocity.setValues(-2, vy, 0);
+      return (e, a, b);
+    }
+
+    test('off by default: particles pass through each other', () {
+      final (e, a, b) = headOn();
+      e.noParticleCollision();
+      e.physicsEngine.update();
+      expect(a.x, 102.0);
+      expect(b.x, 108.0);
+      expect(a.velocity.x, 2.0);
+      expect(Flut5Engine().particleRestitution(), 1.0);
+    });
+
+    test('equal masses, restitution 1: separated and velocities swap', () {
+      final (e, a, b) = headOn();
+      e.physicsEngine.update();
+      expect(a.x, 100.0); // overlapped 4 after the step, 2 back each
+      expect(b.x, 110.0);
+      expect(a.velocity.x, -2.0);
+      expect(b.velocity.x, 2.0);
+    });
+
+    test('restitution 0 stops them along the hit', () {
+      final (e, a, b) = headOn();
+      e.particleRestitution(0);
+      e.physicsEngine.update();
+      expect(a.velocity.x, 0.0);
+      expect(b.velocity.x, 0.0);
+    });
+
+    test('the lighter particle moves more; momentum and energy kept', () {
+      final (e, a, b) = headOn(massA: 3);
+      e.physicsEngine.update();
+      expect(a.x, closeTo(101, 1e-9)); // 1 of the 4 overlap
+      expect(b.x, closeTo(111, 1e-9)); // the other 3
+      expect(a.velocity.x, closeTo(0, 1e-9));
+      expect(b.velocity.x, closeTo(4, 1e-9));
+      // Before: 3·2 + 1·(−2) = 4 momentum, ½·3·4 + ½·1·4 = 8 energy.
+      expect(3 * a.velocity.x + b.velocity.x, closeTo(4, 1e-9));
+      expect(
+        1.5 * a.velocity.x * a.velocity.x + 0.5 * b.velocity.x * b.velocity.x,
+        closeTo(8, 1e-9),
+      );
+    });
+
+    test('only the velocity along the hit changes', () {
+      final (e, a, b) = headOn(vy: 1);
+      e.physicsEngine.update();
+      expect(a.velocity.x, -2.0);
+      expect(a.velocity.y, 1.0);
+      expect(b.velocity.y, 1.0);
+    });
+
+    test('overlapping but separating: pushed apart, no bounce', () {
+      final e = Flut5Engine()..particleCollision();
+      final a = e.physicsEngine.createParticle(100, 50)
+        ..radius = 5
+        ..velocity.x = -1;
+      final b = e.physicsEngine.createParticle(106, 50)
+        ..radius = 5
+        ..velocity.x = 1;
+      e.physicsEngine.update();
+      expect(b.x - a.x, closeTo(10, 1e-9));
+      expect(a.velocity.x, -1.0);
+      expect(b.velocity.x, 1.0);
+    });
+
+    test('radius 0 collides only with particles that have a radius', () {
+      final e = Flut5Engine()..particleCollision();
+      final p1 = e.physicsEngine.createParticle(100, 50);
+      final p2 = e.physicsEngine.createParticle(100, 50);
+      e.physicsEngine.update();
+      expect(p1.x, 100.0);
+      expect(p2.x, 100.0);
+
+      final big = e.physicsEngine.createParticle(103, 50)..radius = 5;
+      e.physicsEngine.update();
+      expect(big.x - p1.x, greaterThanOrEqualTo(5 - 1e-9));
+      expect(big.x - p2.x, greaterThanOrEqualTo(5 - 1e-9));
+    });
+
+    test('particles exactly on top of each other are split along x', () {
+      final e = Flut5Engine()..particleCollision();
+      final a = e.physicsEngine.createParticle(100, 50)..radius = 5;
+      final b = e.physicsEngine.createParticle(100, 50)..radius = 5;
+      e.physicsEngine.update();
+      expect(a.x, 95.0);
+      expect(b.x, 105.0);
+      expect(a.y, 50.0);
+    });
+
+    test('a column resting on the floor settles inside the window', () {
+      final e = windowed()
+        ..windowBoundsCollision()
+        ..particleCollision()
+        ..windowBoundsRestitution(0.5)
+        ..particleRestitution(0.5);
+      final world = e.physicsEngine..setGravity(0.2);
+      final column = [
+        for (var i = 0; i < 3; i++)
+          world.createParticle(100, 15 + i * 25.0)..radius = 10,
+      ];
+      for (var i = 0; i < 3000; i++) {
+        world.update();
+      }
+      for (final p in column) {
+        expect(p.y + p.radius, lessThanOrEqualTo(100 + 1e-9));
+      }
+      final ys = column.map((p) => p.y).toList()..sort();
+      expect(ys.last, 90.0); // bottom one sits on the floor
+      expect(ys[2] - ys[1], greaterThan(19)); // overlap under 1 px
+      expect(ys[1] - ys[0], greaterThan(19));
+    });
+
+    test('invalid settings are rejected', () {
+      final e = Flut5Engine();
+      expect(() => e.particleRestitution(-1), throwsArgumentError);
+      expect(() => e.particleCollision(iterations: 0), throwsArgumentError);
+    });
+  });
 }
