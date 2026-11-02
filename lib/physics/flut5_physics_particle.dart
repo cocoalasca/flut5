@@ -91,10 +91,6 @@ final class Flut5PhysicsParticle(double x, double y) extends Flut5PhysicsBody {
     acceleration.setZero();
   }
 
-  /// Share of the gap to the rolling spin [PhysicsRotationMode.cosmetic]
-  /// closes each frame — the classic `angleV *= 0.95` smoothing.
-  static const double _cosmeticSpinEasing = 0.05;
-
   /// Integration pass: runs [euler] with the world's
   /// [Flut5PhysicsEngine.gravity], then turns the particle per the world's
   /// [Flut5PhysicsEngine.rotationMode].
@@ -105,12 +101,15 @@ final class Flut5PhysicsParticle(double x, double y) extends Flut5PhysicsBody {
       case .none:
         return;
       case .cosmetic:
-        // Ease toward the spin of rolling along a floor — one radius of
-        // travel per radian — so spin follows speed with a short lag and
-        // coasts to a stop when the particle does.
-        final rollingSpin = radius > 0 ? velocity.x / radius : 0.0;
-        angularVelocity +=
-            (rollingSpin - angularVelocity) * _cosmeticSpinEasing;
+        // Keep part of the spin and take the rest from the spin of rolling
+        // along a floor (one radius of travel per radian, scaled), so spin
+        // follows speed with a lag and coasts to a stop when the particle
+        // does.
+        final rollingSpin = radius > 0
+            ? velocity.x / radius * physics.cosmeticSpinScale
+            : 0.0;
+        final decay = physics.cosmeticSpinDecay;
+        angularVelocity = angularVelocity * decay + rollingSpin * (1 - decay);
       case .physical:
         angularVelocity *= damping;
     }

@@ -594,18 +594,33 @@ void main() {
       expect(p.velocity.x, 3.0); // no friction either
     });
 
-    test('cosmetic eases spin 5% a frame toward velocity.x / radius', () {
+    test('cosmetic eases spin toward half the rolling spin by default', () {
       final world = Flut5Engine().physicsEngine..rotationMode = .cosmetic;
       final p = world.createParticle(50, 50)
         ..radius = 10
         ..velocity.x = 2;
       world.update();
-      expect(p.angularVelocity, closeTo(0.01, 1e-12)); // 5% of 0.2
-      expect(p.angle, closeTo(0.01, 1e-12));
+      expect(p.angularVelocity, closeTo(0.005, 1e-12)); // 5% of 0.1
+      expect(p.angle, closeTo(0.005, 1e-12));
       for (var i = 0; i < 500; i++) {
         world.update();
       }
-      expect(p.angularVelocity, closeTo(0.2, 1e-9)); // rolling spin
+      expect(p.angularVelocity, closeTo(0.1, 1e-9)); // 0.5 × 2 / 10
+    });
+
+    test('scale 0.04 × radius reproduces angleV += vx * 0.002, *= 0.95', () {
+      final world = Flut5Engine().physicsEngine
+        ..rotationMode = .cosmetic
+        ..cosmeticSpinScale = 0.04 * 10;
+      final p = world.createParticle(50, 50)
+        ..radius = 10
+        ..velocity.x = 2;
+      var angleV = 0.0;
+      for (var i = 0; i < 100; i++) {
+        world.update();
+        angleV = angleV * 0.95 + 2 * 0.002;
+        expect(p.angularVelocity, closeTo(angleV, 1e-12));
+      }
     });
 
     test('cosmetic spin coasts to a stop with the particle', () {
@@ -619,6 +634,37 @@ void main() {
         world.update();
       }
       expect(p.angularVelocity, closeTo(0, 1e-9));
+    });
+
+    test('cosmeticSpinScale 1 rolls exactly', () {
+      final world = Flut5Engine().physicsEngine
+        ..rotationMode = .cosmetic
+        ..cosmeticSpinScale = 1;
+      final p = world.createParticle(50, 50)
+        ..radius = 10
+        ..velocity.x = 2;
+      for (var i = 0; i < 500; i++) {
+        world.update();
+      }
+      expect(p.angularVelocity, closeTo(0.2, 1e-9)); // exact rolling
+    });
+
+    test('cosmeticSpinDecay 0 snaps straight to the rolling spin', () {
+      final world = Flut5Engine().physicsEngine
+        ..rotationMode = .cosmetic
+        ..cosmeticSpinDecay = 0;
+      final p = world.createParticle(50, 50)
+        ..radius = 10
+        ..velocity.x = 2;
+      world.update();
+      expect(p.angularVelocity, closeTo(0.1, 1e-12));
+    });
+
+    test('invalid cosmetic settings are rejected', () {
+      final world = Flut5Engine().physicsEngine;
+      expect(() => world.cosmeticSpinScale = -1, throwsArgumentError);
+      expect(() => world.cosmeticSpinDecay = 1.1, throwsArgumentError);
+      expect(() => world.cosmeticSpinDecay = -0.1, throwsArgumentError);
     });
 
     test('cosmetic leaves particles without a radius alone', () {

@@ -7,13 +7,15 @@ enum PhysicsRotationMode {
   /// alone. The default, and the cheapest.
   none,
 
-  /// Particles spin as if rolling along a floor below them: each frame their
-  /// angular velocity eases 5% of the way toward the rolling spin for their
-  /// horizontal speed (`velocity.x / radius`), so spin lags speed a little,
-  /// eases through bounces and coasts to a stop when they do. Balls rolling
-  /// on the ground look right for a few operations per particle — but it's
-  /// only a look: spin never changes how they move, and they spin in mid-air
-  /// too.
+  /// Particles spin as if rolling along a floor below them, smoothed like the
+  /// classic sketch trick (`angleV += vel.x * 0.002; angleV *= 0.95`): each
+  /// frame their angular velocity keeps [Flut5PhysicsEngine.cosmeticSpinDecay]
+  /// of itself (95% by default) and takes the rest from the rolling spin for
+  /// their horizontal speed (`velocity.x / radius`) times
+  /// [Flut5PhysicsEngine.cosmeticSpinScale]. Spin lags speed a little, eases
+  /// through bounces and coasts to a stop when they do. A few operations per
+  /// particle — but it's only a look: spin never changes how they move, and
+  /// they spin in mid-air too.
   cosmetic,
 
   /// Real rotation. Friction where a particle touches another particle or a
@@ -40,6 +42,38 @@ mixin _PhysicsRotation {
   /// a rolling look ([PhysicsRotationMode.cosmetic]), or real rotation from
   /// friction ([PhysicsRotationMode.physical]).
   PhysicsRotationMode rotationMode = .none;
+
+  double _cosmeticSpinScale = 0.5;
+
+  /// How fast particles spin in [PhysicsRotationMode.cosmetic], as a share of
+  /// the rolling spin for their speed (`velocity.x / radius`). `0.5`
+  /// (default) spins at half the rolling rate — the calmer look of the
+  /// classic sketch trick at typical ball sizes; `1` rolls exactly, with no
+  /// visible slip. For the classic trick's exact look at one size, use
+  /// `0.04 * radius`. Must be >= 0.
+  double get cosmeticSpinScale => _cosmeticSpinScale;
+  set cosmeticSpinScale(double scale) {
+    if (scale < 0) {
+      throw ArgumentError.value(scale, 'scale', 'Must be >= 0');
+    }
+    _cosmeticSpinScale = scale;
+  }
+
+  double _cosmeticSpinDecay = 0.95;
+
+  /// How much of its spin a particle keeps each frame in
+  /// [PhysicsRotationMode.cosmetic]; the rest comes from its speed (see
+  /// [cosmeticSpinScale]). `0.95` (default) lags speed a little and coasts to
+  /// a stop over about a second; `0` snaps straight to the rolling spin;
+  /// closer to `1` lags and coasts longer, and `1` never changes the spin.
+  /// Must be between 0 and 1.
+  double get cosmeticSpinDecay => _cosmeticSpinDecay;
+  set cosmeticSpinDecay(double decay) {
+    if (decay < 0 || decay > 1) {
+      throw ArgumentError.value(decay, 'decay', 'Must be between 0 and 1');
+    }
+    _cosmeticSpinDecay = decay;
+  }
 
   double _friction = 0.5;
 
