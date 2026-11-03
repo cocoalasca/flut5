@@ -13,6 +13,7 @@ import 'engine/flut5_physics_engine.dart';
 ///
 /// particleCollision();                // particles bounce off each other
 /// particleRestitution(0.9);
+/// polygonRestitution(0.3);            // rects and polygons always collide
 /// ```
 mixin Flut5Collision {
   /// The physics world, provided by [Flut5Engine]. Holds the collision
@@ -53,10 +54,10 @@ mixin Flut5Collision {
   }
 
   /// Makes particles bounce off each other — every particle with a `radius`
-  /// against every other. [iterations] (default `2`) repeats the pass per
-  /// frame: steadier piles, at that many times the cost. See
-  /// [Flut5PhysicsEngine.particleCollision].
-  void particleCollision({int iterations = 2}) =>
+  /// against every other. [iterations], if given, sets how many collision
+  /// passes run per frame (default `2`): steadier piles, at that many times
+  /// the cost. See [Flut5PhysicsEngine.particleCollision].
+  void particleCollision({int? iterations}) =>
       physicsEngine.particleCollision(iterations: iterations);
 
   /// Lets particles pass through each other again.
@@ -70,5 +71,15 @@ mixin Flut5Collision {
   double particleRestitution([double? restitution]) {
     if (restitution != null) physicsEngine.particleRestitution = restitution;
     return physicsEngine.particleRestitution;
+  }
+
+  /// Get-or-set accessor for the restitution of hits involving a polygon
+  /// (p5-style, like `springConstant`). Called with [restitution] it
+  /// assigns (must be >= 0); called with no argument it returns the current
+  /// value. Defaults to `1`, a perfectly elastic bounce; `0` stops them dead
+  /// along the hit.
+  double polygonRestitution([double? restitution]) {
+    if (restitution != null) physicsEngine.polygonRestitution = restitution;
+    return physicsEngine.polygonRestitution;
   }
 }

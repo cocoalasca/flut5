@@ -45,6 +45,8 @@ export 'math/flut5_noise.dart';
 export 'physics/engine/flut5_physics_engine.dart';
 export 'physics/flut5_physics_body.dart';
 export 'physics/flut5_physics_particle.dart';
+export 'physics/flut5_physics_polygon.dart';
+export 'physics/flut5_physics_rigid_body.dart';
 export 'physics/flut5_physics_spring.dart';
 export 'physics/flut5_spring.dart';
 export 'physics/flut5_collision.dart';
@@ -592,11 +594,13 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
   void noWindowBoundsCollision() => flut5.noWindowBoundsCollision();
   double windowBoundsRestitution([double? restitution]) =>
       flut5.windowBoundsRestitution(restitution);
-  void particleCollision({int iterations = 2}) =>
+  void particleCollision({int? iterations}) =>
       flut5.particleCollision(iterations: iterations);
   void noParticleCollision() => flut5.noParticleCollision();
   double particleRestitution([double? restitution]) =>
       flut5.particleRestitution(restitution);
+  double polygonRestitution([double? restitution]) =>
+      flut5.polygonRestitution(restitution);
 
   // ── Transform ────────────────────────────────────────────────────────────
   void push() => flut5.push();

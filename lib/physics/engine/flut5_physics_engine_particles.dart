@@ -8,6 +8,7 @@ mixin _PhysicsParticles {
   void _register(Flut5PhysicsBody body);
   PhysicsRotationMode get rotationMode;
   double get friction;
+  set collisionIterations(int iterations);
 
   /// Creates a [Flut5PhysicsParticle] at ([x], [y]), registers it and
   /// returns it.
@@ -15,11 +16,11 @@ mixin _PhysicsParticles {
     final particle = Flut5PhysicsParticle(x, y);
     _register(particle);
     _particles.add(particle);
+    _sweepOrderStale = true;
     return particle;
   }
 
   bool _particleCollision = false;
-  int _collisionIterations = 2;
 
   /// Makes particles bounce off each other. Off by default.
   ///
@@ -31,18 +32,17 @@ mixin _PhysicsParticles {
   /// heavier particles push lighter ones around, and how much of their
   /// approach speed bounces back is [particleRestitution].
   ///
-  /// Every pair is tested each frame, so the cost grows with the square of
-  /// the particle count. [iterations] repeats the collision pass (and the
-  /// window walls, if on) that many times per frame: piles and stacks
-  /// overlap less and settle faster with more, at that many times the cost.
-  /// Defaults to `2`; `1` is the plain single pass. Turn collisions off again
-  /// with [noParticleCollision].
-  void particleCollision({int iterations = 2}) {
-    if (iterations < 1) {
-      throw ArgumentError.value(iterations, 'iterations', 'Must be >= 1');
-    }
+  /// Particles are swept left to right, and each is only tested against the
+  /// ones that start before it ends, so particles spread across the window
+  /// are cheap. The cost grows with how many share the same strip of x: a
+  /// crowd stacked in one column costs as much as testing every pair.
+  /// [iterations], if given, sets
+  /// [Flut5PhysicsEngine.collisionIterations]: how many collision passes run
+  /// per frame (default `2`). Turn collisions off again with
+  /// [noParticleCollision].
+  void particleCollision({int? iterations}) {
+    if (iterations != null) collisionIterations = iterations;
     _particleCollision = true;
-    _collisionIterations = iterations;
   }
 
   /// Turns off collisions between particles.
@@ -76,8 +76,18 @@ mixin _PhysicsParticles {
   Float64List _collisionZ = Float64List(0);
   Float64List _collisionRadius = Float64List(0);
 
+  // Particle indices sorted by left edge (x - radius), so the pair loop can
+  // stop looking for partners once they start past a particle's right edge.
+  // Kept between passes: particles barely move in one, so the last order
+  // needs only a few swaps to be right again.
+  Int32List _sweepOrder = Int32List(0);
+
+  /// Set when a particle is created, so [_sortByLeftEdge] starts over even
+  /// if a removal in the same frame kept the count the same.
+  bool _sweepOrderStale = true;
+
   /// Separates every overlapping pair of particles and bounces the ones that
-  /// are approaching each other, testing each pair once.
+  /// are approaching each other, testing each pair that could touch once.
   void _collideParticles() {
     final particles = _particles;
     final count = particles.length;
@@ -101,31 +111,85 @@ mixin _PhysicsParticles {
       radius[i] = particle.radius;
     }
 
-    for (var a = 0; a < count; a++) {
+    _sortByLeftEdge(count);
+    final order = _sweepOrder;
+    for (var i = 0; i < count; i++) {
+      final a = order[i];
       // Particle a's position and radius, held in locals while it is tested
-      // against every later particle.
+      // against the particles that start to its right.
       var aX = positionX[a], aY = positionY[a], aZ = positionZ[a];
       final aRadius = radius[a];
-      for (var b = a + 1; b < count; b++) {
-        final dx = positionX[b] - aX;
+      var aRightEdge = aX + aRadius;
+      for (var j = i + 1; j < count; j++) {
+        final b = order[j];
+        final bX = positionX[b];
+        final bRadius = radius[b];
+        // b and every particle after it start past a's right edge.
+        if (bX - bRadius > aRightEdge) break;
+        final dx = bX - aX;
         final dy = positionY[b] - aY;
         final dz = positionZ[b] - aZ;
-        final touchingDistance = aRadius + radius[b];
-        // Squared lengths: no square root for the many pairs that are
-        // nowhere near each other.
+        final touchingDistance = aRadius + bRadius;
+        // Squared lengths: no square root for the pairs that overlap in x
+        // but are nowhere near each other.
         final distanceSquared = dx * dx + dy * dy + dz * dz;
         if (distanceSquared < touchingDistance * touchingDistance) {
-          _resolveCollision(a, b);
+          // Older particle first, so two exactly on top of each other always
+          // split the same way.
+          if (a < b) {
+            _resolveCollision(a, b);
+          } else {
+            _resolveCollision(b, a);
+          }
           // The collision moved a; keep testing from where it is now.
           aX = positionX[a];
           aY = positionY[a];
           aZ = positionZ[a];
+          aRightEdge = aX + aRadius;
         }
       }
     }
 
     for (var i = 0; i < count; i++) {
       particles[i].position.setValues(positionX[i], positionY[i], positionZ[i]);
+    }
+  }
+
+  /// Sorts [_sweepOrder] by each particle's left edge where it is now.
+  ///
+  /// After particles are created or removed the indices it holds shift onto
+  /// other particles, leaving it too scrambled for a quick fix, so it is
+  /// rebuilt and fully sorted. Otherwise last pass's order is nearly right,
+  /// and an insertion sort fixes it by moving the few particles that
+  /// overtook a neighbor.
+  void _sortByLeftEdge(int count) {
+    final positionX = _collisionX;
+    final radius = _collisionRadius;
+    if (_sweepOrderStale || _sweepOrder.length != count) {
+      _sweepOrderStale = false;
+      final order = _sweepOrder = Int32List(count);
+      for (var i = 0; i < count; i++) {
+        order[i] = i;
+      }
+      order.sort(
+        (p, q) =>
+            (positionX[p] - radius[p]).compareTo(positionX[q] - radius[q]),
+      );
+      return;
+    }
+
+    final order = _sweepOrder;
+    for (var i = 1; i < count; i++) {
+      final moving = order[i];
+      final leftEdge = positionX[moving] - radius[moving];
+      var slot = i;
+      while (slot > 0) {
+        final previous = order[slot - 1];
+        if (positionX[previous] - radius[previous] <= leftEdge) break;
+        order[slot] = previous;
+        slot--;
+      }
+      order[slot] = moving;
     }
   }
 

@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:ui' show Size;
 
 import 'package:flutter_test/flutter_test.dart';
@@ -285,6 +286,37 @@ void main() {
     });
   });
 
+  group('Body lists', () {
+    test('a for-in loop sees every body, minus removed ones', () {
+      final world = Flut5Engine().physicsEngine;
+      final kept = world.createParticle(0, 0);
+      final dropped = world.createParticle(1, 0);
+      world.remove(dropped);
+      expect([for (final p in world.particles) p], [kept]);
+    });
+
+    test('removing a body mid-loop throws, like any list', () {
+      final world = Flut5Engine().physicsEngine;
+      for (var i = 0; i < 3; i++) {
+        world.createParticle(0, 0);
+      }
+      expect(() {
+        for (final p in world.particles) {
+          world.remove(p);
+        }
+      }, throwsA(isA<ConcurrentModificationError>()));
+    });
+
+    test('creating a body mid-loop throws, like any list', () {
+      final world = Flut5Engine().physicsEngine..createParticle(0, 0);
+      expect(() {
+        for (final _ in world.particles) {
+          world.createParticle(1, 1);
+        }
+      }, throwsA(isA<ConcurrentModificationError>()));
+    });
+  });
+
   group('Window bounds', () {
     test('off by default: particles leave the window', () {
       final e = windowed();
@@ -553,6 +585,89 @@ void main() {
       expect(ys[1] - ys[0], greaterThan(19));
     });
 
+    test('finds every touching pair, whatever the sizes or creation order', () {
+      // 200 pairs on a 20 × 10 grid of 300 px cells, each pair overlapping
+      // by 1 px and far from the others. Columns of pairs share the same
+      // strip of x, and radii from 1 to 40 make big particles start left of
+      // small ones that sit further left.
+      final random = math.Random(7);
+      final e = Flut5Engine()..particleCollision(iterations: 1);
+      final pairs = <(Flut5Vector, double, Flut5Vector, double)>[];
+      for (var column = 0; column < 20; column++) {
+        for (var row = 0; row < 10; row++) {
+          final radiusA = 1 + random.nextDouble() * 39;
+          final radiusB = 1 + random.nextDouble() * 39;
+          final positionA = Flut5Vector(
+            column * 300 + random.nextDouble() * 20,
+            row * 300 + random.nextDouble() * 20,
+          );
+          final direction = random.nextDouble() * 2 * math.pi;
+          final distance = radiusA + radiusB - 1;
+          final positionB = Flut5Vector(
+            positionA.x + math.cos(direction) * distance,
+            positionA.y + math.sin(direction) * distance,
+          );
+          pairs.add((positionA, radiusA, positionB, radiusB));
+        }
+      }
+      final created = <(Flut5PhysicsParticle, Flut5PhysicsParticle)>[];
+      final shuffled = [...pairs]..shuffle(random);
+      for (final (positionA, radiusA, positionB, radiusB) in shuffled) {
+        created.add((
+          e.physicsEngine.createParticle(positionA.x, positionA.y)
+            ..radius = radiusA,
+          e.physicsEngine.createParticle(positionB.x, positionB.y)
+            ..radius = radiusB,
+        ));
+      }
+      e.physicsEngine.update();
+      for (final (a, b) in created) {
+        expect(a.position.dist(b.position), closeTo(a.radius + b.radius, 1e-9));
+      }
+    });
+
+    test('still finds pairs after particles are created and removed', () {
+      final e = Flut5Engine()..particleCollision();
+      final world = e.physicsEngine;
+      final row = [
+        for (var i = 0; i < 5; i++)
+          world.createParticle(i * 100.0, 50)..radius = 5,
+      ];
+      world.update();
+
+      // Same count, every index shifted: drop the first, add one onto the
+      // last.
+      world.remove(row.first);
+      final newcomer = world.createParticle(398, 50)..radius = 5;
+      world.update();
+      expect(newcomer.position.dist(row.last.position), closeTo(10, 1e-9));
+
+      // Fewer particles: drop two and move one just below the last.
+      world
+        ..remove(row[1])
+        ..remove(row[2]);
+      row[3].position.setValues(row.last.x, row.last.y + 8, 0);
+      world.update();
+      expect(row[3].y - row.last.y, closeTo(10, 1e-9));
+    });
+
+    test('particles that overtake each other still collide', () {
+      // a races right past b, on a lower line, into c.
+      final e = Flut5Engine()..particleCollision();
+      final world = e.physicsEngine;
+      final a = world.createParticle(0, 0)
+        ..radius = 5
+        ..velocity.x = 30;
+      final b = world.createParticle(50, 100)..radius = 5;
+      final c = world.createParticle(215, 0)..radius = 5;
+      for (var i = 0; i < 7; i++) {
+        world.update(); // a passes b on the 2nd, overlaps c by 5 on the 7th
+      }
+      expect(a.x, greaterThan(b.x));
+      expect(c.velocity.x, 30.0);
+      expect(a.velocity.x, 0.0);
+    });
+
     test('invalid settings are rejected', () {
       final e = Flut5Engine();
       expect(() => e.particleRestitution(-1), throwsArgumentError);
@@ -753,6 +868,285 @@ void main() {
         () => Flut5Engine().physicsEngine.friction = -0.1,
         throwsArgumentError,
       );
+    });
+  });
+
+  group('Polygons', () {
+    /// A physics world with gravity [gravity], in a 400 × 300 window.
+    Flut5PhysicsEngine world({double gravity = 0}) {
+      final engine = Flut5Engine()
+        ..environment = const SketchEnvironment().withSize(
+          const Size(400, 300),
+        );
+      return engine.physicsEngine..setGravity(gravity);
+    }
+
+    (double, double) at(Flut5Vector v) => (v.x, v.y);
+
+    test('createRect: centered corners, size, inertia, listed', () {
+      final physics = world();
+      final rect = physics.createRect(100, 50, 40, 20)..mass = 3;
+      expect(physics.polygons, [rect]);
+      expect(physics.bodies, [rect]);
+      expect((rect.x, rect.y, rect.width, rect.height), (100, 50, 40, 20));
+      expect(rect.momentOfInertia, closeTo(3 * (1600 + 400) / 12, 1e-9));
+      expect(rect.corners.map(at), [
+        (80.0, 40.0),
+        (120.0, 40.0),
+        (120.0, 60.0),
+        (80.0, 60.0),
+      ]);
+    });
+
+    test('corners turn with the angle, clockwise on screen', () {
+      final rect = world().createRect(0, 0, 40, 20)..angle = math.pi / 2;
+      final first = rect.corners.first; // (-20, -10) turned a quarter
+      expect(first.x, closeTo(10, 1e-9));
+      expect(first.y, closeTo(-20, 1e-9));
+    });
+
+    test('createPolygon moves the position to the center of mass', () {
+      final triangle = world().createPolygon(100, 100, [
+        Flut5Vector(0, 0),
+        Flut5Vector(30, 0),
+        Flut5Vector(0, 30),
+      ]);
+      expect(triangle.x, closeTo(110, 1e-9));
+      expect(triangle.y, closeTo(110, 1e-9));
+      final corners = triangle.corners.map(at).toList();
+      expect(corners[0].$1, closeTo(100, 1e-9));
+      expect(corners[1].$1, closeTo(130, 1e-9));
+      expect(corners[2].$2, closeTo(130, 1e-9));
+    });
+
+    test('corners can go either way around', () {
+      final corners = [
+        Flut5Vector(0, 0),
+        Flut5Vector(30, 0),
+        Flut5Vector(0, 30),
+      ];
+      final forward = world().createPolygon(0, 0, corners);
+      final backward = world().createPolygon(0, 0, corners.reversed.toList());
+      expect(backward.localCorners.map(at), forward.localCorners.map(at));
+    });
+
+    test('shapes that are not convex polygons are rejected', () {
+      final physics = world();
+      expect(
+        () =>
+            physics.createPolygon(0, 0, [Flut5Vector(0, 0), Flut5Vector(1, 0)]),
+        throwsArgumentError,
+      );
+      expect(
+        () => physics.createPolygon(0, 0, [
+          Flut5Vector(0, 0),
+          Flut5Vector(0, 0),
+          Flut5Vector(0, 10),
+        ]),
+        throwsArgumentError,
+      );
+      expect(
+        () => physics.createPolygon(0, 0, [
+          Flut5Vector(0, 0),
+          Flut5Vector(10, 0),
+          Flut5Vector(20, 0),
+        ]),
+        throwsArgumentError,
+      );
+      expect(
+        () => physics.createPolygon(0, 0, [
+          Flut5Vector(0, 0),
+          Flut5Vector(40, 0),
+          Flut5Vector(40, 40),
+          Flut5Vector(20, 10), // the dent
+          Flut5Vector(0, 40),
+        ]),
+        throwsA(
+          isA<ArgumentError>().having(
+            (e) => e.message,
+            'message',
+            contains('(20.0, 10.0) makes a dent'),
+          ),
+        ),
+      );
+      expect(() => physics.createRect(0, 0, 0, 10), throwsArgumentError);
+    });
+
+    test('static: no gravity, but moves by its own velocity', () {
+      final physics = world(gravity: 0.2);
+      final platform = physics.createRect(100, 100, 50, 10)
+        ..isStatic = true
+        ..velocity.x = 1;
+      physics.update();
+      expect((platform.x, platform.y), (101, 100));
+    });
+
+    test('a particle lands on a static platform and rests on it', () {
+      final physics = world(gravity: 0.2)..polygonRestitution = 0;
+      physics.createRect(200, 80, 400, 20).isStatic = true; // top at 70
+      final ball = physics.createParticle(200, 20)..radius = 10;
+      for (var i = 0; i < 200; i++) {
+        physics.update();
+      }
+      expect(ball.y, closeTo(60, 1e-9));
+      expect(ball.velocity.y, 0.0);
+    });
+
+    test('a particle bounces off the side of a rect', () {
+      final physics = world();
+      physics.createRect(100, 50, 20, 60).isStatic = true; // left side x = 90
+      final ball = physics.createParticle(75, 50)
+        ..radius = 10
+        ..velocity.x = 7;
+      physics.update(); // moves to 82: 2 into the side
+      expect(ball.x, closeTo(80, 1e-9));
+      expect(ball.velocity.x, closeTo(-7, 1e-9));
+      expect(ball.velocity.y, closeTo(0, 1e-9));
+    });
+
+    test('a particle hitting a corner bounces back along the diagonal', () {
+      final physics = world();
+      physics.createRect(100, 100, 20, 20).isStatic = true; // corner (90, 90)
+      final ball = physics.createParticle(77, 77)
+        ..radius = 15
+        ..velocity.setValues(3, 3, 0);
+      physics.update();
+      expect(ball.velocity.x, closeTo(-3, 1e-9));
+      expect(ball.velocity.y, closeTo(-3, 1e-9));
+    });
+
+    test('a particle inside a polygon is pushed out the nearest side', () {
+      final physics = world();
+      physics.createRect(100, 100, 100, 20).isStatic = true; // top at 90
+      final ball = physics.createParticle(100, 93)..radius = 5;
+      physics.update();
+      expect(ball.y, closeTo(85, 1e-9));
+      expect(ball.x, 100.0);
+    });
+
+    test('a box falls onto a platform and rests flat on it', () {
+      final physics = world(gravity: 0.2)
+        ..rotationMode = .physical
+        ..polygonRestitution = 0;
+      physics.createRect(200, 200, 400, 20).isStatic = true; // top at 190
+      final box = physics.createRect(200, 100, 40, 40);
+      for (var i = 0; i < 300; i++) {
+        physics.update();
+      }
+      expect(box.y, closeTo(170, 1e-6));
+      expect(box.x, closeTo(200, 1e-6));
+      expect(box.angle, closeTo(0, 1e-6));
+    });
+
+    test('physical: a tilted box tips over onto its face', () {
+      final physics = world(gravity: 0.2)
+        ..rotationMode = .physical
+        ..polygonRestitution = 0;
+      physics.createRect(200, 200, 400, 20).isStatic = true;
+      final box = physics.createRect(200, 100, 40, 40)..angle = 0.3;
+      for (var i = 0; i < 600; i++) {
+        physics.update();
+      }
+      expect(box.angle, closeTo(0, 0.01));
+      expect(box.y, closeTo(170, 0.1));
+    });
+
+    for (final mode in [
+      PhysicsRotationMode.none,
+      PhysicsRotationMode.cosmetic,
+    ]) {
+      test('${mode.name}: a tilted box lands without turning', () {
+        final physics = world(gravity: 0.2)
+          ..rotationMode = mode
+          ..polygonRestitution = 0;
+        physics.createRect(200, 200, 400, 20).isStatic = true;
+        final box = physics.createRect(200, 100, 40, 40)..angle = 0.3;
+        for (var i = 0; i < 300; i++) {
+          physics.update();
+        }
+        expect(box.angle, 0.3);
+        expect(box.angularVelocity, 0.0);
+      });
+    }
+
+    test('equal boxes hitting head on swap velocities', () {
+      final physics = world();
+      final a = physics.createRect(100, 50, 20, 20)..velocity.x = 2;
+      final b = physics.createRect(122, 50, 20, 20)..velocity.x = -2;
+      physics.update();
+      expect(a.velocity.x, closeTo(-2, 1e-9));
+      expect(b.velocity.x, closeTo(2, 1e-9));
+      expect(b.x - a.x, closeTo(20, 1e-9)); // pushed apart to just touching
+    });
+
+    test('physical: a head-on hit adds no spin', () {
+      final physics = world()..rotationMode = .physical;
+      final a = physics.createRect(100, 50, 20, 20)..velocity.x = 2;
+      final b = physics.createRect(122, 50, 20, 20)..velocity.x = -2;
+      physics.update();
+      expect(a.angularVelocity, closeTo(0, 1e-9));
+      expect(b.angularVelocity, closeTo(0, 1e-9));
+      expect(a.velocity.x, closeTo(-2, 1e-6));
+    });
+
+    test('physical: an off-center hit spins both and keeps momentum', () {
+      final physics = world()..rotationMode = .physical;
+      final a = physics.createRect(100, 50, 20, 20)..velocity.x = 2;
+      final b = physics.createRect(121, 60, 20, 20);
+      physics.update();
+      expect(a.angularVelocity, isNot(closeTo(0, 1e-6)));
+      expect(b.angularVelocity, isNot(closeTo(0, 1e-6)));
+      expect(a.velocity.x + b.velocity.x, closeTo(2, 1e-9));
+      expect(a.velocity.y + b.velocity.y, closeTo(0, 1e-9));
+    });
+
+    test('a box falls to the window floor and rests on it', () {
+      final physics = world(gravity: 0.2)
+        ..windowBoundsCollision()
+        ..windowBoundsRestitution = 0;
+      final box = physics.createRect(100, 20, 20, 20);
+      for (var i = 0; i < 300; i++) {
+        physics.update();
+      }
+      expect(box.y, closeTo(290, 1e-9));
+      expect(box.velocity.y, 0.0);
+    });
+
+    test('a moving box cannot push a static one', () {
+      final physics = world();
+      final wall = physics.createRect(100, 50, 20, 60)..isStatic = true;
+      final box = physics.createRect(75, 50, 20, 20)..velocity.x = 7;
+      physics.update();
+      expect((wall.x, wall.y, wall.angle), (100, 50, 0));
+      expect(box.velocity.x, closeTo(-7, 1e-9));
+    });
+
+    test('static polygons never collide with each other', () {
+      final physics = world();
+      final a = physics.createRect(100, 50, 40, 40)..isStatic = true;
+      final b = physics.createRect(110, 50, 40, 40)..isStatic = true;
+      physics.update();
+      expect((a.x, b.x), (100, 110));
+    });
+
+    test('remove drops a polygon', () {
+      final physics = world();
+      final rect = physics.createRect(0, 0, 10, 10);
+      expect(physics.remove(rect), isTrue);
+      expect(physics.polygons, isEmpty);
+      expect(physics.bodies, isEmpty);
+    });
+
+    test('collisionIterations is shared, and validated with restitution', () {
+      final physics = world();
+      expect(physics.collisionIterations, 2);
+      physics.particleCollision(iterations: 3);
+      expect(physics.collisionIterations, 3);
+      physics.particleCollision(); // keeps it
+      expect(physics.collisionIterations, 3);
+      expect(() => physics.collisionIterations = 0, throwsArgumentError);
+      expect(() => physics.polygonRestitution = -1, throwsArgumentError);
+      expect(Flut5Engine().polygonRestitution(0.5), 0.5);
     });
   });
 }

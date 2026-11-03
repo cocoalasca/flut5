@@ -1,7 +1,7 @@
 part of 'flut5_physics_engine.dart';
 
 /// The window-edge side of [Flut5PhysicsEngine]: the window's edges as walls
-/// particles bounce off.
+/// particles bounce off. (Polygons hitting them are in the polygons part.)
 mixin _PhysicsEdges {
   // Provided by Flut5PhysicsEngine and its other parts.
   List<Flut5PhysicsParticle> get _particles;
@@ -9,6 +9,20 @@ mixin _PhysicsEdges {
   Flut5Vector get gravity;
   PhysicsRotationMode get rotationMode;
   double get friction;
+
+  /// Where the enabled window edges are now, or `null` before the window
+  /// has a size. A disabled edge sits at infinity, so nothing ever crosses
+  /// it.
+  _WindowLimits? _windowLimits() {
+    final size = _windowSize?.call();
+    if (size == null || size.isEmpty) return null;
+    return (
+      left: _boundsLeft ? 0.0 : double.negativeInfinity,
+      top: _boundsTop ? 0.0 : double.negativeInfinity,
+      right: _boundsRight ? size.width : double.infinity,
+      bottom: _boundsBottom ? size.height : double.infinity,
+    );
+  }
 
   bool _boundsLeft = false;
   bool _boundsTop = false;
@@ -80,14 +94,9 @@ mixin _PhysicsEdges {
   /// frame of gravity toward it is resting on it — it stops there instead of
   /// hopping in place forever.
   void _collideWindowBounds() {
-    final size = _windowSize?.call();
-    if (size == null || size.isEmpty) return;
-
-    // A disabled edge sits at infinity, so no particle ever crosses it.
-    final left = _boundsLeft ? 0.0 : double.negativeInfinity;
-    final top = _boundsTop ? 0.0 : double.negativeInfinity;
-    final right = _boundsRight ? size.width : double.infinity;
-    final bottom = _boundsBottom ? size.height : double.infinity;
+    final limits = _windowLimits();
+    if (limits == null) return;
+    final (:left, :top, :right, :bottom) = limits;
 
     for (final particle in _particles) {
       // A particle touches an edge when its center is one radius away.
@@ -151,6 +160,14 @@ mixin _PhysicsEdges {
     }
   }
 }
+
+/// Where the window's edges are, in canvas coordinates.
+typedef _WindowLimits = ({
+  double left,
+  double top,
+  double right,
+  double bottom,
+});
 
 /// A window edge: the coordinate it blocks and which way is out through it.
 enum _WindowEdge {
