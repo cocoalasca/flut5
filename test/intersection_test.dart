@@ -107,4 +107,59 @@ void main() {
       expect(hit.z, 0);
     });
   });
+
+  group('castRay', () {
+    final walls = [
+      Flut5LineSegment(30, -10, 30, 10), // far wall
+      Flut5LineSegment(10, -10, 10, 10), // near wall
+      Flut5LineSegment(-5, -10, -5, 10), // behind the origin
+    ];
+
+    test('returns the hit closest to the origin, whatever the list order', () {
+      final hit = engine.castRay(0, 0, Flut5Vector(1, 0), walls)!;
+      expect(hit.x, closeTo(10, 1e-12));
+      expect(hit.y, closeTo(0, 1e-12));
+      expect(hit.z, 0);
+
+      final reversed = engine.castRay(0, 0, Flut5Vector(1, 0), walls.reversed)!;
+      expect(reversed.x, closeTo(10, 1e-12));
+    });
+
+    test('ignores walls behind the origin', () {
+      final hit = engine.castRay(0, 0, Flut5Vector(-1, 0), walls)!;
+      expect(hit.x, closeTo(-5, 1e-12));
+      expect(engine.castRay(20, 0, Flut5Vector(-1, 0), [walls.first]), isNull);
+    });
+
+    test('returns null when every wall is missed, or there are none', () {
+      expect(engine.castRay(0, 0, Flut5Vector(0, 1), walls), isNull);
+      expect(engine.castRay(0, 0, Flut5Vector(1, 0), const []), isNull);
+    });
+
+    test('matches rayLineIntersection for each single wall', () {
+      final direction = Flut5Vector(3, 1);
+      for (final wall in walls) {
+        final fromList = engine.castRay(0, 0, direction, [wall]);
+        final single = engine.rayLineIntersection(
+          wall.start.x,
+          wall.start.y,
+          wall.end.x,
+          wall.end.y,
+          0,
+          0,
+          direction,
+        );
+        expect(fromList?.x, single?.x);
+        expect(fromList?.y, single?.y);
+      }
+    });
+
+    test('sees walls moved through their vectors', () {
+      final wall = Flut5LineSegment(10, -10, 10, 10);
+      wall.start.x = 20;
+      wall.end.x = 20;
+      final hit = engine.castRay(0, 0, Flut5Vector(1, 0), [wall])!;
+      expect(hit.x, closeTo(20, 1e-12));
+    });
+  });
 }

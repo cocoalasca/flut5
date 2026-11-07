@@ -12,6 +12,7 @@ import 'core/flut5_wheel.dart';
 import 'core/sketch_environment.dart';
 import 'image/flut5_image.dart';
 import 'shape/flut5_2d_primitives.dart';
+import 'math/flut5_line_segment.dart';
 import 'math/flut5_vector.dart';
 import 'math/flut5_trigonometry.dart';
 import 'math/flut5_noise.dart';
@@ -43,6 +44,7 @@ export 'shape/flut5_2d_primitives.dart';
 export 'math/flut5_vector.dart';
 export 'math/flut5_math.dart';
 export 'math/flut5_intersection.dart';
+export 'math/flut5_line_segment.dart';
 export 'math/flut5_trigonometry.dart';
 export 'math/flut5_noise.dart';
 export 'physics/engine/flut5_physics_engine.dart';
@@ -605,6 +607,12 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
     rayY,
     rayDirection,
   );
+  Flut5Vector? castRay(
+    double rayX,
+    double rayY,
+    Flut5Vector rayDirection,
+    Iterable<Flut5LineSegment> walls,
+  ) => flut5.castRay(rayX, rayY, rayDirection, walls);
 
   // ── Physics ──────────────────────────────────────────────────────────────
   double springConstant([double? k]) => flut5.springConstant(k);

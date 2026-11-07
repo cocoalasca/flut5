@@ -1,3 +1,4 @@
+import 'flut5_line_segment.dart';
 import 'flut5_vector.dart';
 
 /// Slack allowed on each segment's 0‥1 parameter range, so a hit that lands
@@ -5,7 +6,8 @@ import 'flut5_vector.dart';
 /// to floating-point rounding and a ray cannot slip through the seam.
 const double _parameterTolerance = 1e-9;
 
-/// Provides 2-D line-segment and ray intersection tests for the Flut5 Engine.
+/// Provides 2-D line-segment and ray intersection tests for the Flut5 Engine,
+/// including [castRay] for raycasting against a list of walls.
 ///
 /// ## Coordinate space
 ///
@@ -27,7 +29,7 @@ const double _parameterTolerance = 1e-9;
 /// `mouseX` / `mouseY` are always window pixels, so subtract a scope's
 /// translation before mixing them with coordinates drawn inside it.
 ///
-/// Both methods are 2-D: any `z` component is ignored and the returned
+/// All of these are 2-D: any `z` component is ignored and the returned
 /// vector has `z == 0`.
 mixin Flut5Intersection {
   /// Returns where segment ([x1], [y1])→([x2], [y2]) crosses segment
@@ -53,17 +55,26 @@ mixin Flut5Intersection {
     double y3,
     double x4,
     double y4,
-  ) => _intersect(
-    firstX: x1,
-    firstY: y1,
-    firstDeltaX: x2 - x1,
-    firstDeltaY: y2 - y1,
-    firstIsRay: false,
-    secondX: x3,
-    secondY: y3,
-    secondDeltaX: x4 - x3,
-    secondDeltaY: y4 - y3,
-  );
+  ) {
+    final deltaX = x2 - x1;
+    final deltaY = y2 - y1;
+    final distanceAlongFirst = _crossingParameter(
+      firstX: x1,
+      firstY: y1,
+      firstDeltaX: deltaX,
+      firstDeltaY: deltaY,
+      firstIsRay: false,
+      secondX: x3,
+      secondY: y3,
+      secondDeltaX: x4 - x3,
+      secondDeltaY: y4 - y3,
+    );
+    if (distanceAlongFirst.isInfinite) return null;
+    return Flut5Vector(
+      x1 + distanceAlongFirst * deltaX,
+      y1 + distanceAlongFirst * deltaY,
+    );
+  }
 
   /// Casts a ray from ([rayX], [rayY]) along [rayDirection] and returns
   /// where it hits the wall segment ([wallX1], [wallY1])→([wallX2],
@@ -102,23 +113,91 @@ mixin Flut5Intersection {
     double rayX,
     double rayY,
     Flut5Vector rayDirection,
-  ) => _intersect(
-    firstX: rayX,
-    firstY: rayY,
-    firstDeltaX: rayDirection.x,
-    firstDeltaY: rayDirection.y,
-    firstIsRay: true,
-    secondX: wallX1,
-    secondY: wallY1,
-    secondDeltaX: wallX2 - wallX1,
-    secondDeltaY: wallY2 - wallY1,
-  );
+  ) {
+    final distanceAlongRay = _crossingParameter(
+      firstX: rayX,
+      firstY: rayY,
+      firstDeltaX: rayDirection.x,
+      firstDeltaY: rayDirection.y,
+      firstIsRay: true,
+      secondX: wallX1,
+      secondY: wallY1,
+      secondDeltaX: wallX2 - wallX1,
+      secondDeltaY: wallY2 - wallY1,
+    );
+    if (distanceAlongRay.isInfinite) return null;
+    return Flut5Vector(
+      rayX + distanceAlongRay * rayDirection.x,
+      rayY + distanceAlongRay * rayDirection.y,
+    );
+  }
 
-  /// Intersects `first + t·firstDelta` with `second + u·secondDelta`.
+  /// Casts a ray from ([rayX], [rayY]) along [rayDirection] and returns the
+  /// closest point where it hits any of [walls], or `null` if it hits none.
+  ///
+  /// Each wall is tested the same way as [rayLineIntersection] — walls
+  /// behind the origin, parallel to the ray, or zero-length are skipped — and
+  /// the hit nearest the origin wins. Only that one hit allocates a vector,
+  /// so casting hundreds of rays per frame stays cheap.
+  ///
+  /// ```dart
+  /// final walls = [
+  ///   Flut5LineSegment(300, 100, 300, 300),
+  ///   Flut5LineSegment(100, 350, 400, 350),
+  /// ];
+  ///
+  /// // in draw():
+  /// for (var angle = 0.0; angle < 360; angle += 1) {
+  ///   final direction = Flut5Vector(cos(angle), sin(angle));
+  ///   final hit = castRay(mouseX, mouseY, direction, walls);
+  ///   if (hit != null) line(mouseX, mouseY, hit.x, hit.y);
+  /// }
+  /// ```
+  ///
+  /// The distance to the hit is `dist(rayX, rayY, hit.x, hit.y)`. See
+  /// [Flut5Intersection] for the coordinate space.
+  Flut5Vector? castRay(
+    double rayX,
+    double rayY,
+    Flut5Vector rayDirection,
+    Iterable<Flut5LineSegment> walls,
+  ) {
+    final directionX = rayDirection.x;
+    final directionY = rayDirection.y;
+    // Every wall is measured along the same direction vector, so the
+    // smallest parameter is also the smallest distance — no square roots.
+    var closestDistanceAlongRay = double.infinity;
+    for (final wall in walls) {
+      final distanceAlongRay = _crossingParameter(
+        firstX: rayX,
+        firstY: rayY,
+        firstDeltaX: directionX,
+        firstDeltaY: directionY,
+        firstIsRay: true,
+        secondX: wall.start.x,
+        secondY: wall.start.y,
+        secondDeltaX: wall.end.x - wall.start.x,
+        secondDeltaY: wall.end.y - wall.start.y,
+      );
+      if (distanceAlongRay < closestDistanceAlongRay) {
+        closestDistanceAlongRay = distanceAlongRay;
+      }
+    }
+    if (closestDistanceAlongRay.isInfinite) return null;
+    return Flut5Vector(
+      rayX + closestDistanceAlongRay * directionX,
+      rayY + closestDistanceAlongRay * directionY,
+    );
+  }
+
+  /// Finds where `first + t·firstDelta` crosses `second + u·secondDelta` and
+  /// returns `t` — how many `firstDelta`s along the first line the crossing
+  /// is — or [double.infinity] when they don't cross.
   ///
   /// `u` must lie in 0‥1 (the second line is always a segment); `t` must lie
-  /// in 0‥1 for a segment, or just be ≥ 0 when [firstIsRay].
-  static Flut5Vector? _intersect({
+  /// in 0‥1 for a segment, or just be ≥ 0 when [firstIsRay]. Returning a plain
+  /// number (not a vector) lets [castRay] compare walls without allocating.
+  static double _crossingParameter({
     required double firstX,
     required double firstY,
     required double firstDeltaX,
@@ -129,10 +208,12 @@ mixin Flut5Intersection {
     required double secondDeltaX,
     required double secondDeltaY,
   }) {
+    const noCrossing = double.infinity;
+
     // 2-D cross product of the two directions: zero when they are parallel
     // (or either is zero-length), where no single crossing point exists.
     final denominator = firstDeltaX * secondDeltaY - firstDeltaY * secondDeltaX;
-    if (denominator == 0) return null;
+    if (denominator == 0) return noCrossing;
 
     final startGapX = secondX - firstX;
     final startGapY = secondY - firstY;
@@ -141,16 +222,14 @@ mixin Flut5Intersection {
     final secondParameter =
         (startGapX * firstDeltaY - startGapY * firstDeltaX) / denominator;
 
-    if (firstParameter < -_parameterTolerance) return null;
-    if (!firstIsRay && firstParameter > 1 + _parameterTolerance) return null;
+    if (firstParameter < -_parameterTolerance) return noCrossing;
+    if (!firstIsRay && firstParameter > 1 + _parameterTolerance) {
+      return noCrossing;
+    }
     if (secondParameter < -_parameterTolerance ||
         secondParameter > 1 + _parameterTolerance) {
-      return null;
+      return noCrossing;
     }
-
-    return Flut5Vector(
-      firstX + firstParameter * firstDeltaX,
-      firstY + firstParameter * firstDeltaY,
-    );
+    return firstParameter;
   }
 }
