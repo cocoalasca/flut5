@@ -26,6 +26,8 @@ import 'physics/engine/flut5_physics_engine.dart';
 
 export 'core/flut5_color.dart';
 export 'core/flut5_container.dart';
+export 'core/quadtree/flut5_quadtree.dart';
+export 'core/quadtree/flut5_quadtree_point.dart';
 export 'core/flut5_cursor.dart';
 export 'core/flut5_engine.dart';
 export 'core/flut5_event.dart';
