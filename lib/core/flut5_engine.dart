@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 
 import '../image/flut5_image_mixin.dart';
+import '../math/flut5_intersection.dart';
 import '../math/flut5_math.dart';
 import '../math/flut5_noise.dart';
 import '../math/flut5_trigonometry.dart';
@@ -39,6 +40,7 @@ import 'sketch_environment.dart';
 ///
 /// The engine is a composite of multiple mixins that provide modular functionality:
 /// * [Flut5Math]: Mathematical functions like mapping and random generation.
+/// * [Flut5Intersection]: Line-segment and ray intersection tests.
 /// * [Flut5Trigonometry]: Trigonometric functions and angle mode management.
 /// * [Flut5Stroke]: Defines stroke color and weight states.
 /// * [Flut5Fill]: Defines fill color states and background drawing.
@@ -60,6 +62,7 @@ final class Flut5Engine
         Flut52DPrimitives,
         Flut5Vertex,
         Flut5VectorMixin,
+        Flut5Intersection,
         Flut5Spring,
         Flut5Collision,
         Flut5Transform,

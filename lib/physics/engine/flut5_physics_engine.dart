@@ -19,6 +19,7 @@ part 'flut5_physics_engine_edges.dart';
 part 'flut5_physics_engine_rotation.dart';
 part 'flut5_physics_engine_polygons.dart';
 part 'flut5_physics_engine_contacts.dart';
+part 'flut5_physics_engine_soft_bodies.dart';
 
 /// When the engine runs [Flut5PhysicsEngine.update] each frame.
 enum PhysicsUpdateTiming {
@@ -69,7 +70,8 @@ final class Flut5PhysicsEngine({Size Function()? windowSize})
         _PhysicsSprings,
         _PhysicsEdges,
         _PhysicsRotation,
-        _PhysicsPolygons {
+        _PhysicsPolygons,
+        _PhysicsSoftBodies {
   @override
   final Size Function()? _windowSize = windowSize;
 
@@ -80,11 +82,14 @@ final class Flut5PhysicsEngine({Size Function()? windowSize})
   final List<Flut5PhysicsSpring> _springs = [];
   @override
   final List<Flut5PhysicsPolygon> _polygons = [];
+  @override
+  final List<Flut5PhysicsSoftBody> _softBodies = [];
 
   // Removal is deferred so a frame that retires many particles pays one pass
   // over the lists instead of one per particle: [remove] only unregisters
   // the body here, and [_compact] drops it from the lists before they are
   // next read (the public views compact on access) or stepped.
+  @override
   final Set<Flut5PhysicsBody> _registered = HashSet.identity();
 
   /// Particles removed since the last [_compact]. A spring attached to one is
@@ -92,6 +97,12 @@ final class Flut5PhysicsEngine({Size Function()? windowSize})
   @override
   final Set<Flut5PhysicsParticle> _removedParticles = HashSet.identity();
   bool _pendingRemoval = false;
+
+  /// Soft bodies that lost a particle to [remove] while staying registered.
+  /// Only these check, as they pull themselves back into shape, which of
+  /// their particles are still there.
+  @override
+  final Set<Flut5PhysicsSoftBody> _tornSoftBodies = HashSet.identity();
 
   /// When [update] runs each frame: before `draw()` (default), after it, or
   /// never ([PhysicsUpdateTiming.manual]).
@@ -132,6 +143,13 @@ final class Flut5PhysicsEngine({Size Function()? windowSize})
     _polygons,
   );
 
+  /// Every registered soft body, in creation order. Their particles are
+  /// also in [particles]. Read-only view, safe to iterate in `draw()`.
+  late final List<Flut5PhysicsSoftBody> softBodies = _BodyListView(
+    this,
+    _softBodies,
+  );
+
   int _collisionIterations = 2;
 
   /// How many collision passes run per frame — particles against particles,
@@ -159,7 +177,9 @@ final class Flut5PhysicsEngine({Size Function()? windowSize})
   /// registered.
   ///
   /// Removing a particle also removes every spring attached to it, so no
-  /// spring keeps tugging toward a particle that no longer moves.
+  /// spring keeps tugging toward a particle that no longer moves. Removing a
+  /// soft body removes its particles too; removing one of its particles on
+  /// its own tears it there.
   ///
   /// Constant time, so retiring many particles a frame stays cheap: the
   /// lists drop removed bodies in one pass, the next time they are read or
@@ -168,7 +188,16 @@ final class Flut5PhysicsEngine({Size Function()? windowSize})
   bool remove(Flut5PhysicsBody body) {
     if (body is Flut5PhysicsSpring && !_springAttached(body)) return false;
     if (!_registered.remove(body)) return false;
-    if (body is Flut5PhysicsParticle) _removedParticles.add(body);
+    if (body is Flut5PhysicsParticle) {
+      _removedParticles.add(body);
+      final softBody = body.softBody;
+      if (softBody != null) _tornSoftBodies.add(softBody);
+    }
+    if (body is Flut5PhysicsSoftBody) {
+      for (final particle in body.particles) {
+        if (_registered.remove(particle)) _removedParticles.add(particle);
+      }
+    }
     _pendingRemoval = true;
     return true;
   }
@@ -189,6 +218,8 @@ final class Flut5PhysicsEngine({Size Function()? windowSize})
     _particles.removeWhere((p) => !_registered.contains(p));
     _springs.removeWhere((s) => !_registered.contains(s));
     _polygons.removeWhere((p) => !_registered.contains(p));
+    _softBodies.removeWhere((s) => !_registered.contains(s));
+    _tornSoftBodies.removeWhere((s) => !_registered.contains(s));
   }
 
   /// Unregisters every body. The framework calls this before each `setup()`
@@ -198,6 +229,8 @@ final class Flut5PhysicsEngine({Size Function()? windowSize})
     _particles.clear();
     _springs.clear();
     _polygons.clear();
+    _softBodies.clear();
+    _tornSoftBodies.clear();
     _registered.clear();
     _removedParticles.clear();
     _pendingRemoval = false;
@@ -207,7 +240,8 @@ final class Flut5PhysicsEngine({Size Function()? windowSize})
   /// body's `accumulateForces` (springs call `applyForce` on their
   /// particles), then every body's `updatePhysics` (each particle runs its
   /// `euler` step with [gravity], resets its acceleration and turns per
-  /// [rotationMode]). Then [collisionIterations] collision passes: with
+  /// [rotationMode]). Then [collisionIterations] collision passes: soft
+  /// bodies' springs pull their particles back into shape; with
   /// [particleCollision] on, overlapping particles bounce off each other;
   /// polygons bounce off each other and off particles; and bodies past an
   /// edge enabled with [windowBoundsCollision] bounce off it. Runs
@@ -223,11 +257,13 @@ final class Flut5PhysicsEngine({Size Function()? windowSize})
     }
     final windowEdges = _hasWindowEdges;
     final hasPolygons = _polygons.isNotEmpty;
-    if (_particleCollision || hasPolygons) {
+    final hasSoftBodies = _softBodies.isNotEmpty;
+    if (_particleCollision || hasPolygons || hasSoftBodies) {
       // Walls run inside every pass, not once after them all: a body a
       // collision pushed into a wall is pushed back out before the next
       // pass, so a pile resting on the floor is held up by it.
       for (var pass = 0; pass < _collisionIterations; pass++) {
+        if (hasSoftBodies) _reshapeSoftBodies();
         if (_particleCollision) _collideParticles();
         if (hasPolygons) _collidePolygons();
         if (windowEdges) {

@@ -14,10 +14,15 @@ mixin _PhysicsParticles {
   /// returns it.
   Flut5PhysicsParticle createParticle(double x, double y) {
     final particle = Flut5PhysicsParticle(x, y);
+    _addParticle(particle);
+    return particle;
+  }
+
+  /// Registers [particle] and adds it to the particle list.
+  void _addParticle(Flut5PhysicsParticle particle) {
     _register(particle);
     _particles.add(particle);
     _sweepOrderStale = true;
-    return particle;
   }
 
   bool _particleCollision = false;
@@ -30,7 +35,9 @@ mixin _PhysicsParticles {
   /// until they just touch — the lighter one moving more — and, if they were
   /// approaching, exchange an impulse along the line between their centers:
   /// heavier particles push lighter ones around, and how much of their
-  /// approach speed bounces back is [particleRestitution].
+  /// approach speed bounces back is [particleRestitution]. Particles of the
+  /// same soft body never collide with each other — its springs keep them
+  /// apart.
   ///
   /// Particles are swept left to right, and each is only tested against the
   /// ones that start before it ends, so particles spread across the window
@@ -119,6 +126,7 @@ mixin _PhysicsParticles {
       // against the particles that start to its right.
       var aX = positionX[a], aY = positionY[a], aZ = positionZ[a];
       final aRadius = radius[a];
+      final aSoftBody = particles[a].softBody;
       var aRightEdge = aX + aRadius;
       for (var j = i + 1; j < count; j++) {
         final b = order[j];
@@ -134,6 +142,12 @@ mixin _PhysicsParticles {
         // but are nowhere near each other.
         final distanceSquared = dx * dx + dy * dy + dz * dz;
         if (distanceSquared < touchingDistance * touchingDistance) {
+          // A soft body's springs hold its particles apart; colliding them
+          // too would fight the springs wherever neighbors overlap.
+          if (aSoftBody != null &&
+              identical(aSoftBody, particles[b].softBody)) {
+            continue;
+          }
           // Older particle first, so two exactly on top of each other always
           // split the same way.
           if (a < b) {

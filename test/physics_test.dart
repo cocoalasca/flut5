@@ -1149,4 +1149,670 @@ void main() {
       expect(Flut5Engine().polygonRestitution(0.5), 0.5);
     });
   });
+
+  group('Soft bodies', () {
+    /// A physics world with gravity [gravity], in a 400 × 300 window.
+    Flut5PhysicsEngine world({double gravity = 0}) {
+      final engine = Flut5Engine()
+        ..environment = const SketchEnvironment().withSize(
+          const Size(400, 300),
+        );
+      return engine.physicsEngine..setGravity(gravity);
+    }
+
+    /// Every particle's position, to compare before and after a step.
+    List<(double, double)> positions(Flut5PhysicsSoftBody body) => [
+      for (final p in body.particles) (p.x, p.y),
+    ];
+
+    /// Expects [actual] positions to match [expected] within [tolerance].
+    void expectPositions(
+      List<(double, double)> actual,
+      List<(double, double)> expected, {
+      double tolerance = 1e-9,
+    }) {
+      expect(actual, hasLength(expected.length));
+      for (var i = 0; i < actual.length; i++) {
+        expect(actual[i].$1, closeTo(expected[i].$1, tolerance), reason: '#$i');
+        expect(actual[i].$2, closeTo(expected[i].$2, tolerance), reason: '#$i');
+      }
+    }
+
+    /// Bounding box size of [body]'s particle centers.
+    (double, double) size(Flut5PhysicsSoftBody body) {
+      final xs = body.particles.map((p) => p.x);
+      final ys = body.particles.map((p) => p.y);
+      return (
+        xs.reduce(math.max) - xs.reduce(math.min),
+        ys.reduce(math.max) - ys.reduce(math.min),
+      );
+    }
+
+    /// How many grid cells of [rect] are turned inside out.
+    int flippedCells(Flut5PhysicsSoftRect rect) {
+      var flipped = 0;
+      for (var row = 0; row + 1 < rect.rows; row++) {
+        for (var column = 0; column + 1 < rect.columns; column++) {
+          final topLeft = rect.particleAt(column, row);
+          final topRight = rect.particleAt(column + 1, row);
+          final bottomRight = rect.particleAt(column + 1, row + 1);
+          final bottomLeft = rect.particleAt(column, row + 1);
+          final crossDiagonals =
+              (bottomRight.x - topLeft.x) * (bottomLeft.y - topRight.y) -
+              (bottomRight.y - topLeft.y) * (bottomLeft.x - topRight.x);
+          if (crossDiagonals < 0) flipped++;
+        }
+      }
+      return flipped;
+    }
+
+    test('createSoftRect: a registered grid with corners on the rect', () {
+      final physics = world();
+      final rect = physics.createSoftRect(200, 100, 160, 100, resolution: 8);
+      expect((rect.columns, rect.rows), (8, 5));
+      expect((rect.width, rect.height), (160, 100));
+      expect(rect.particles, hasLength(40));
+      final topLeft = rect.particleAt(0, 0);
+      final bottomRight = rect.particleAt(7, 4);
+      expect((topLeft.x, topLeft.y), (120, 50));
+      expect((bottomRight.x, bottomRight.y), (280, 150));
+
+      expect(physics.softBodies, [rect]);
+      expect(physics.particles, rect.particles);
+      expect(physics.bodies, [rect, ...rect.particles]);
+      expect(physics.springs, isEmpty); // its springs are its own
+      // Across, down, both diagonals, and two steps across and down.
+      expect(rect.springs, hasLength(35 + 32 + 2 * 28 + 30 + 24));
+      for (final spring in rect.springs) {
+        expect(
+          spring.restLength,
+          spring.a.position.distanceTo(spring.b.position),
+        );
+      }
+    });
+
+    test('resolution counts particles along the longer side', () {
+      final physics = world();
+      Flut5PhysicsSoftRect grid(double w, double h, int resolution) =>
+          physics.createSoftRect(0, 0, w, h, resolution: resolution);
+      final tall = grid(40, 200, 8);
+      expect((tall.columns, tall.rows), (2, 8));
+      final square = grid(100, 100, 5);
+      expect((square.columns, square.rows), (5, 5));
+      final strip = grid(300, 10, 6);
+      expect((strip.columns, strip.rows), (6, 2)); // never fewer than 2
+      final smallest = grid(50, 50, 2);
+      expect(smallest.particles, hasLength(4));
+    });
+
+    test('particleRadius defaults to half the gap between neighbors', () {
+      final physics = world();
+      // Gaps: 160 / 7 across, 100 / 4 down — the smaller one counts.
+      final touching = physics.createSoftRect(0, 0, 160, 100);
+      for (final p in touching.particles) {
+        expect(p.radius, closeTo(160 / 7 / 2, 1e-9));
+      }
+      final sized = physics.createSoftRect(0, 0, 160, 100, particleRadius: 3);
+      expect(sized.particles.every((p) => p.radius == 3), isTrue);
+    });
+
+    test('outline runs clockwise around the edge from the top-left', () {
+      final rect = world().createSoftRect(0, 0, 100, 100, resolution: 3);
+      Flut5PhysicsParticle at(int column, int row) =>
+          rect.particleAt(column, row);
+      expect(rect.outline, [
+        at(0, 0), at(1, 0), at(2, 0), //
+        at(2, 1), at(2, 2), at(1, 2), //
+        at(0, 2), at(0, 1),
+      ]);
+    });
+
+    test('its particles know their soft body; loose ones have none', () {
+      final physics = world();
+      final rect = physics.createSoftRect(0, 0, 50, 50);
+      expect(rect.particles.every((p) => p.softBody == rect), isTrue);
+      expect(physics.createParticle(0, 0).softBody, isNull);
+    });
+
+    test('invalid settings are rejected', () {
+      final physics = world();
+      expect(() => physics.createSoftRect(0, 0, 0, 10), throwsArgumentError);
+      expect(
+        () => physics.createSoftRect(0, 0, 10, 10, resolution: 1),
+        throwsArgumentError,
+      );
+      expect(
+        () => physics.createSoftRect(0, 0, 10, 10, particleRadius: -1),
+        throwsArgumentError,
+      );
+      expect(
+        () => physics.createSoftRect(0, 0, 10, 10, stiffness: 1.1),
+        throwsArgumentError,
+      );
+      final rect = physics.createSoftRect(0, 0, 10, 10, resolution: 3);
+      expect(() => rect.stiffness = -0.1, throwsArgumentError);
+      expect(() => rect.particleAt(3, 0), throwsRangeError);
+      expect(() => rect.particleAt(0, -1), throwsRangeError);
+      expect(physics.softBodies, [rect]); // the failed ones never registered
+    });
+
+    test('left alone it keeps its shape exactly', () {
+      final physics = world();
+      final rect = physics.createSoftRect(200, 150, 120, 80);
+      final before = positions(rect);
+      for (var i = 0; i < 100; i++) {
+        physics.update();
+      }
+      expectPositions(positions(rect), before);
+    });
+
+    test('squashed, it springs back and stops without turning', () {
+      final physics = world();
+      final rect = physics.createSoftRect(200, 150, 120, 80, stiffness: 0.3);
+      for (var column = 0; column < rect.columns; column++) {
+        rect.particleAt(column, 0).y += 30; // flatten the top row inward
+      }
+      for (var i = 0; i < 300; i++) {
+        physics.update();
+      }
+      // Back in shape: every spring at its rest length.
+      for (final spring in rect.springs) {
+        final length = spring.a.position.distanceTo(spring.b.position);
+        expect(length, closeTo(spring.restLength, 1e-3));
+      }
+      expect(flippedCells(rect), 0);
+      // At rest, not slowly spinning: the springs only push its particles
+      // against each other, which can't turn the body as a whole.
+      for (final p in rect.particles) {
+        expect(p.velocity.mag(), lessThan(1e-6));
+      }
+      final resting = positions(rect);
+      for (var i = 0; i < 600; i++) {
+        physics.update();
+      }
+      expectPositions(positions(rect), resting, tolerance: 1e-6);
+    });
+
+    test('its springs keep a spinning body spinning, not faster', () {
+      final physics = world();
+      final rect = physics.createSoftRect(200, 150, 120, 80);
+      // Spin it a little around its center, clockwise on screen.
+      for (final p in rect.particles) {
+        p.velocity.setValues(-(p.y - 150) * 0.01, (p.x - 200) * 0.01, 0);
+      }
+      double angularMomentum() {
+        var sum = 0.0;
+        final count = rect.particles.length;
+        final (cx, cy) = (
+          rect.particles.map((p) => p.x).reduce((a, b) => a + b) / count,
+          rect.particles.map((p) => p.y).reduce((a, b) => a + b) / count,
+        );
+        for (final p in rect.particles) {
+          sum += (p.x - cx) * p.velocity.y - (p.y - cy) * p.velocity.x;
+        }
+        return sum;
+      }
+
+      final before = angularMomentum();
+      for (var i = 0; i < 300; i++) {
+        physics.update();
+      }
+      expect(angularMomentum(), closeTo(before, before.abs() * 1e-9));
+      expect(size(rect).$1, lessThan(150)); // it really turned
+    });
+
+    test('stiffness 0 leaves the particles loose', () {
+      final physics = world();
+      final rect = physics.createSoftRect(200, 150, 120, 80, stiffness: 0);
+      rect.particleAt(0, 0).x -= 30;
+      final before = positions(rect);
+      physics.update();
+      expectPositions(positions(rect), before);
+    });
+
+    test('it falls to the floor, keeps its shape and rests there', () {
+      final physics = world(gravity: 0.3)
+        ..windowBoundsCollision()
+        ..windowBoundsRestitution = 0.3;
+      final rect = physics.createSoftRect(200, 100, 160, 100);
+      for (var i = 0; i < 600; i++) {
+        physics.update();
+      }
+      final (width, height) = size(rect);
+      expect(width, closeTo(160, 5));
+      expect(height, closeTo(100, 5));
+      final radius = rect.particles.first.radius;
+      for (final p in rect.particles) {
+        expect(p.y, lessThanOrEqualTo(300 - radius + 1e-9));
+      }
+      // Resting: not a pixel of drift over another second.
+      final resting = positions(rect);
+      for (var i = 0; i < 60; i++) {
+        physics.update();
+      }
+      expectPositions(positions(rect), resting, tolerance: 1e-6);
+    });
+
+    test('a softer body squashes deeper on landing', () {
+      double deepestSquash(double stiffness) {
+        final physics = world(gravity: 0.3)..windowBoundsCollision();
+        final rect = physics.createSoftRect(
+          200,
+          100,
+          160,
+          100,
+          stiffness: stiffness,
+        );
+        var lowest = double.infinity;
+        for (var i = 0; i < 200; i++) {
+          physics.update();
+          lowest = math.min(lowest, size(rect).$2);
+        }
+        return lowest;
+      }
+
+      final loose = deepestSquash(0.1);
+      final medium = deepestSquash(0.3);
+      final firm = deepestSquash(1);
+      expect(loose, lessThan(medium));
+      expect(medium, lessThan(firm));
+      expect(loose, lessThan(80)); // it visibly gives…
+      expect(firm, greaterThan(85)); // …or barely does
+    });
+
+    test('a hard landing cannot leave a fine grid folded over', () {
+      // Landing at ~9.5 px a frame on 8 px cells: rows near the floor pass
+      // each other for a frame or two, and springs alone would hold them
+      // there, folded.
+      final physics = world(gravity: 0.3)
+        ..windowBoundsCollision()
+        ..windowBoundsRestitution = 0.3;
+      final rect = physics.createSoftRect(200, 100, 160, 100, resolution: 20);
+      for (var i = 0; i < 600; i++) {
+        physics.update();
+      }
+      expect(flippedCells(rect), 0);
+      expect(size(rect).$2, closeTo(100, 5));
+    });
+
+    test('its particles pass through each other, not other particles', () {
+      final physics = world()..particleCollision();
+      // Radius 30 overlaps every neighbor 25 px away.
+      final rect = physics.createSoftRect(
+        200,
+        150,
+        100,
+        100,
+        resolution: 5,
+        particleRadius: 30,
+      );
+      final before = positions(rect);
+      physics.update();
+      expectPositions(positions(rect), before);
+
+      final intruder = physics.createParticle(150, 160)..radius = 5;
+      physics.update();
+      expect(intruder.x, isNot(150)); // pushed out by the corner particle
+    });
+
+    test('it lands on a static platform and rests on it', () {
+      final physics = world(gravity: 0.3);
+      physics.createRect(200, 250, 300, 20).isStatic = true;
+      physics.polygonRestitution = 0;
+      final rect = physics.createSoftRect(200, 100, 120, 80);
+      for (var i = 0; i < 400; i++) {
+        physics.update();
+      }
+      final platformTop = 240.0;
+      for (var column = 0; column < rect.columns; column++) {
+        final p = rect.particleAt(column, rect.rows - 1);
+        expect(p.y + p.radius, closeTo(platformTop, 1));
+      }
+      expect(size(rect).$2, closeTo(80, 4));
+    });
+
+    test('remove takes its particles with it', () {
+      final physics = world();
+      final rect = physics.createSoftRect(0, 0, 50, 50);
+      final loose = physics.createParticle(0, 0);
+      expect(physics.remove(rect), isTrue);
+      expect(physics.softBodies, isEmpty);
+      expect(physics.particles, [loose]);
+      expect(physics.bodies, [loose]);
+      expect(physics.remove(rect), isFalse);
+      physics.update(); // nothing left to pull
+    });
+
+    test('removing one particle tears it; its springs stop pulling', () {
+      final physics = world();
+      final rect = physics.createSoftRect(200, 150, 120, 80);
+      final corner = rect.particleAt(0, 0);
+      expect(physics.remove(corner), isTrue);
+      expect(physics.particles, isNot(contains(corner)));
+      corner.position.setValues(1000, 1000, 0); // far away, but gone
+      final before = positions(rect);
+      for (var i = 0; i < 30; i++) {
+        physics.update();
+      }
+      // Nothing dragged toward it.
+      expectPositions(positions(rect).sublist(1), before.sublist(1));
+      expect((corner.x, corner.y), (1000, 1000)); // and it isn't stepped
+    });
+
+    /// How far [now] is from the shape [rest] made, once the rest shape is
+    /// moved and turned to fit as closely as it can: the leftover distance
+    /// per particle, as a share of the shape's size. `0` = same shape.
+    double shapeError(
+      List<(double, double)> rest,
+      List<Flut5PhysicsParticle> now,
+    ) {
+      final count = rest.length;
+      var restCenterX = 0.0, restCenterY = 0.0, centerX = 0.0, centerY = 0.0;
+      for (var i = 0; i < count; i++) {
+        restCenterX += rest[i].$1 / count;
+        restCenterY += rest[i].$2 / count;
+        centerX += now[i].x / count;
+        centerY += now[i].y / count;
+      }
+      var sine = 0.0, cosine = 0.0, size = 0.0;
+      for (var i = 0; i < count; i++) {
+        final restX = rest[i].$1 - restCenterX;
+        final restY = rest[i].$2 - restCenterY;
+        final nowX = now[i].x - centerX, nowY = now[i].y - centerY;
+        sine += restX * nowY - restY * nowX;
+        cosine += restX * nowX + restY * nowY;
+        size += restX * restX + restY * restY;
+      }
+      final turn = math.atan2(sine, cosine);
+      var error = 0.0;
+      for (var i = 0; i < count; i++) {
+        final restX = rest[i].$1 - restCenterX;
+        final restY = rest[i].$2 - restCenterY;
+        final fitX = restX * math.cos(turn) - restY * math.sin(turn);
+        final fitY = restX * math.sin(turn) + restY * math.cos(turn);
+        final dx = now[i].x - centerX - fitX, dy = now[i].y - centerY - fitY;
+        error += dx * dx + dy * dy;
+      }
+      return math.sqrt(error / size);
+    }
+
+    /// A 10-pointed star outline: tips 70 from the middle, dents 30.
+    List<Flut5Vector> star() => [
+      for (var i = 0; i < 10; i++)
+        Flut5Vector.fromAngle(
+          i * math.pi / 5 - math.pi / 2,
+          i.isEven ? 70 : 30,
+        ),
+    ];
+
+    /// The signed area inside [outline]: positive clockwise on screen.
+    double signedArea(List<Flut5PhysicsParticle> outline) {
+      var doubleArea = 0.0;
+      for (var i = 0; i < outline.length; i++) {
+        final a = outline[i], b = outline[(i + 1) % outline.length];
+        doubleArea += a.x * b.y - b.x * a.y;
+      }
+      return doubleArea / 2;
+    }
+
+    test('createSoftBody: your own particles, springs, areas and outline', () {
+      final physics = world();
+      final body = physics.createSoftBody(
+        200,
+        100,
+        [
+          Flut5Vector(0, -40),
+          Flut5Vector(40, 30),
+          Flut5Vector(-40, 30),
+          Flut5Vector(0, 7),
+        ],
+        springs: [(0, 1), (1, 2), (2, 0), (0, 3), (1, 3), (2, 3)],
+        areas: [
+          [0, 1, 3],
+          [1, 2, 3],
+          [2, 0, 3],
+        ],
+        outline: [0, 1, 2],
+      );
+      expect(physics.softBodies, [body]);
+      expect(physics.particles, body.particles);
+      expect(
+        [for (final p in body.particles) (p.x, p.y)],
+        [(200, 60), (240, 130), (160, 130), (200, 107)],
+      );
+      expect(body.springs.map((s) => (s.a, s.b)).first, (
+        body.particles[0],
+        body.particles[1],
+      ));
+      expect(body.areas, hasLength(3));
+      expect(body.areas.first.particles, [
+        body.particles[0],
+        body.particles[1],
+        body.particles[3],
+      ]);
+      expect(body.outline, body.particles.sublist(0, 3));
+      expect(body.keepShape, isTrue);
+      // Each particle's radius is half the shortest spring.
+      final shortest = body.springs.map((s) => s.restLength).reduce(math.min);
+      expect(body.particles.first.radius, closeTo(shortest / 2, 1e-9));
+    });
+
+    test('createSoftBody rejects a broken structure', () {
+      final physics = world();
+      final points = [
+        Flut5Vector(0, 0),
+        Flut5Vector(10, 0),
+        Flut5Vector(0, 10),
+      ];
+      expect(
+        () => physics.createSoftBody(0, 0, points, springs: [(0, 3)]),
+        throwsRangeError,
+      );
+      expect(
+        () => physics.createSoftBody(0, 0, points, springs: [(1, 1)]),
+        throwsArgumentError,
+      );
+      expect(
+        () => physics.createSoftBody(
+          0,
+          0,
+          points,
+          areas: [
+            [0, 1],
+          ],
+        ),
+        throwsArgumentError,
+      );
+      expect(
+        () => physics.createSoftBody(0, 0, points, outline: [5]),
+        throwsRangeError,
+      );
+      expect(physics.softBodies, isEmpty);
+    });
+
+    test('an area remembers which way it runs', () {
+      final physics = world();
+      final points = [
+        Flut5Vector(0, 0),
+        Flut5Vector(10, 0),
+        Flut5Vector(0, 10),
+      ];
+      final body = physics.createSoftBody(
+        0,
+        0,
+        points,
+        areas: [
+          [0, 1, 2],
+          [0, 2, 1],
+        ],
+      );
+      expect(body.areas.map((a) => a.restArea), [50, -50]);
+    });
+
+    test('createSoftPolygon spreads the extra particles by edge length', () {
+      final physics = world();
+      // A 200 × 50 bar: 6 extra particles, 2.4 for each long side and 0.6
+      // for each short one — the short sides win the rounding.
+      final bar = physics.createSoftPolygon(100, 100, [
+        Flut5Vector(-100, -25),
+        Flut5Vector(100, -25),
+        Flut5Vector(100, 25),
+        Flut5Vector(-100, 25),
+      ], resolution: 10);
+      expectPositions(positions(bar), [
+        (0, 75), (200 / 3, 75), (400 / 3, 75), (200, 75), // top: 2 extra
+        (200, 100), // right side: 1 extra
+        (200, 125), (400 / 3, 125), (200 / 3, 125), (0, 125), // bottom
+        (0, 100), // left side
+      ]);
+      expect(bar.outline, bar.particles);
+      expect(bar.springs, hasLength(20)); // next along, and the one after
+      expect(bar.areas.single.particles, bar.particles); // the whole inside
+      for (final p in bar.particles) {
+        expect(p.radius, closeTo(25 / 2, 1e-9)); // half the shortest gap
+      }
+    });
+
+    test('createSoftPolygon runs the outline clockwise either way', () {
+      final physics = world();
+      final corners = star();
+      final forward = physics.createSoftPolygon(0, 0, corners);
+      final backward = physics.createSoftPolygon(
+        0,
+        0,
+        corners.reversed.toList(),
+      );
+      expect(signedArea(forward.outline), greaterThan(0));
+      expect(signedArea(backward.outline), greaterThan(0));
+      expect(
+        signedArea(backward.outline),
+        closeTo(signedArea(forward.outline), 1e-9),
+      );
+      expect(forward.particles, hasLength(10)); // one per corner by default
+    });
+
+    test('createSoftCircle puts its particles evenly around the circle', () {
+      final blob = world().createSoftCircle(200, 100, 50, resolution: 12);
+      expect(blob.particles, hasLength(12));
+      for (final p in blob.particles) {
+        expect(
+          math.sqrt(math.pow(p.x - 200, 2) + math.pow(p.y - 100, 2)),
+          closeTo(50, 1e-9),
+        );
+      }
+      expect(signedArea(blob.outline), greaterThan(0));
+    });
+
+    test('invalid outlines are rejected', () {
+      final physics = world();
+      Flut5Vector at(double x, double y) => Flut5Vector(x, y);
+      expect(
+        () => physics.createSoftPolygon(0, 0, [at(0, 0), at(10, 0)]),
+        throwsArgumentError,
+      );
+      expect(
+        () => physics.createSoftPolygon(0, 0, [at(0, 0), at(0, 0), at(0, 9)]),
+        throwsArgumentError,
+      );
+      expect(
+        () => physics.createSoftPolygon(0, 0, [at(0, 0), at(5, 0), at(9, 0)]),
+        throwsArgumentError, // no area
+      );
+      expect(
+        () => physics.createSoftPolygon(0, 0, [
+          at(0, 0), at(10, 10), at(10, 0), at(0, 10), // a bow tie
+        ]),
+        throwsArgumentError,
+      );
+      expect(
+        () => physics.createSoftPolygon(0, 0, star(), resolution: 9),
+        throwsArgumentError, // fewer than the 10 corners
+      );
+      expect(() => physics.createSoftCircle(0, 0, 0), throwsArgumentError);
+      expect(
+        () => physics.createSoftCircle(0, 0, 10, resolution: 2),
+        throwsArgumentError,
+      );
+      expect(physics.softBodies, isEmpty);
+    });
+
+    test('a soft star lands, squashes and gets its points back', () {
+      final physics = world(gravity: 0.3)
+        ..windowBoundsCollision()
+        ..windowBoundsRestitution = 0.3;
+      final softStar = physics.createSoftPolygon(
+        200,
+        100,
+        star(),
+        resolution: 40,
+      );
+      final rest = positions(softStar);
+      var worst = 0.0;
+      for (var i = 0; i < 900; i++) {
+        physics.update();
+        worst = math.max(worst, shapeError(rest, softStar.particles));
+      }
+      expect(worst, greaterThan(0.05)); // it really squashed…
+      expect(shapeError(rest, softStar.particles), lessThan(0.04)); // …and back
+      expect(signedArea(softStar.outline), greaterThan(0)); // never inside out
+      final resting = positions(softStar);
+      for (var i = 0; i < 60; i++) {
+        physics.update();
+      }
+      expectPositions(positions(softStar), resting, tolerance: 1e-6);
+    });
+
+    test('without keepShape an outline-only blob slumps like a balloon', () {
+      double restingError({required bool keepShape}) {
+        final physics = world(gravity: 0.3)
+          ..windowBoundsCollision()
+          ..windowBoundsRestitution = 0.3;
+        final blob = physics.createSoftCircle(200, 100, 60)
+          ..keepShape = keepShape;
+        final rest = positions(blob);
+        for (var i = 0; i < 900; i++) {
+          physics.update();
+        }
+        return shapeError(rest, blob.particles);
+      }
+
+      expect(restingError(keepShape: true), lessThan(0.05));
+      expect(restingError(keepShape: false), greaterThan(0.15));
+    });
+
+    test('keepShape holds up even a loose, tall grid', () {
+      final physics = world(gravity: 0.3)
+        ..windowBoundsCollision()
+        ..windowBoundsRestitution = 0.3;
+      final rect = physics.createSoftRect(200, 100, 120, 120, stiffness: 0.1);
+      for (var i = 0; i < 900; i++) {
+        physics.update();
+      }
+      expect(size(rect).$2, greaterThan(0.9 * 120));
+      expect(flippedCells(rect), 0);
+    });
+
+    test('keepShape never moves or turns a body back', () {
+      final physics = world();
+      final blob = physics.createSoftPolygon(200, 150, star(), resolution: 20);
+      // Carry it somewhere else, turned a quarter, without bending it.
+      for (final p in blob.particles) {
+        final offsetX = p.x - 200, offsetY = p.y - 150;
+        p.position.setValues(300 - offsetY, 100 + offsetX, 0);
+      }
+      final moved = positions(blob);
+      for (var i = 0; i < 30; i++) {
+        physics.update();
+      }
+      expectPositions(positions(blob), moved, tolerance: 1e-6);
+    });
+
+    test('clear drops soft bodies too', () {
+      final physics = world();
+      physics.createSoftRect(0, 0, 50, 50);
+      physics.clear();
+      expect(physics.softBodies, isEmpty);
+      expect(physics.particles, isEmpty);
+    });
+  });
 }

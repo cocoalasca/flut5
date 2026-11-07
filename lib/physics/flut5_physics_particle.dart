@@ -1,5 +1,13 @@
+import 'dart:math' as math;
+
+import '../math/flut5_vector.dart';
 import 'engine/flut5_physics_engine.dart';
+import 'flut5_physics_body.dart';
 import 'flut5_physics_rigid_body.dart';
+
+// Soft bodies live in this library so they can mark the particles they are
+// made of (see [Flut5PhysicsParticle.softBody]) without a public setter.
+part 'flut5_physics_soft_body.dart';
 
 /// A disc: a point mass with a [radius]. Moves, turns and collides like any
 /// [Flut5PhysicsRigidBody].
@@ -27,6 +35,13 @@ final class Flut5PhysicsParticle extends Flut5PhysicsRigidBody {
   /// For mass that grows with size, set it from the radius:
   /// `p.mass = p.radius * p.radius`.
   double radius = 0.0;
+
+  Flut5PhysicsSoftBody? _softBody;
+
+  /// The soft body this particle is part of, or `null` for a particle on its
+  /// own. Particles of the same soft body never collide with each other —
+  /// its springs keep them apart.
+  Flut5PhysicsSoftBody? get softBody => _softBody;
 
   /// Integration pass: runs [euler] with the world's
   /// [Flut5PhysicsEngine.gravity], then turns the particle per the world's

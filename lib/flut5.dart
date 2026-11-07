@@ -42,6 +42,7 @@ export 'shape/flut5_fill.dart';
 export 'shape/flut5_2d_primitives.dart';
 export 'math/flut5_vector.dart';
 export 'math/flut5_math.dart';
+export 'math/flut5_intersection.dart';
 export 'math/flut5_trigonometry.dart';
 export 'math/flut5_noise.dart';
 export 'physics/engine/flut5_physics_engine.dart';
@@ -575,6 +576,35 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
   // ── Vector ───────────────────────────────────────────────────────────────
   Flut5Vector createVector([double x = 0.0, double y = 0.0, double z = 0.0]) =>
       flut5.createVector(x, y, z);
+
+  // ── Intersection ─────────────────────────────────────────────────────────
+  Flut5Vector? lineLineIntersection(
+    double x1,
+    double y1,
+    double x2,
+    double y2,
+    double x3,
+    double y3,
+    double x4,
+    double y4,
+  ) => flut5.lineLineIntersection(x1, y1, x2, y2, x3, y3, x4, y4);
+  Flut5Vector? rayLineIntersection(
+    double wallX1,
+    double wallY1,
+    double wallX2,
+    double wallY2,
+    double rayX,
+    double rayY,
+    Flut5Vector rayDirection,
+  ) => flut5.rayLineIntersection(
+    wallX1,
+    wallY1,
+    wallX2,
+    wallY2,
+    rayX,
+    rayY,
+    rayDirection,
+  );
 
   // ── Physics ──────────────────────────────────────────────────────────────
   double springConstant([double? k]) => flut5.springConstant(k);
