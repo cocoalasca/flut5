@@ -607,12 +607,18 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
     rayY,
     rayDirection,
   );
-  Flut5Vector? castRay(
+  List<Flut5Vector> castRay(
     double rayX,
     double rayY,
     Flut5Vector rayDirection,
     Iterable<Flut5LineSegment> walls,
   ) => flut5.castRay(rayX, rayY, rayDirection, walls);
+  Flut5Vector? castRayClosest(
+    double rayX,
+    double rayY,
+    Flut5Vector rayDirection,
+    Iterable<Flut5LineSegment> walls,
+  ) => flut5.castRayClosest(rayX, rayY, rayDirection, walls);
 
   // ── Physics ──────────────────────────────────────────────────────────────
   double springConstant([double? k]) => flut5.springConstant(k);

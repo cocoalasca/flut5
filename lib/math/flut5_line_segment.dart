@@ -1,6 +1,7 @@
 import 'flut5_vector.dart';
 
-/// A straight line between two points — a wall for `castRay`.
+/// A straight line between two points — a wall for `castRay` and
+/// `castRayClosest`.
 ///
 /// Built from four numbers, the same way `line(x1, y1, x2, y2)` takes them,
 /// and stores its ends as [start] and [end] vectors so they can be moved

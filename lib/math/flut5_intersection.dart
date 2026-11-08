@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'flut5_line_segment.dart';
 import 'flut5_vector.dart';
 
@@ -132,13 +134,68 @@ mixin Flut5Intersection {
     );
   }
 
-  /// Casts a ray from ([rayX], [rayY]) along [rayDirection] and returns the
-  /// closest point where it hits any of [walls], or `null` if it hits none.
+  /// Casts a ray from ([rayX], [rayY]) along [rayDirection] and returns
+  /// every point where it hits one of [walls], sorted closest-first. The list
+  /// is empty when it hits nothing.
   ///
   /// Each wall is tested the same way as [rayLineIntersection] — walls
-  /// behind the origin, parallel to the ray, or zero-length are skipped — and
-  /// the hit nearest the origin wins. Only that one hit allocates a vector,
-  /// so casting hundreds of rays per frame stays cheap.
+  /// behind the origin, parallel to the ray, or zero-length are skipped. The
+  /// list has one point per wall hit, so a ray passing exactly through a
+  /// corner where two walls meet gets the same point twice.
+  ///
+  /// Which hits matter is up to the sketch — a bullet that pierces two walls
+  /// would use the first two:
+  ///
+  /// ```dart
+  /// final hits = castRay(x, y, direction, walls);
+  /// for (final hit in hits.take(2)) circle(hit.x, hit.y, 6);
+  /// ```
+  ///
+  /// Every hit costs one vector, so when only the first wall matters (a
+  /// classic raycaster) use [castRayClosest], which allocates just one. The
+  /// distance to a hit is `dist(rayX, rayY, hit.x, hit.y)`. See
+  /// [Flut5Intersection] for the coordinate space.
+  List<Flut5Vector> castRay(
+    double rayX,
+    double rayY,
+    Flut5Vector rayDirection,
+    Iterable<Flut5LineSegment> walls,
+  ) {
+    final directionX = rayDirection.x;
+    final directionY = rayDirection.y;
+    var hitCount = 0;
+    for (final wall in walls) {
+      final distanceAlongRay = _distanceAlongRayToWall(
+        rayX,
+        rayY,
+        directionX,
+        directionY,
+        wall,
+      );
+      if (distanceAlongRay.isFinite) {
+        _insertSortedHitDistance(distanceAlongRay, hitCount);
+        hitCount++;
+      }
+    }
+    return [
+      for (var hitIndex = 0; hitIndex < hitCount; hitIndex++)
+        _pointAlongRay(
+          rayX,
+          rayY,
+          directionX,
+          directionY,
+          _hitDistances[hitIndex],
+        ),
+    ];
+  }
+
+  /// Casts a ray from ([rayX], [rayY]) along [rayDirection] and returns the
+  /// closest point where it hits one of [walls], or `null` if it hits none —
+  /// the first wall the ray reaches, which hides every wall behind it.
+  ///
+  /// Gives the same point as `castRay(...).first`, but only tracks the
+  /// closest distance and allocates a single vector, so it's the one to use
+  /// for casting hundreds of rays per frame:
   ///
   /// ```dart
   /// final walls = [
@@ -147,16 +204,17 @@ mixin Flut5Intersection {
   /// ];
   ///
   /// // in draw():
-  /// for (var angle = 0.0; angle < 360; angle += 1) {
+  /// for (var degree = 0.0; degree < 360; degree += 1) {
+  ///   final angle = radians(degree);
   ///   final direction = Flut5Vector(cos(angle), sin(angle));
-  ///   final hit = castRay(mouseX, mouseY, direction, walls);
+  ///   final hit = castRayClosest(mouseX, mouseY, direction, walls);
   ///   if (hit != null) line(mouseX, mouseY, hit.x, hit.y);
   /// }
   /// ```
   ///
-  /// The distance to the hit is `dist(rayX, rayY, hit.x, hit.y)`. See
-  /// [Flut5Intersection] for the coordinate space.
-  Flut5Vector? castRay(
+  /// Walls are tested the same way as [castRay]. See [Flut5Intersection] for
+  /// the coordinate space.
+  Flut5Vector? castRayClosest(
     double rayX,
     double rayY,
     Flut5Vector rayDirection,
@@ -164,30 +222,86 @@ mixin Flut5Intersection {
   ) {
     final directionX = rayDirection.x;
     final directionY = rayDirection.y;
-    // Every wall is measured along the same direction vector, so the
-    // smallest parameter is also the smallest distance — no square roots.
     var closestDistanceAlongRay = double.infinity;
     for (final wall in walls) {
-      final distanceAlongRay = _crossingParameter(
-        firstX: rayX,
-        firstY: rayY,
-        firstDeltaX: directionX,
-        firstDeltaY: directionY,
-        firstIsRay: true,
-        secondX: wall.start.x,
-        secondY: wall.start.y,
-        secondDeltaX: wall.end.x - wall.start.x,
-        secondDeltaY: wall.end.y - wall.start.y,
+      final distanceAlongRay = _distanceAlongRayToWall(
+        rayX,
+        rayY,
+        directionX,
+        directionY,
+        wall,
       );
       if (distanceAlongRay < closestDistanceAlongRay) {
         closestDistanceAlongRay = distanceAlongRay;
       }
     }
     if (closestDistanceAlongRay.isInfinite) return null;
-    return Flut5Vector(
-      rayX + closestDistanceAlongRay * directionX,
-      rayY + closestDistanceAlongRay * directionY,
+    return _pointAlongRay(
+      rayX,
+      rayY,
+      directionX,
+      directionY,
+      closestDistanceAlongRay,
     );
+  }
+
+  /// How many direction vectors ([directionX], [directionY]) along the ray
+  /// [wall] is crossed, or [double.infinity] if the ray misses it. Every wall
+  /// is measured in the same unit, so comparing these orders hits by
+  /// distance — no square roots. Takes the direction as plain numbers so the
+  /// per-wall loop doesn't re-read the vector each time.
+  // Inlined (with [_crossingParameter]) because it runs once per wall per
+  // ray: without the hint the AOT compiler left the call in and
+  // [castRayClosest] measured ~40% slower (360 rays × 10–50 walls).
+  @pragma('vm:prefer-inline')
+  static double _distanceAlongRayToWall(
+    double rayX,
+    double rayY,
+    double directionX,
+    double directionY,
+    Flut5LineSegment wall,
+  ) => _crossingParameter(
+    firstX: rayX,
+    firstY: rayY,
+    firstDeltaX: directionX,
+    firstDeltaY: directionY,
+    firstIsRay: true,
+    secondX: wall.start.x,
+    secondY: wall.start.y,
+    secondDeltaX: wall.end.x - wall.start.x,
+    secondDeltaY: wall.end.y - wall.start.y,
+  );
+
+  /// The point [distanceAlongRay] direction vectors from the ray's origin.
+  static Flut5Vector _pointAlongRay(
+    double rayX,
+    double rayY,
+    double directionX,
+    double directionY,
+    double distanceAlongRay,
+  ) => Flut5Vector(
+    rayX + distanceAlongRay * directionX,
+    rayY + distanceAlongRay * directionY,
+  );
+
+  /// Hit distances of the [castRay] in progress, kept sorted as they arrive.
+  /// Reused between calls so collecting them doesn't allocate; doubles in
+  /// size whenever a ray hits more walls than it holds.
+  Float64List _hitDistances = Float64List(16);
+
+  /// Inserts [distanceAlongRay] into the first [hitCount] slots of
+  /// [_hitDistances], keeping them in ascending order. Rays hit a handful of
+  /// walls, so shifting larger entries up is cheaper than sorting at the end.
+  void _insertSortedHitDistance(double distanceAlongRay, int hitCount) {
+    if (hitCount == _hitDistances.length) {
+      _hitDistances = Float64List(hitCount * 2)..setAll(0, _hitDistances);
+    }
+    var slot = hitCount;
+    while (slot > 0 && _hitDistances[slot - 1] > distanceAlongRay) {
+      _hitDistances[slot] = _hitDistances[slot - 1];
+      slot--;
+    }
+    _hitDistances[slot] = distanceAlongRay;
   }
 
   /// Finds where `first + t·firstDelta` crosses `second + u·secondDelta` and
@@ -196,7 +310,9 @@ mixin Flut5Intersection {
   ///
   /// `u` must lie in 0‥1 (the second line is always a segment); `t` must lie
   /// in 0‥1 for a segment, or just be ≥ 0 when [firstIsRay]. Returning a plain
-  /// number (not a vector) lets [castRay] compare walls without allocating.
+  /// number (not a vector) lets [castRay] and [castRayClosest] compare hits
+  /// before allocating any.
+  @pragma('vm:prefer-inline')
   static double _crossingParameter({
     required double firstX,
     required double firstY,
