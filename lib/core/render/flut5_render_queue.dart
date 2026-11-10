@@ -62,12 +62,18 @@ export 'items/flut5_transform_render_item.dart';
 ///   with one [Canvas.drawPath] per aspect (fill / stroke).
 ///
 /// Auto-batching preserves draw order: any non-batchable operation (path,
-/// text, background, a shape with a different paint, or a primitive of
-/// a different kind) flushes the pending batches first. So does an outlined
-/// shape drawn over one already in the batch, when fill and stroke differ in
-/// colour — its fill has to cover the earlier outline — and a translucent
-/// shape that comes within a few pixels of one already in the batch, which
-/// one by one would blend over it twice.
+/// text, background, or a primitive of a different kind) flushes the pending
+/// batches first. So does an outlined shape drawn over one already in the
+/// batch, when fill and stroke differ in colour — its fill has to cover the
+/// earlier outline — and a translucent shape that comes within a few pixels
+/// of one already in the batch, which one by one would blend over it twice.
+///
+/// A shape with a different paint closes the batch too, unless both are
+/// plain opaque shapes with straight edges or arcs. Then the batch stays
+/// open behind a new one, and later shapes of its colour go back into it
+/// while they keep clear of everything drawn in between — where the order
+/// they are drawn in cannot show — so a sketch of a few colours draws in a
+/// few calls however its colours alternate.
 ///
 /// Translation, rotation and uniform scale are folded into compatible geometry
 /// at append time, including across push/pop scopes. Uniform scale adjusts
@@ -106,6 +112,86 @@ class Flut5RenderQueue {
   Paint? _stacksFill;
   Paint? _stacksStroke;
   bool _stacksResult = false;
+
+  // ── Open colour batches ───────────────────────────────────────────────
+  //
+  // A sketch that gives every particle one of a few colours changes paint
+  // with nearly every shape, and closing the batch each time leaves one draw
+  // call per shape. So the batch being left stays open instead, and a later
+  // shape of its colour goes back into it — as long as that shape keeps
+  // clear of everything drawn since, in the batches opened after it. Two
+  // shapes that share no pixel look the same in either order, so the frame
+  // is unchanged; one that does touch a later shape opens a new batch on
+  // top, exactly as before.
+  //
+  // [_openBatches] holds the batches left open, oldest first, and the
+  // `_pendingShape*` fields above are the newest. All of them are plain:
+  // opaque, and with nothing to keep off within the batch (no stacking
+  // outline, no backwards winding). Anything else closes them all first.
+  //
+  // Going back into an older batch merges a shape with shapes it did not
+  // follow directly, which it would not have shared a path with before.
+  // That is invisible for straight-edged shapes and arcs: on Impeller they
+  // rasterize the same in a path of their own as in one shared with others
+  // (measured identical). Circles, ellipses and rounded rects do not — in a
+  // path of their own the canvas draws them with its renderer for that
+  // shape, whose edge anti-aliasing differs from a path's by up to a
+  // quarter of full scale on edge pixels. So unless
+  // [_reordersShapesWithOwnRenderer] is on, they batch exactly as before:
+  // with the shapes of their paint drawn right before and after them, and a
+  // batch holding one closes at the next change of paint.
+  final List<PathRenderItem> _openBatches = [];
+
+  /// Whether circles, ellipses and rounded rects take part in the open
+  /// colour batches too. That would give every one of them in a sketch of
+  /// many colours the path-rendered edges they already have in a sketch of
+  /// one colour, in place of the canvas's own circle and rounded-rect edges
+  /// they keep while each is alone in its batch.
+  static const bool _reordersShapesWithOwnRenderer = false;
+
+  /// Where in [_openBatches] the newest batch drawing with a paint is, by
+  /// the fill if it has one, else the stroke.
+  final Map<Paint, int> _openBatchOfPaint = Map.identity();
+
+  /// The boxes of every shape in an open batch after the first, each grown
+  /// as in [_keepsApart] and filed under its batch's place among the open
+  /// ones. The first batch needs none: nothing is ever drawn before it.
+  final _ShapeOverlapIndex _laterShapeBoxes = _ShapeOverlapIndex();
+
+  /// Boxes of the newest batch's shapes, four doubles each, not yet filed
+  /// in [_laterShapeBoxes]. Filing waits for the next change of colour, so
+  /// a long run of one colour pays only for writing them down.
+  Float64List _newestShapeBoxes = Float64List(64);
+  int _newestShapeBoxCount = 0;
+
+  /// Whether the newest batch may stay open when another colour starts: it
+  /// is plain, every shape in it has its box on record, and all of them
+  /// merge exactly (see [_beginShape]).
+  bool _newestStaysOpen = false;
+
+  /// How many batches stay open behind the newest. One more closes them
+  /// all, and the count starts over.
+  static const int _mostOpenBatches = 256;
+
+  // A sketch whose every shape has a colour of its own gains nothing from
+  // open batches and pays for keeping them (measured: a third more time
+  // queueing each shape). So once [_fruitlessOpeningsLimit] batches have
+  // been opened in a row without a shape ever going back into one — as many
+  // as stay open, so a palette that fits never gets there — paint changes
+  // close the batch, as they used to, for the next
+  // [_restingPaintChangeCount] changes. The counts carry over from frame to
+  // frame: a sketch draws much the same every frame.
+  int _fruitlessOpenings = 0;
+  int _restingPaintChanges = 0;
+  static const int _fruitlessOpeningsLimit = _mostOpenBatches;
+  static const int _restingPaintChangeCount = 2048;
+
+  /// Whether shapes may be drawn in another order than the sketch's where
+  /// they keep clear of each other. Not under a shadow, on a canvas carrying
+  /// a materialized scale or in a pixelate scope, for the reasons given in
+  /// [_batchesApart].
+  bool get _mayReorderShapes =>
+      _activeShadow == null && !_canvasLinear && _pixelateScopes == 0;
 
   // ── Pending image atlas (same-source blits merged via drawRawAtlas) ───
   //
@@ -151,6 +237,50 @@ class Flut5RenderQueue {
     final used = _atlasCount * 4;
     _atlasTransforms = Float32List(newLen)..setRange(0, used, _atlasTransforms);
     _atlasRects = Float32List(newLen)..setRange(0, used, _atlasRects);
+  }
+
+  // ── Batch paths, reused across frames ─────────────────────────────────
+  //
+  // Every shape batch draws from a [Path] of its own, and a sketch that
+  // changes colour with every shape opens thousands of batches a frame. A
+  // new path costs a native allocation and a finalizer; one handed back by
+  // [clear] and reset costs a single call. The canvas copies a path's
+  // outline when it is drawn, so a frame already recorded — on screen or in
+  // a trail capture still rasterizing — is untouched by the reuse.
+  final List<Path> _batchPaths = [];
+  int _batchPathsInUse = 0;
+
+  // The most paths one frame used since the last trim, so a single busy
+  // frame doesn't keep its paths alive for the rest of the sketch.
+  int _mostBatchPathsInUse = 0;
+  int _framesSincePathTrim = 0;
+  static const int _framesBetweenPathTrims = 120;
+
+  /// An empty path for a batch or a shape drawn on its own, kept until
+  /// [clear]. Only for paths this queue fills itself and hands to an item:
+  /// nothing else may hold on to one past the frame.
+  Path _takeBatchPath() {
+    if (_batchPathsInUse < _batchPaths.length) {
+      return _batchPaths[_batchPathsInUse++]..reset();
+    }
+    final path = Path();
+    _batchPaths.add(path);
+    _batchPathsInUse++;
+    return path;
+  }
+
+  /// Hands every path taken this frame back for the next one.
+  void _releaseBatchPaths() {
+    if (_batchPathsInUse > _mostBatchPathsInUse) {
+      _mostBatchPathsInUse = _batchPathsInUse;
+    }
+    _batchPathsInUse = 0;
+    if (++_framesSincePathTrim < _framesBetweenPathTrims) return;
+    if (_batchPaths.length > _mostBatchPathsInUse) {
+      _batchPaths.length = _mostBatchPathsInUse;
+    }
+    _mostBatchPathsInUse = 0;
+    _framesSincePathTrim = 0;
   }
 
   // ── Polygon scratch (triangle/quad appended without list allocations) ─
@@ -259,10 +389,16 @@ class Flut5RenderQueue {
     Paint? stroke, {
     Rect? localBounds,
     bool oriented = true,
+    bool mergesExactly = true,
   }) {
     if (fill == null && stroke == null) return;
     stroke = _foldStroke(stroke);
-    final bounds = _wantsBox(fill, stroke, oriented)
+    // A box that has to be measured is only worth it when the batch can't
+    // do without; one handed over is free.
+    final wantsBox = localBounds != null
+        ? _wantsBox(fill, stroke, oriented)
+        : _needsBox(fill, stroke, oriented);
+    final bounds = wantsBox
         ? _fold.bounds(localBounds ?? path.getBounds())
         : null;
     _fold.writeMatrix(_transformMatrix);
@@ -271,6 +407,7 @@ class Flut5RenderQueue {
       stroke,
       bounds,
       oriented: oriented,
+      mergesExactly: mergesExactly,
     ).addPath(path, Offset.zero, matrix4: _transformMatrix);
     _pendingShapeHasContent = true;
   }
@@ -960,6 +1097,9 @@ class Flut5RenderQueue {
       // drawn across it has to split off to cover it.
       if (_stacks(_pendingShapeFill, paint)) {
         _pendingShapeBoxes.add(x1, y1, x2, y2);
+      } else if (_openBatches.isNotEmpty) {
+        _keepsApart(_pendingShapeFill, paint); // sets the pad for this pair
+        _keepNewestShapeBox(x1, y1, x2, y2);
       }
       return;
     }
@@ -1022,6 +1162,7 @@ class Flut5RenderQueue {
           stroke,
           localBounds: rrect.outerRect,
           oriented: rrect.width >= 0 && rrect.height >= 0,
+          mergesExactly: false,
         );
       }
       return;
@@ -1067,6 +1208,7 @@ class Flut5RenderQueue {
         stroke,
         rrect.outerRect,
         oriented: rrect.width >= 0 && rrect.height >= 0,
+        mergesExactly: false,
       ).addRRect(rrect);
     } else {
       if (stroke == null) rect = _clockwise(rect);
@@ -1093,7 +1235,12 @@ class Flut5RenderQueue {
         center: placed,
         radius: radius * _fold.scale,
       );
-      _beginShape(fill, _foldStroke(stroke), oval).addOval(oval);
+      _beginShape(
+        fill,
+        _foldStroke(stroke),
+        oval,
+        mergesExactly: false,
+      ).addOval(oval);
       _pendingShapeHasContent = true;
       return;
     }
@@ -1130,7 +1277,7 @@ class Flut5RenderQueue {
       return;
     }
     final oval = Rect.fromCircle(center: center, radius: radius);
-    _beginShape(fill, stroke, oval).addOval(oval);
+    _beginShape(fill, stroke, oval, mergesExactly: false).addOval(oval);
     _pendingShapeHasContent = true;
   }
 
@@ -1148,6 +1295,7 @@ class Flut5RenderQueue {
         stroke,
         localBounds: rect,
         oriented: !_backwards(rect),
+        mergesExactly: false,
       );
       return;
     }
@@ -1172,7 +1320,13 @@ class Flut5RenderQueue {
       return;
     }
     if (stroke == null) rect = _clockwise(rect);
-    _beginShape(fill, stroke, rect, oriented: !_backwards(rect)).addOval(rect);
+    _beginShape(
+      fill,
+      stroke,
+      rect,
+      oriented: !_backwards(rect),
+      mergesExactly: false,
+    ).addOval(rect);
     _pendingShapeHasContent = true;
   }
 
@@ -1318,7 +1472,7 @@ class Flut5RenderQueue {
     final pending = _beginShape(
       fill,
       stroke,
-      _wantsBox(fill, stroke, oriented) ? path.getBounds().shift(off) : null,
+      _needsBox(fill, stroke, oriented) ? path.getBounds().shift(off) : null,
       oriented: oriented,
     );
     pending.addPath(path, off);
@@ -1654,7 +1808,7 @@ class Flut5RenderQueue {
       return;
     }
     if (alone) {
-      final p = Path();
+      final p = _takeBatchPath();
       _addPolyTo(p, n);
       final masked = _maskBlurredFill(fill, stroke);
       _addItem(
@@ -1769,6 +1923,9 @@ class Flut5RenderQueue {
   /// Read-only view over finalized items. Used by `endContainer()` to walk
   /// the queue and compute bounding boxes from already-queued geometry.
   /// Excludes pending batches — call [flushPending] first if needed.
+  ///
+  /// The items are this frame's: [clear] takes the batches' paths back to
+  /// draw the next frame with, so an item must not be drawn after it.
   List<Flut5RenderItem> get items => List.unmodifiable(_items);
 
   /// Inserts [item] at [index] in the finalized items list. Used by
@@ -2151,9 +2308,10 @@ class Flut5RenderQueue {
   /// Uses [List.clear] which resets the length to zero while keeping
   /// the backing store allocated, avoiding re-growth on subsequent frames.
   /// The point, line and image-atlas [Float32List] backing buffers are also
-  /// kept alive.
+  /// kept alive, and the batches' paths are kept for the next frame to reuse.
   void clear() {
     _items.clear();
+    _releaseBatchPaths();
     _pointCount = 0;
     _pendingPointPaint = null;
     _pendingPointShadow = null;
@@ -2167,6 +2325,11 @@ class Flut5RenderQueue {
     _pendingShapeShadow = null;
     _pendingShapeBoxes.clear();
     _pendingShapeTracked = false;
+    _openBatches.clear();
+    _openBatchOfPaint.clear();
+    _laterShapeBoxes.clear();
+    _newestShapeBoxCount = 0;
+    _newestStaysOpen = false;
     // Atlas run: drop the sprites but keep the Float32List backing buffers,
     // same bargain as the point/line buffers above.
     _atlasCount = 0;
@@ -2274,13 +2437,26 @@ class Flut5RenderQueue {
     return _apartResult;
   }
 
-  /// True when [_beginShape] will read the box of a shape painted with
-  /// [fill]/[stroke], so callers for whom the box is not free can skip it.
-  bool _wantsBox(Paint? fill, Paint? stroke, bool oriented) =>
+  /// True when [_beginShape] has to read the box of a shape painted with
+  /// [fill]/[stroke] to batch it correctly.
+  bool _needsBox(Paint? fill, Paint? stroke, bool oriented) =>
       _pendingShapeTracked ||
       (fill != null && !oriented) ||
       _stacks(fill, stroke) ||
       _keepsApart(fill, stroke);
+
+  /// True when [_beginShape] will read the box of a shape painted with
+  /// [fill]/[stroke], so callers that would have to work it out can skip
+  /// it otherwise. Besides [_needsBox], that is whenever several batches
+  /// are open, or this shape's change of paint may open another.
+  bool _wantsBox(Paint? fill, Paint? stroke, bool oriented) =>
+      _needsBox(fill, stroke, oriented) ||
+      _openBatches.isNotEmpty ||
+      (_pendingShapePath != null &&
+          _newestStaysOpen &&
+          _restingPaintChanges == 0 &&
+          (!identical(fill, _pendingShapeFill) ||
+              !identical(stroke, _pendingShapeStroke)));
 
   /// Opens (or continues) the shape batch for [fill]/[stroke] and returns its
   /// path. Besides a change of paint, two things close the open batch, both
@@ -2300,11 +2476,21 @@ class Flut5RenderQueue {
   ///
   /// The unstroked box is enough: the part of an earlier outline that reaches
   /// into a shape it merely touches lies under that shape's own outline.
+  ///
+  /// [mergesExactly] is whether the shape rasterizes the same in a path
+  /// shared with other shapes as in a path of its own — true of everything
+  /// but circles, ellipses and rounded rects. Only such shapes go back into
+  /// an older open batch, or share a batch that stays open; see the notes
+  /// on [_openBatches].
+  ///
+  /// A change of paint does not always open a new batch: the path returned
+  /// may be an older open batch's.
   Path _beginShape(
     Paint? fill,
     Paint? stroke,
     Rect? bounds, {
     bool oriented = true,
+    bool mergesExactly = true,
   }) {
     final stacks = _stacks(fill, stroke);
     final unwound = fill != null && !oriented;
@@ -2320,11 +2506,23 @@ class Flut5RenderQueue {
         math.max(b.top, b.bottom) + _apartPad,
       );
     }
+    // Nothing in its own batch that this shape has to be kept off.
+    final plain = !stacks && !unwound && !apart;
+    final reorders = mergesExactly || _reordersShapesWithOwnRenderer;
     if (_pendingShapePath != null) {
       final bool split;
       if (!identical(_pendingShapeFill, fill) ||
           !identical(_pendingShapeStroke, stroke)) {
-        split = true;
+        // Another colour: the shape goes back into an older open batch, or
+        // the newest batch is left open or closed to make way for a new one.
+        final olderBatch = _changeColourBatch(
+          fill,
+          stroke,
+          bounds,
+          plain && reorders,
+        );
+        if (olderBatch != null) return olderBatch;
+        split = false;
       } else if (_pendingShapeTracked) {
         // A clockwise shape in a non-stacking batch only has the unwound
         // shapes to avoid; everything else has every shape to avoid.
@@ -2343,7 +2541,15 @@ class Flut5RenderQueue {
       if (split) _flushShapes();
     }
     if (_pendingShapePath == null) {
-      _pendingShapeTracked = stacks || unwound || apart;
+      _pendingShapeTracked = !plain;
+      // The first open batch needs no boxes; a later one needs every one.
+      _newestStaysOpen =
+          plain &&
+          reorders &&
+          _mayReorderShapes &&
+          (_openBatches.isEmpty || bounds != null);
+    } else if (!reorders) {
+      _newestStaysOpen = false;
     }
     if (_pendingShapeTracked) {
       _pendingShapeBoxes.add(
@@ -2353,17 +2559,158 @@ class Flut5RenderQueue {
         bounds.bottom,
         marked: unwound,
       );
+    } else if (_openBatches.isNotEmpty) {
+      if (bounds != null) {
+        _keepNewestShapeBox(
+          bounds.left,
+          bounds.top,
+          bounds.right,
+          bounds.bottom,
+        );
+      } else {
+        _newestStaysOpen = false;
+      }
     }
     _flushPoints();
     _flushLines();
     _flushImages();
-    final path = _pendingShapePath ??= Path();
+    final path = _pendingShapePath ??= _takeBatchPath();
     _pendingShapeFill = fill;
     _pendingShapeStroke = stroke;
     // Rides along on the batch — setShadowState flushes on change, so an open
     // batch always matches the current shadow.
     _pendingShapeShadow = _activeShadow;
     return path;
+  }
+
+  /// Makes way for a shape whose paints are not the newest batch's — see
+  /// the notes on [_openBatches].
+  ///
+  /// Returns the path of the older open batch the shape goes back into,
+  /// when one draws with its paints and the shape keeps clear of everything
+  /// in the batches opened after that one. Otherwise returns `null` with the
+  /// newest batch either left open, when it can be, or closed along with
+  /// every other open batch — so the caller opens a new one.
+  ///
+  /// [bounds] is the shape's box and [reorders] whether the shape may be
+  /// drawn out of order at all: it has nothing to keep off in its own batch
+  /// and merges exactly. A shape that may not, or has no box, closes every
+  /// open batch.
+  Path? _changeColourBatch(
+    Paint? fill,
+    Paint? stroke,
+    Rect? bounds,
+    bool reorders,
+  ) {
+    if (_restingPaintChanges > 0) {
+      _restingPaintChanges--;
+      _flushShapes();
+      return null;
+    }
+    if (!reorders || bounds == null || !_newestStaysOpen) {
+      _flushShapes();
+      return null;
+    }
+
+    // The newest batch's place among the open ones, once it joins them.
+    final newest = _openBatches.length;
+    _fileNewestShapeBoxes(newest);
+
+    // [_keepsApart] has just set the pad for these paints.
+    final pad = _apartPad;
+    final left = math.min(bounds.left, bounds.right) - pad;
+    final top = math.min(bounds.top, bounds.bottom) - pad;
+    final right = math.max(bounds.left, bounds.right) + pad;
+    final bottom = math.max(bounds.top, bounds.bottom) + pad;
+
+    final older = _openBatchOfPaint[fill ?? stroke!];
+    if (older != null) {
+      final batch = _openBatches[older];
+      if (identical(batch.fillPaint, fill) &&
+          identical(batch.strokePaint, stroke) &&
+          !_laterShapeBoxes.overlaps(
+            left,
+            top,
+            right,
+            bottom,
+            laterThan: older,
+          )) {
+        if (older > 0) {
+          _laterShapeBoxes.add(left, top, right, bottom, batch: older);
+        }
+        _fruitlessOpenings = 0;
+        return batch.path;
+      }
+    }
+
+    if (++_fruitlessOpenings > _fruitlessOpeningsLimit) {
+      _fruitlessOpenings = 0;
+      _restingPaintChanges = _restingPaintChangeCount;
+      _flushShapes();
+      return null;
+    }
+    if (newest + 1 >= _mostOpenBatches) {
+      _flushShapes();
+      return null;
+    }
+
+    // Leave the newest batch open, behind the one about to be opened.
+    _openBatchOfPaint[_pendingShapeFill ?? _pendingShapeStroke!] = newest;
+    _openBatches.add(
+      PathRenderItem(
+        _pendingShapePath!,
+        _pendingShapeFill,
+        _pendingShapeStroke,
+      ),
+    );
+    _pendingShapePath = null;
+    _pendingShapeFill = null;
+    _pendingShapeStroke = null;
+    _pendingShapeHasContent = false;
+    return null;
+  }
+
+  /// Writes down the box of a shape just added to the newest batch, grown
+  /// by the pad [_keepsApart] last worked out — the batch's own paints.
+  void _keepNewestShapeBox(double x1, double y1, double x2, double y2) {
+    final offset = _newestShapeBoxCount * 4;
+    if (offset == _newestShapeBoxes.length) {
+      _newestShapeBoxes = Float64List(offset * 2)
+        ..setRange(0, offset, _newestShapeBoxes);
+    }
+    final pad = _apartPad;
+    final boxes = _newestShapeBoxes;
+    boxes[offset] = math.min(x1, x2) - pad;
+    boxes[offset + 1] = math.min(y1, y2) - pad;
+    boxes[offset + 2] = math.max(x1, x2) + pad;
+    boxes[offset + 3] = math.max(y1, y2) + pad;
+    _newestShapeBoxCount++;
+  }
+
+  /// Files the boxes written down for the newest batch in
+  /// [_laterShapeBoxes], under [batch] — its place among the open batches.
+  void _fileNewestShapeBoxes(int batch) {
+    final boxes = _newestShapeBoxes;
+    for (int o = 0, end = _newestShapeBoxCount * 4; o < end; o += 4) {
+      _laterShapeBoxes.add(
+        boxes[o],
+        boxes[o + 1],
+        boxes[o + 2],
+        boxes[o + 3],
+        batch: batch,
+      );
+    }
+    _newestShapeBoxCount = 0;
+  }
+
+  /// Queues every batch left open behind the newest, oldest first.
+  void _closeOpenBatches() {
+    _newestShapeBoxCount = 0;
+    if (_openBatches.isEmpty) return;
+    _items.addAll(_openBatches);
+    _openBatches.clear();
+    _openBatchOfPaint.clear();
+    _laterShapeBoxes.clear();
   }
 
   void _flushPoints() {
@@ -2403,8 +2750,10 @@ class Flut5RenderQueue {
   }
 
   void _flushShapes() {
+    _closeOpenBatches();
     _pendingShapeBoxes.clear();
     _pendingShapeTracked = false;
+    _newestStaysOpen = false;
     if (!_pendingShapeHasContent) {
       _pendingShapePath = null;
       _pendingShapeFill = null;
@@ -2501,6 +2850,9 @@ class _ShapeOverlapIndex {
   Int32List _next = Int32List(_scanLimit);
   // Per box: 1 when added as `marked`, for queries that only avoid those.
   Uint8List _marks = Uint8List(_scanLimit);
+  // Per box: the `batch` it was added under, for queries that only avoid
+  // the boxes of later batches.
+  Int32List _batches = Int32List(_scanLimit);
   // Slot → newest box filed there, -1 when empty. Only the first `_mask + 1`
   // slots are live; the list keeps its largest size across batches so a
   // small batch never pays to reset a big batch's table.
@@ -2532,24 +2884,27 @@ class _ShapeOverlapIndex {
 
   int _slot(int cx, int cy) => ((cx * 73856093) ^ (cy * 19349663)) & _mask;
 
-  /// Whether the box lands on one already added — on any of them, or with
-  /// [markedOnly] just on those added as `marked`.
+  /// Whether the box lands on one already added — on any of them, with
+  /// [markedOnly] just on those added as `marked`, and with [laterThan] just
+  /// on those added under a `batch` after that one.
   bool overlaps(
     double x1,
     double y1,
     double x2,
     double y2, {
     bool markedOnly = false,
+    int laterThan = -1,
   }) {
     if (_undecidable) return true;
     if (_count == 0) return false;
     final l = math.min(x1, x2), r = math.max(x1, x2);
     final t = math.min(y1, y2), b = math.max(y1, y2);
     if (!_hashable(l, t, r, b)) return true;
-    final boxes = _boxes, marks = _marks;
+    final boxes = _boxes, marks = _marks, batches = _batches;
     if (_cellW == 0) {
       for (int o = 0, end = _count * 4; o < end; o += 4) {
         if (markedOnly && marks[o >> 2] == 0) continue;
+        if (batches[o >> 2] <= laterThan) continue;
         if (l < boxes[o + 2] &&
             boxes[o] < r &&
             t < boxes[o + 3] &&
@@ -2571,6 +2926,7 @@ class _ShapeOverlapIndex {
         for (int i = heads[_slot(cx, cy)]; i >= 0; i = next[i]) {
           if (++tests > _maxTests) return true;
           if (markedOnly && marks[i] == 0) continue;
+          if (batches[i] <= laterThan) continue;
           final o = i * 4;
           if (l < boxes[o + 2] &&
               boxes[o] < r &&
@@ -2584,7 +2940,14 @@ class _ShapeOverlapIndex {
     return false;
   }
 
-  void add(double x1, double y1, double x2, double y2, {bool marked = false}) {
+  void add(
+    double x1,
+    double y1,
+    double x2,
+    double y2, {
+    bool marked = false,
+    int batch = 0,
+  }) {
     final l = math.min(x1, x2), r = math.max(x1, x2);
     final t = math.min(y1, y2), b = math.max(y1, y2);
     if (!_hashable(l, t, r, b)) {
@@ -2595,8 +2958,10 @@ class _ShapeOverlapIndex {
       _boxes = Float64List(_count * 8)..setRange(0, _count * 4, _boxes);
       _next = Int32List(_count * 2)..setRange(0, _count, _next);
       _marks = Uint8List(_count * 2)..setRange(0, _count, _marks);
+      _batches = Int32List(_count * 2)..setRange(0, _count, _batches);
     }
     _marks[_count] = marked ? 1 : 0;
+    _batches[_count] = batch;
     final o = _count * 4;
     _boxes[o] = l;
     _boxes[o + 1] = t;

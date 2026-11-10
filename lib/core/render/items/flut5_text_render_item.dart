@@ -123,11 +123,12 @@ class TextRenderItem({
       shadowSpec.paintText(
         canvas,
         cachedShadow,
+        // At the raster's own pixel size, so no texel is resampled.
         Rect.fromLTWH(
           sdx - cachedShadow.leftPad,
           y,
-          cachedShadow.drawWidth,
-          cachedShadow.height,
+          cachedShadow.blitWidth,
+          cachedShadow.blitHeight,
         ),
       );
     }
@@ -158,6 +159,15 @@ class TextRenderItem({
         cachedStroke.drawWidth,
         cachedStroke.height,
       );
+      // The raster is drawn at its own pixel size, so no texel is
+      // resampled: a fraction of a pixel past [dst], which still bounds the
+      // layer and the gradient.
+      final blit = Rect.fromLTWH(
+        dst.left,
+        dst.top,
+        cachedStroke.blitWidth,
+        cachedStroke.blitHeight,
+      );
 
       if (strokePaint!.shader != null || strokeGradient != null) {
         _layerPaint
@@ -169,7 +179,7 @@ class TextRenderItem({
         canvas.drawImageRect(
           cachedStroke.image,
           cachedStroke.srcRect,
-          dst,
+          blit,
           _maskPaint,
         );
         if (strokeGradient != null) {
@@ -198,7 +208,7 @@ class TextRenderItem({
         canvas.drawImageRect(
           cachedStroke.image,
           cachedStroke.srcRect,
-          dst,
+          blit,
           _strokeTint.of(strokePaint!, glyphQuality),
         );
       }
@@ -231,6 +241,15 @@ class TextRenderItem({
         cachedFill.drawWidth,
         cachedFill.height,
       );
+      // The raster is drawn at its own pixel size, so no texel is
+      // resampled: a fraction of a pixel past [dst], which still bounds the
+      // layer and the gradient.
+      final blit = Rect.fromLTWH(
+        dst.left,
+        dst.top,
+        cachedFill.blitWidth,
+        cachedFill.blitHeight,
+      );
 
       if (fillPaint!.shader != null || fillGradient != null) {
         _layerPaint
@@ -242,7 +261,7 @@ class TextRenderItem({
         canvas.drawImageRect(
           cachedFill.image,
           cachedFill.srcRect,
-          dst,
+          blit,
           _maskPaint,
         );
         if (fillGradient != null) {
@@ -271,7 +290,7 @@ class TextRenderItem({
         canvas.drawImageRect(
           cachedFill.image,
           cachedFill.srcRect,
-          dst,
+          blit,
           _fillTint.of(fillPaint!, glyphQuality),
         );
       }

@@ -1,3 +1,6 @@
+import 'dart:ui' as ui;
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flut5/flut5.dart';
@@ -88,13 +91,65 @@ void main() {
     _measure();
     expect(cache.debugEntryCounts.values, everyElement(greaterThan(0)));
     cache.finishFrame(); // Finish the frame that used these entries.
+    // A layout only lasts the full timeout once a second frame has asked
+    // for it (see the trial tests below) — which makes its last use one
+    // frame later than everything else's.
+    _layout();
     _unusedFrames(599);
     expect(cache.debugEntryCounts.values, everyElement(greaterThan(0)));
     expect(texture.image.debugDisposed, isFalse);
     _unusedFrames(1);
-    expect(cache.debugEntryCounts.values, everyElement(0));
+    final counts = cache.debugEntryCounts;
+    expect(counts.remove('layouts'), 1);
+    expect(counts.values, everyElement(0));
     expect(cache.cacheBytes, 0);
     expect(texture.image.debugDisposed, isTrue);
+    _unusedFrames(1);
+    expect(cache.layoutCacheLength, 0);
+  });
+
+  test('a layout no later frame asks for is dropped after a short trial', () {
+    _layout();
+    _unusedFrames(7);
+    expect(cache.layoutCacheLength, 1);
+    _unusedFrames(1);
+    expect(cache.layoutCacheLength, 0);
+  });
+
+  test('a layout asked for again in a later frame outlives its trial', () {
+    final layout = _layout();
+    expect(_layout(), same(layout)); // same frame: still on trial
+    cache.finishFrame();
+    expect(_layout(), same(layout));
+    cache.finishFrame();
+    _unusedFrames(100);
+    expect(_layout(), same(layout));
+  });
+
+  test('strings that change every frame leave only a few layouts', () {
+    final warnings = <String>[];
+    final engine = Flut5Engine()..textSize(16);
+    for (var frame = 0; frame < 1500; frame++) {
+      engine.text('fps ${60 - frame % 7}.${frame % 10}  frame $frame', 10, 10);
+      engine.text('mouse ${frame * 3 % 800}, ${frame * 7 % 600}', 10, 30);
+      engine.text('time ${(frame / 60).toStringAsFixed(2)} s', 10, 50);
+      // A caption that stays keeps its layout throughout.
+      engine.text('Score', 10, 70);
+      final recorder = ui.PictureRecorder();
+      engine.renderQueue.execute(Canvas(recorder));
+      recorder.endRecording().dispose();
+      engine.renderQueue.clear();
+      cache.finishFrame();
+      expect(cache.layoutCacheLength, lessThanOrEqualTo(3 * 8 + 1));
+    }
+    final print = debugPrint;
+    debugPrint = (String? message, {int? wrapWidth}) {
+      warnings.add(message ?? '');
+    };
+    Flut5Console.flush();
+    debugPrint = print;
+    expect(cache.maxLayoutCacheSize, 1024);
+    expect(warnings.where((w) => w.contains('layout cache')), isEmpty);
   });
 
   test('texture and layout hits refresh their individual lifetimes', () {

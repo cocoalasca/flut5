@@ -8,8 +8,8 @@ class Flut5ExpiringCache<K, V>(
   final int Function() currentFrame, {
   final void Function(V)? onExpire,
 }) extends MapBase<K, V> {
-  final _entries = HashMap<K, _Entry<K, V>>();
-  final _oldestFirst = LinkedList<_Entry<K, V>>();
+  final _entries = HashMap<K, Flut5ExpiringEntry<K, V>>();
+  final _oldestFirst = LinkedList<Flut5ExpiringEntry<K, V>>();
 
   @override
   V? operator [](Object? key) {
@@ -19,13 +19,25 @@ class Flut5ExpiringCache<K, V>(
     return entry.value;
   }
 
-  void _touch(_Entry<K, V> entry) {
+  void _touch(Flut5ExpiringEntry<K, V> entry) {
     final frame = currentFrame();
     if (entry.lastUsedFrame == frame) return;
     entry.lastUsedFrame = frame;
     entry.unlink();
     _oldestFirst.add(entry);
   }
+
+  /// The value under [key] without counting as a use: its age is left alone.
+  V? peek(Object? key) => _entries[key]?.value;
+
+  /// The entry holding [key], for [touch] — a caller that keeps hold of a
+  /// value can then mark it used without hashing its key again. `null` when
+  /// [key] is absent. The entry is dead once its key is removed or expires;
+  /// touching it then would put it back among the entries still to expire.
+  Flut5ExpiringEntry<K, V>? entryOf(Object? key) => _entries[key];
+
+  /// Counts a use of [entry], exactly as reading its key would.
+  void touch(Flut5ExpiringEntry<K, V> entry) => _touch(entry);
 
   @override
   void operator []=(K key, V value) {
@@ -35,7 +47,7 @@ class Flut5ExpiringCache<K, V>(
       _touch(existing);
       return;
     }
-    final entry = _Entry(key, value, currentFrame());
+    final entry = Flut5ExpiringEntry<K, V>._(key, value, currentFrame());
     _entries[key] = entry;
     _oldestFirst.add(entry);
   }
@@ -125,5 +137,10 @@ class Flut5ExpiringCache<K, V>(
   }
 }
 
-final class _Entry<K, V>(final K key, var V value, var int lastUsedFrame)
-    extends LinkedListEntry<_Entry<K, V>>;
+/// One key and value of a [Flut5ExpiringCache], linked in order of last
+/// use.
+final class Flut5ExpiringEntry<K, V>._(
+  final K key,
+  var V value,
+  var int lastUsedFrame,
+) extends LinkedListEntry<Flut5ExpiringEntry<K, V>>;

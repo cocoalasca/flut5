@@ -35,7 +35,9 @@ void main() {
     }
 
     final before = await render();
-    e.renderQueue.clear();
+    // Same frame on purpose: the scratch path and matrix are rewritten by
+    // every transformed shape, while clear() ends the frame and hands the
+    // batches' own paths back for reuse (see batch_path_reuse_test.dart).
     e.rotate(2);
     e.scale(4);
     e.ellipse(90, 90, 80, 40);

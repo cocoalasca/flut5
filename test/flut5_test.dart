@@ -1947,6 +1947,25 @@ void main() {
   // ── Perlin noise ─────────────────────────────────────────────────────
 
   group('Perlin noise (via noiseMode)', () {
+    test('1-D and 2-D calls match the full 3-D blend bit for bit', () {
+      // With z left out — exactly 0 — noise skips the lattice layer it
+      // would weigh by zero. A z a hair off takes the full blend and weighs
+      // that layer by zero the long way.
+      const barelyOff = 5e-324;
+      final engine = Flut5Engine()..noiseMode = NoiseMode.perlin;
+      engine.noiseSeed(7);
+      engine.noiseDetail(6, 0.6);
+      for (double x = 0; x < 40; x += 0.731) {
+        expect(engine.noise(x), engine.noise(x, 0, barelyOff));
+        for (double y = 0.2; y < 30; y += 3.17) {
+          expect(engine.noise(x, y), engine.noise(x, y, barelyOff));
+          // A whole-number z sits exactly on a layer too.
+          expect(engine.noise(x, y, 3), engine.noise(x, y, 3.0000000000000004));
+          expect(engine.noise(x, y, 3), isNot(engine.noise(x, y)));
+        }
+      }
+    });
+
     test('returns values in [0, 1]', () {
       final engine = Flut5Engine()..noiseMode = NoiseMode.perlin;
       engine.noiseSeed(42);

@@ -22,7 +22,6 @@ mixin _PhysicsParticles {
   void _addParticle(Flut5PhysicsParticle particle) {
     _register(particle);
     _particles.add(particle);
-    _sweepOrderStale = true;
   }
 
   bool _particleCollision = false;
@@ -39,10 +38,11 @@ mixin _PhysicsParticles {
   /// same soft body never collide with each other — its springs keep them
   /// apart.
   ///
-  /// Particles are swept left to right, and each is only tested against the
-  /// ones that start before it ends, so particles spread across the window
-  /// are cheap. The cost grows with how many share the same strip of x: a
-  /// crowd stacked in one column costs as much as testing every pair.
+  /// Particles are sorted into a grid of cells about one particle wide, and
+  /// each is only tested against the ones in its own cell and the cells
+  /// around it, so the cost grows with how many particles actually touch,
+  /// not with how many there are. A few particles much bigger than the rest
+  /// are tested against every other instead.
   /// [iterations], if given, sets
   /// [Flut5PhysicsEngine.collisionIterations]: how many collision passes run
   /// per frame (default `2`). Turn collisions off again with
@@ -74,8 +74,8 @@ mixin _PhysicsParticles {
     _particleRestitution = restitution;
   }
 
-  // Every particle's position and radius, copied into flat lists while the
-  // collision passes run. The pair loop reads two particles per test, and
+  // Every particle's position and radius, copied into flat lists while a
+  // collision pass runs. The pair loop reads two particles per test, and
   // flat lists are much faster to walk than every particle's position
   // object. Index i holds _particles[i]. They grow with the particle count.
   Float64List _collisionX = Float64List(0);
@@ -83,19 +83,13 @@ mixin _PhysicsParticles {
   Float64List _collisionZ = Float64List(0);
   Float64List _collisionRadius = Float64List(0);
 
-  // Particle indices sorted by left edge (x - radius), so the pair loop can
-  // stop looking for partners once they start past a particle's right edge.
-  // Kept between passes: particles barely move in one, so the last order
-  // needs only a few swaps to be right again.
-  Int32List _sweepOrder = Int32List(0);
+  /// Where the particles are, for finding the ones near each other — and,
+  /// in the polygons part, the ones near a polygon.
+  final _ParticleGrid _particleGrid = _ParticleGrid();
 
-  /// Set when a particle is created, so [_sortByLeftEdge] starts over even
-  /// if a removal in the same frame kept the count the same.
-  bool _sweepOrderStale = true;
-
-  /// Separates every overlapping pair of particles and bounces the ones that
-  /// are approaching each other, testing each pair that could touch once.
-  void _collideParticles() {
+  /// Copies every particle's position and radius into the collision lists,
+  /// files them in [_particleGrid] and returns it.
+  _ParticleGrid _fileParticles() {
     final particles = _particles;
     final count = particles.length;
     if (_collisionX.length < count) {
@@ -109,7 +103,6 @@ mixin _PhysicsParticles {
     final positionY = _collisionY;
     final positionZ = _collisionZ;
     final radius = _collisionRadius;
-
     for (var i = 0; i < count; i++) {
       final particle = particles[i];
       positionX[i] = particle.position.x;
@@ -117,93 +110,146 @@ mixin _PhysicsParticles {
       positionZ[i] = particle.position.z;
       radius[i] = particle.radius;
     }
+    return _particleGrid..file(count, positionX, positionY, radius);
+  }
 
-    _sortByLeftEdge(count);
-    final order = _sweepOrder;
-    for (var i = 0; i < count; i++) {
-      final a = order[i];
-      // Particle a's position and radius, held in locals while it is tested
-      // against the particles that start to its right.
-      var aX = positionX[a], aY = positionY[a], aZ = positionZ[a];
-      final aRadius = radius[a];
-      final aSoftBody = particles[a].softBody;
-      var aRightEdge = aX + aRadius;
-      for (var j = i + 1; j < count; j++) {
-        final b = order[j];
-        final bX = positionX[b];
-        final bRadius = radius[b];
-        // b and every particle after it start past a's right edge.
-        if (bX - bRadius > aRightEdge) break;
-        final dx = bX - aX;
-        final dy = positionY[b] - aY;
-        final dz = positionZ[b] - aZ;
-        final touchingDistance = aRadius + bRadius;
-        // Squared lengths: no square root for the pairs that overlap in x
-        // but are nowhere near each other.
-        final distanceSquared = dx * dx + dy * dy + dz * dz;
-        if (distanceSquared < touchingDistance * touchingDistance) {
-          // A soft body's springs hold its particles apart; colliding them
-          // too would fight the springs wherever neighbors overlap.
-          if (aSoftBody != null &&
-              identical(aSoftBody, particles[b].softBody)) {
-            continue;
-          }
-          // Older particle first, so two exactly on top of each other always
-          // split the same way.
-          if (a < b) {
-            _resolveCollision(a, b);
-          } else {
-            _resolveCollision(b, a);
-          }
-          // The collision moved a; keep testing from where it is now.
-          aX = positionX[a];
-          aY = positionY[a];
-          aZ = positionZ[a];
-          aRightEdge = aX + aRadius;
-        }
-      }
-    }
+  /// Separates every overlapping pair of particles and bounces the ones that
+  /// are approaching each other, testing each pair that could touch once.
+  void _collideParticles() {
+    final grid = _fileParticles();
+    // Without a radius anywhere, no two particles can touch.
+    if (grid.largestRadius == 0) return;
 
-    for (var i = 0; i < count; i++) {
+    _collideNeighbors(grid);
+    _collideLargeParticles(grid);
+
+    final particles = _particles;
+    final positionX = _collisionX;
+    final positionY = _collisionY;
+    final positionZ = _collisionZ;
+    for (var i = 0; i < particles.length; i++) {
       particles[i].position.setValues(positionX[i], positionY[i], positionZ[i]);
     }
   }
 
-  /// Sorts [_sweepOrder] by each particle's left edge where it is now.
+  /// Collides every particle filed in [grid] with the ones in its own cell
+  /// and in the cells around it.
   ///
-  /// After particles are created or removed the indices it holds shift onto
-  /// other particles, leaving it too scrambled for a quick fix, so it is
-  /// rebuilt and fully sorted. Otherwise last pass's order is nearly right,
-  /// and an insertion sort fixes it by moving the few particles that
-  /// overtook a neighbor.
-  void _sortByLeftEdge(int count) {
-    final positionX = _collisionX;
-    final radius = _collisionRadius;
-    if (_sweepOrderStale || _sweepOrder.length != count) {
-      _sweepOrderStale = false;
-      final order = _sweepOrder = Int32List(count);
-      for (var i = 0; i < count; i++) {
-        order[i] = i;
+  /// Each pair of cells is visited from one side only: a particle looks at
+  /// the rest of its own cell, the cell to its right and the three cells
+  /// below. The cells above and to its left have already looked at it.
+  void _collideNeighbors(_ParticleGrid grid) {
+    final columns = grid.columns;
+    final rows = grid.rows;
+    final cellStarts = grid.cellStarts;
+    final filedParticles = grid.filedParticles;
+    for (var row = 0; row < rows; row++) {
+      final hasRowBelow = row + 1 < rows;
+      for (var column = 0; column < columns; column++) {
+        final cell = row * columns + column;
+        final cellStart = cellStarts[cell];
+        final cellEnd = cellStarts[cell + 1];
+        if (cellStart == cellEnd) continue;
+
+        // Cells side by side are side by side in the list too, so the rest
+        // of this cell and the cell to its right are one run, and the three
+        // cells below are another.
+        final hasColumnRight = column + 1 < columns;
+        final rightEnd = hasColumnRight ? cellStarts[cell + 2] : cellEnd;
+        var belowStart = 0, belowEnd = 0;
+        if (hasRowBelow) {
+          final cellBelow = cell + columns;
+          belowStart = cellStarts[column > 0 ? cellBelow - 1 : cellBelow];
+          belowEnd =
+              cellStarts[(hasColumnRight ? cellBelow + 1 : cellBelow) + 1];
+        }
+
+        for (var slot = cellStart; slot < cellEnd; slot++) {
+          final particle = filedParticles[slot];
+          _collideWithRun(particle, filedParticles, slot + 1, rightEnd);
+          if (belowStart < belowEnd) {
+            _collideWithRun(particle, filedParticles, belowStart, belowEnd);
+          }
+        }
       }
-      order.sort(
-        (p, q) =>
-            (positionX[p] - radius[p]).compareTo(positionX[q] - radius[q]),
-      );
+    }
+  }
+
+  /// Collides particle [a] with each of `others[from]` up to, not
+  /// including, `others[to]`.
+  void _collideWithRun(int a, Int32List others, int from, int to) {
+    final particles = _particles;
+    final positionX = _collisionX;
+    final positionY = _collisionY;
+    final positionZ = _collisionZ;
+    final radius = _collisionRadius;
+    // Particle a's position and radius, held in locals while it is tested
+    // against the run.
+    var aX = positionX[a], aY = positionY[a], aZ = positionZ[a];
+    final aRadius = radius[a];
+    for (var slot = from; slot < to; slot++) {
+      final b = others[slot];
+      final dx = positionX[b] - aX;
+      final dy = positionY[b] - aY;
+      final dz = positionZ[b] - aZ;
+      final touchingDistance = aRadius + radius[b];
+      // Squared lengths: no square root for the neighbors that aren't
+      // touching.
+      final distanceSquared = dx * dx + dy * dy + dz * dz;
+      if (distanceSquared < touchingDistance * touchingDistance) {
+        // A soft body's springs hold its particles apart; colliding them
+        // too would fight the springs wherever neighbors overlap.
+        final aSoftBody = particles[a].softBody;
+        if (aSoftBody != null && identical(aSoftBody, particles[b].softBody)) {
+          continue;
+        }
+        // Older particle first, so two exactly on top of each other always
+        // split the same way.
+        if (a < b) {
+          _resolveCollision(a, b);
+        } else {
+          _resolveCollision(b, a);
+        }
+        // The collision moved a; keep testing from where it is now.
+        aX = positionX[a];
+        aY = positionY[a];
+        aZ = positionZ[a];
+      }
+    }
+  }
+
+  /// Collides each particle too big for [grid]'s cells with every other
+  /// particle, each pair once.
+  void _collideLargeParticles(_ParticleGrid grid) {
+    final count = _particles.length;
+    final largeParticles = grid.largeParticles;
+    for (var slot = 0; slot < grid.largeCount; slot++) {
+      final large = largeParticles[slot];
+      for (var other = 0; other < count; other++) {
+        if (other == large) continue;
+        // Two large ones meet when the older of them goes through the list.
+        if (other < large && grid.isLarge(other)) continue;
+        _collideIfTouching(large, other);
+      }
+    }
+  }
+
+  /// Resolves the collision between particles [a] and [b] if they overlap.
+  void _collideIfTouching(int a, int b) {
+    final dx = _collisionX[b] - _collisionX[a];
+    final dy = _collisionY[b] - _collisionY[a];
+    final dz = _collisionZ[b] - _collisionZ[a];
+    final touchingDistance = _collisionRadius[a] + _collisionRadius[b];
+    final distanceSquared = dx * dx + dy * dy + dz * dz;
+    if (distanceSquared >= touchingDistance * touchingDistance) return;
+    final aSoftBody = _particles[a].softBody;
+    if (aSoftBody != null && identical(aSoftBody, _particles[b].softBody)) {
       return;
     }
-
-    final order = _sweepOrder;
-    for (var i = 1; i < count; i++) {
-      final moving = order[i];
-      final leftEdge = positionX[moving] - radius[moving];
-      var slot = i;
-      while (slot > 0) {
-        final previous = order[slot - 1];
-        if (positionX[previous] - radius[previous] <= leftEdge) break;
-        order[slot] = previous;
-        slot--;
-      }
-      order[slot] = moving;
+    if (a < b) {
+      _resolveCollision(a, b);
+    } else {
+      _resolveCollision(b, a);
     }
   }
 

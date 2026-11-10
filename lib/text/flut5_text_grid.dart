@@ -224,22 +224,7 @@ class const Flut5TextGrid({
   ///
   /// Lazy — cells are built as they are yielded, so `allCells.take(50)`
   /// allocates 50 objects, not `rows * cols`.
-  Iterable<Flut5TextCell> get allCells sync* {
-    for (int r = 0; r < rows; r++) {
-      final row = states[r];
-      final double cellY = yAt(r);
-      for (int c = 0; c < row.length; c++) {
-        yield Flut5TextCell(
-          col: c,
-          row: r,
-          state: row[c],
-          anchorX: xAt(c),
-          anchorY: cellY,
-          size: cellSize,
-        );
-      }
-    }
-  }
+  Iterable<Flut5TextCell> get allCells => _GridCells(this, filledOnly: false);
 
   /// Every cell carrying part of the glyph — [Flut5CellState.interior] and
   /// [Flut5CellState.edge] — in the same order as [allCells].
@@ -253,24 +238,7 @@ class const Flut5TextGrid({
   ///     .where((c) => c.state == Flut5CellState.edge)
   ///     .toList();
   /// ```
-  Iterable<Flut5TextCell> get filledCells sync* {
-    for (int r = 0; r < rows; r++) {
-      final row = states[r];
-      final double cellY = yAt(r);
-      for (int c = 0; c < row.length; c++) {
-        final state = row[c];
-        if (!state.isFilled) continue;
-        yield Flut5TextCell(
-          col: c,
-          row: r,
-          state: state,
-          anchorX: xAt(c),
-          anchorY: cellY,
-          size: cellSize,
-        );
-      }
-    }
-  }
+  Iterable<Flut5TextCell> get filledCells => _GridCells(this, filledOnly: true);
 
   // ── Geometry ────────────────────────────────────────────────────────
 
@@ -283,4 +251,70 @@ class const Flut5TextGrid({
   /// Center of cell ([col], [row]) in screen space.
   Flut5Vector cellCenter(int col, int row) =>
       Flut5Vector(x + (col + 0.5) * cellSize, y + (row + 0.5) * cellSize);
+}
+
+/// The cells of a [Flut5TextGrid], row by row from the top, left to right —
+/// all of them, or only the filled ones. Lazy: a [Flut5TextCell] is built
+/// for each cell as it is reached.
+///
+/// A hand-written iterator rather than a `sync*` getter: walking a grid's
+/// cells is what a sketch does with it every frame, and the generator cost
+/// several times more per cell than the cell itself.
+final class _GridCells extends Iterable<Flut5TextCell> {
+  const _GridCells(this._grid, {required this.filledOnly});
+
+  final Flut5TextGrid _grid;
+  final bool filledOnly;
+
+  @override
+  Iterator<Flut5TextCell> get iterator => _GridCellIterator(_grid, filledOnly);
+}
+
+final class _GridCellIterator implements Iterator<Flut5TextCell> {
+  _GridCellIterator(this._grid, this._filledOnly);
+
+  final Flut5TextGrid _grid;
+  final bool _filledOnly;
+
+  // Where the walk is: the cell last returned, or just before the first.
+  int _row = 0;
+  int _col = -1;
+  Flut5TextCell? _current;
+
+  @override
+  Flut5TextCell get current => _current as Flut5TextCell;
+
+  @override
+  bool moveNext() {
+    final states = _grid.states;
+    var row = _row;
+    var col = _col + 1;
+    while (row < states.length) {
+      final rowStates = states[row];
+      while (col < rowStates.length) {
+        final state = rowStates[col];
+        if (!_filledOnly || state.isFilled) {
+          _row = row;
+          _col = col;
+          _current = Flut5TextCell(
+            col: col,
+            row: row,
+            state: state,
+            anchorX: _grid.xAt(col),
+            anchorY: _grid.yAt(row),
+            size: _grid.cellSize,
+          );
+          return true;
+        }
+        col++;
+      }
+      row++;
+      col = 0;
+    }
+    // Past the last row: stay there, so asking again answers the same.
+    _row = row;
+    _col = -1;
+    _current = null;
+    return false;
+  }
 }

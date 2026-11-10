@@ -42,6 +42,17 @@ class Flut5TextLine._(
     bool hasChars,
   ) : this._(glyphs, offsets, width, hasChars, null, 0);
 
+  // The rasters of [glyphs], in order, as last drawn: one list for the fill
+  // pass and one for the stroke pass at [_strokeRastersWidth]. Each is only
+  // good while the cache has dropped no texture since
+  // ([Flut5TextCache.resolvedGlyphs] checks), so a dropped image is never
+  // drawn from here.
+  List<Flut5CachedText>? _fillRasters;
+  int _fillRastersGeneration = -1;
+  List<Flut5CachedText>? _strokeRasters;
+  int _strokeRastersGeneration = -1;
+  double _strokeRastersWidth = 0;
+
   /// Internal: width after adding composition-time spacing to this layout.
   double widthWithSpacing(double spacing) => spacing == 0 || _spacingGaps == 0
       ? width
@@ -64,6 +75,11 @@ class Flut5TextLine._(
 class Flut5TextLayout(final List<Flut5TextLine> lines) {
   /// LRU bookkeeping — last [Flut5TextCache._accessTick] this layout was used.
   int _lastUsedTick = 0;
+
+  /// The frame this layout was worked out in, and whether a later frame has
+  /// asked for it again — see [Flut5TextCache._newLayouts].
+  int _createdFrame = 0;
+  bool _usedAgain = false;
 }
 
 /// Composite key for cached layouts:
@@ -84,10 +100,23 @@ class Flut5CachedText(
   final double height,
   final double drawWidth,
   final double leftPad,
+
+  /// The size to draw [image] at, in logical pixels: its pixel size over
+  /// the device pixel ratio it was rasterized for, so every texel lands on
+  /// one device pixel. [image] is a whole number of pixels, rounded up from
+  /// [drawWidth] × [height], so this is a fraction of a pixel larger than
+  /// they are — drawn into those instead, the raster would be squeezed by
+  /// that fraction and resampled.
+  final double blitWidth,
+  final double blitHeight,
 ) {
   // advance width used for character spacing
   // image logical width; wider than width when glyphs overhang right
   // shift (logical px) to apply when drawing; non-zero for left overhang
+
+  /// This raster's entry in the texture cache, so a caller already holding
+  /// the raster can count a use of it without looking it up.
+  Flut5ExpiringEntry<_TextCacheKey, Flut5CachedText>? _entry;
 
   /// Pre-computed source rect for `drawImageRect` — avoids per-frame allocation.
   late final Rect srcRect = Rect.fromLTWH(
@@ -302,7 +331,9 @@ class Flut5TextCache._() {
   /// Internal end-of-frame maintenance, also usable by offscreen renderers.
   /// Expire after all canvases have used their textures, then start a new age.
   void finishFrame() {
+    _followPixelRatio();
     _cache.expire(_timeoutFrames);
+    _dropLayoutsNeverUsedAgain();
     _layoutCache.expire(_timeoutFrames);
     _kernCache.expire(_timeoutFrames);
     _widthCache.expire(_timeoutFrames);
@@ -420,11 +451,75 @@ class Flut5TextCache._() {
 
   late final _cache = Flut5ExpiringCache<_TextCacheKey, Flut5CachedText>(
     () => _frame,
-    onExpire: (entry) {
-      _cacheBytes -= entry.bytes;
-      entry.dispose();
-    },
+    onExpire: _releaseTexture,
   );
+
+  /// Counts up whenever a texture leaves the cache, by any route. Whoever
+  /// keeps hold of [Flut5CachedText]s between draws notes it, and lets go of
+  /// them once it has moved on — see [resolvedGlyphs].
+  int get textureGeneration => _textureGeneration;
+  int _textureGeneration = 0;
+
+  /// Frees a texture already taken out of [_cache].
+  void _releaseTexture(Flut5CachedText removed) {
+    _cacheBytes -= removed.bytes;
+    removed.dispose();
+    _textureGeneration++;
+  }
+
+  /// The rasters of [line]'s glyphs for the fill pass ([paintingStyle] `0`)
+  /// or the stroke pass at [strokeWidth], as [rememberGlyphs] last kept
+  /// them, each counted as used — what fetching every glyph with
+  /// [getOrCreate] would return, without hashing a key per glyph. `null`
+  /// when none are kept, or a texture has left the cache since: fetch the
+  /// glyphs one by one then, and hand them to [rememberGlyphs].
+  List<Flut5CachedText>? resolvedGlyphs(
+    Flut5TextLine line,
+    int paintingStyle,
+    double strokeWidth,
+  ) {
+    final List<Flut5CachedText>? rasters;
+    if (paintingStyle == 0) {
+      if (line._fillRastersGeneration != _textureGeneration) return null;
+      rasters = line._fillRasters;
+    } else {
+      if (line._strokeRastersGeneration != _textureGeneration ||
+          line._strokeRastersWidth != strokeWidth) {
+        return null;
+      }
+      rasters = line._strokeRasters;
+    }
+    if (rasters == null) return null;
+    for (var i = 0; i < rasters.length; i++) {
+      final raster = rasters[i];
+      _cache.touch(raster._entry!);
+      raster._lastUsedTick = ++_accessTick;
+    }
+    return rasters;
+  }
+
+  /// Keeps [rasters] — [line]'s glyphs, in order, just fetched for the pass
+  /// [paintingStyle] / [strokeWidth] — for [resolvedGlyphs] to return next
+  /// time. [generation] is [textureGeneration] as it was before the first
+  /// was fetched: if a texture has left the cache since, one of [rasters]
+  /// may be it, and nothing is kept.
+  void rememberGlyphs(
+    Flut5TextLine line,
+    int paintingStyle,
+    double strokeWidth,
+    List<Flut5CachedText> rasters,
+    int generation,
+  ) {
+    if (generation != _textureGeneration) return;
+    if (paintingStyle == 0) {
+      line._fillRasters = rasters;
+      line._fillRastersGeneration = generation;
+    } else {
+      line._strokeRasters = rasters;
+      line._strokeRastersWidth = strokeWidth;
+      line._strokeRastersGeneration = generation;
+    }
+  }
 
   /// Monotonic access counter used to stamp entries for LRU eviction.
   int _accessTick = 0;
@@ -432,8 +527,46 @@ class Flut5TextCache._() {
   /// Reusable key for lookups — avoids allocating a new key on cache hits.
   final _TextCacheKey _lookupKey = _TextCacheKey._mutable();
 
-  /// Cached device pixel ratio — rarely changes during a session.
+  /// The device pixel ratio textures are rasterized for. Read when the
+  /// first texture is made, then followed frame by frame.
   double? _cachedPixelRatio;
+
+  /// The device pixel ratio of the first view, or `null` when there is none
+  /// to ask (no binding yet, no window).
+  static double? _viewPixelRatio() {
+    try {
+      final views = SchedulerBinding.instance.platformDispatcher.views;
+      if (views.isNotEmpty) return views.first.devicePixelRatio;
+    } catch (_) {
+      // No binding: fall through to the engine's own dispatcher.
+    }
+    try {
+      final views = ui.PlatformDispatcher.instance.views;
+      if (views.isNotEmpty) return views.first.devicePixelRatio;
+    } catch (_) {}
+    return null;
+  }
+
+  /// Picks up a changed device pixel ratio — the window dragged to another
+  /// display, the browser zoomed — and drops every texture rasterized for
+  /// the old one: drawn at the new ratio they would be stretched or shrunk.
+  /// They are rasterized again as they are next drawn. Widths, kerning and
+  /// layouts are in logical pixels and stay.
+  void _followPixelRatio() {
+    final ratio = _viewPixelRatio();
+    if (ratio == null || ratio == _cachedPixelRatio) return;
+    if (_cachedPixelRatio != null) _dropTextures();
+    _cachedPixelRatio = ratio;
+  }
+
+  void _dropTextures() {
+    for (final texture in _cache.values) {
+      texture.dispose();
+    }
+    _cache.clear();
+    _cacheBytes = 0;
+    _textureGeneration++;
+  }
 
   /// Lightweight kern cache — stores only the offset double per character
   /// pair. Record-keyed so a hash collision can never silently return the
@@ -474,6 +607,34 @@ class Flut5TextCache._() {
   /// re-measuring every glyph.
   late final Flut5ExpiringCache<_LayoutKey, Flut5TextLayout> _layoutCache =
       Flut5ExpiringCache(() => _frame);
+
+  // A string that changes every frame — a counter, a timer, a paragraph
+  // whose width or wrapped spacing is animated — makes a new layout each
+  // frame that is never asked for again. Kept for the full timeout like any
+  // other, a few of those fill the cache with hundreds of dead layouts. So
+  // a new layout is on trial: [_newLayouts] lists the ones made in each of
+  // the last [_newLayoutTrialFrames] frames, and one that no later frame
+  // asked for by the end of its trial is dropped then. Text that stays on
+  // screen is asked for again the very next frame and lives on as before.
+  static const int _newLayoutTrialFrames = 8;
+  final List<List<(_LayoutKey, Flut5TextLayout)>> _newLayouts = List.generate(
+    _newLayoutTrialFrames,
+    (_) => [],
+  );
+
+  /// Ends the trial of the layouts made [_newLayoutTrialFrames] - 1 frames
+  /// ago, dropping the ones never used in a later frame.
+  void _dropLayoutsNeverUsedAgain() {
+    final tried = _newLayouts[(_frame + 1) % _newLayoutTrialFrames];
+    for (final (key, layout) in tried) {
+      // Still the layout under that key, not a newer one made after this
+      // one was evicted.
+      if (!layout._usedAgain && identical(_layoutCache.peek(key), layout)) {
+        _layoutCache.remove(key);
+      }
+    }
+    tried.clear();
+  }
 
   /// Memoized single-character strings keyed by code point, so layout never
   /// allocates the same one-char string twice.
@@ -596,16 +757,7 @@ class Flut5TextCache._() {
       drawWidth = inkRight - inkLeft + overscan * 2;
     }
 
-    // Cached device pixel ratio — avoids try/catch on every miss
-    if (_cachedPixelRatio == null) {
-      try {
-        final views = ui.PlatformDispatcher.instance.views;
-        if (views.isNotEmpty) {
-          _cachedPixelRatio = views.first.devicePixelRatio;
-        }
-      } catch (_) {}
-    }
-    final double pixelRatio = _cachedPixelRatio ?? 1.0;
+    final double pixelRatio = _cachedPixelRatio ??= _viewPixelRatio() ?? 1.0;
 
     // Rasterize Offline
     final recorder = ui.PictureRecorder();
@@ -638,9 +790,12 @@ class Flut5TextCache._() {
       height,
       drawWidth,
       leftPad,
+      iWidth / pixelRatio,
+      iHeight / pixelRatio,
     );
     cachedText._lastUsedTick = ++_accessTick;
     _cache[key] = cachedText;
+    cachedText._entry = _cache.entryOf(key);
     _cacheBytes += cachedText.bytes;
     _enforceTextureLimits();
 
@@ -685,7 +840,7 @@ class Flut5TextCache._() {
       ..drawImageRect(
         text.image,
         text.srcRect,
-        Rect.fromLTWH(pad, pad, text.drawWidth, text.height),
+        Rect.fromLTWH(pad, pad, text.blitWidth, text.blitHeight),
         filter,
       );
     final picture = recorder.endRecording();
@@ -768,10 +923,7 @@ class Flut5TextCache._() {
           _cache.length > 1 &&
           (_cache.length > targetCount || _cacheBytes > targetBytes),
       (a, b) => a._lastUsedTick.compareTo(b._lastUsedTick),
-      (removed) {
-        _cacheBytes -= removed.bytes;
-        removed.dispose();
-      },
+      _releaseTexture,
     );
   }
 
@@ -971,6 +1123,7 @@ class Flut5TextCache._() {
     final existing = _layoutCache[key];
     if (existing != null) {
       existing._lastUsedTick = ++_accessTick;
+      if (existing._createdFrame != _frame) existing._usedAgain = true;
       return existing;
     }
 
@@ -984,7 +1137,9 @@ class Flut5TextCache._() {
       maxWidth,
     );
     layout._lastUsedTick = ++_accessTick;
+    layout._createdFrame = _frame;
     _layoutCache[key] = layout;
+    _newLayouts[_frame % _newLayoutTrialFrames].add((key, layout));
 
     _enforceLayoutLimits();
 
@@ -1262,6 +1417,10 @@ class Flut5TextCache._() {
     }
     _cache.clear();
     _cacheBytes = 0;
+    _textureGeneration++;
+    for (final made in _newLayouts) {
+      made.clear();
+    }
     _kernCache.clear();
     _widthCache.clear();
     _lineHeightCache.clear();

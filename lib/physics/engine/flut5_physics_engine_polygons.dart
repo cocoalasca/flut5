@@ -14,6 +14,7 @@ mixin _PhysicsPolygons {
   double get friction;
   double get windowBoundsRestitution;
   _WindowLimits? _windowLimits();
+  _ParticleGrid _fileParticles();
 
   /// Creates a [width] × [height] [Flut5PhysicsRect] centered on ([x], [y]),
   /// registers it and returns it. Make it a platform with
@@ -80,7 +81,8 @@ mixin _PhysicsPolygons {
   static const double _referenceTolerance = 0.05;
 
   /// One collision pass for polygons: every polygon against every other
-  /// (two static ones never), then every polygon against every particle.
+  /// (two static ones never), then every polygon against the particles
+  /// around it.
   void _collidePolygons() {
     _refreshPolygonShapes();
     final shapes = _polygonShapes;
@@ -93,15 +95,62 @@ mixin _PhysicsPolygons {
         _collidePolygonPair(shapeA, shapeB);
       }
     }
+    if (shapes.isEmpty || _particles.isEmpty) return;
+    final grid = _fileParticles();
     for (final shape in shapes) {
-      for (final particle in _particles) {
-        final position = particle.position;
-        if (!shape.boundsTouchCircle(position.x, position.y, particle.radius)) {
-          continue;
-        }
-        _collidePolygonWithParticle(shape, particle);
+      _collidePolygonWithNearbyParticles(shape, grid);
+    }
+  }
+
+  /// Collides [shape] with the particles [grid] has filed around it, and
+  /// with the particles too big for its cells.
+  void _collidePolygonWithNearbyParticles(
+    _PolygonShape shape,
+    _ParticleGrid grid,
+  ) {
+    final particles = _particles;
+    // A filed particle's edge is at most half a cell from its center. The
+    // other half is for particles that pushes earlier in this pass moved
+    // since they were filed.
+    final reach = grid.cellSize;
+    final firstColumn = grid.columnAt(shape.minX - reach);
+    final lastColumn = grid.columnAt(shape.maxX + reach);
+    final firstRow = grid.rowAt(shape.minY - reach);
+    final lastRow = grid.rowAt(shape.maxY + reach);
+    final cellStarts = grid.cellStarts;
+    final filedParticles = grid.filedParticles;
+    for (var row = firstRow; row <= lastRow; row++) {
+      // The cells of one row are one run of the list.
+      final rowStart = row * grid.columns;
+      final runEnd = cellStarts[rowStart + lastColumn + 1];
+      for (
+        var slot = cellStarts[rowStart + firstColumn];
+        slot < runEnd;
+        slot++
+      ) {
+        _collidePolygonWithParticleIfNear(
+          shape,
+          particles[filedParticles[slot]],
+        );
       }
     }
+    final largeParticles = grid.largeParticles;
+    for (var slot = 0; slot < grid.largeCount; slot++) {
+      _collidePolygonWithParticleIfNear(shape, particles[largeParticles[slot]]);
+    }
+  }
+
+  /// Collides [shape] with [particle] if the boxes around them overlap — a
+  /// cheap test that rules out most particles before the exact one.
+  void _collidePolygonWithParticleIfNear(
+    _PolygonShape shape,
+    Flut5PhysicsParticle particle,
+  ) {
+    final position = particle.position;
+    if (!shape.boundsTouchCircle(position.x, position.y, particle.radius)) {
+      return;
+    }
+    _collidePolygonWithParticle(shape, particle);
   }
 
   /// Brings [_polygonShapes] in line with [_polygons] and refreshes each.

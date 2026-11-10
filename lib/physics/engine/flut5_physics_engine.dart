@@ -14,6 +14,7 @@ import '../flut5_physics_spring.dart';
 // mixins applied to [Flut5PhysicsEngine]. This file keeps what they share:
 // the body registry, gravity, and the per-frame [Flut5PhysicsEngine.update].
 part 'flut5_physics_engine_particles.dart';
+part 'flut5_physics_engine_particle_grid.dart';
 part 'flut5_physics_engine_springs.dart';
 part 'flut5_physics_engine_edges.dart';
 part 'flut5_physics_engine_rotation.dart';

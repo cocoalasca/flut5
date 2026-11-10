@@ -61,6 +61,29 @@ mixin Flut5Fill {
   int _snapshotFillVersion = -1;
   int _snapshotFillBlendVersion = -1;
 
+  /// Snapshots of plain colour fills, one per colour, so `fill(c)` hands the
+  /// render queue the very same [Paint] every time `c` comes round again.
+  /// The queue recognises a colour it has an open batch for by that
+  /// identity, and a palette sketch stops cloning a paint per shape.
+  ///
+  /// A fixed table rather than a map, so a sketch with a colour of its own
+  /// per shape pays a few comparisons and nothing grows: a colour is looked
+  /// for in [_plainFillSnapshotProbes] slots starting at its hash, and when
+  /// they all hold other colours it replaces one of them. Emptied when the
+  /// blend mode changes, which every snapshot carries.
+  final List<Color?> _plainFillSnapshotColors = List.filled(
+    _plainFillSnapshotSlots,
+    null,
+  );
+  final List<Paint?> _plainFillSnapshots = List.filled(
+    _plainFillSnapshotSlots,
+    null,
+  );
+  int _plainFillSnapshotBlendVersion = -1;
+  int _plainFillSnapshotsReplaced = 0;
+  static const int _plainFillSnapshotSlots = 1024;
+  static const int _plainFillSnapshotProbes = 4;
+
   Paint? _snapshotFillNoShaderClone;
   int _snapshotFillNoShaderVersion = -1;
   int _snapshotFillNoShaderBlendVersion = -1;
@@ -201,17 +224,54 @@ mixin Flut5Fill {
   /// Returns an identity-stable clone of the active fill paint, or `null`
   /// when fill is transparent. The same [Paint] instance is returned across
   /// calls until fill state changes (version bump), allowing the render
-  /// queue to auto-batch by paint identity.
+  /// queue to auto-batch by paint identity. A plain colour gets the same
+  /// instance back whenever it is set again, too, so the paint is shared
+  /// with shapes already queued: never change it.
   Paint? snapshotFillPaint() {
     if (fillColor == Colors.transparent) return null;
     final paint = getFillPaint();
     if (_snapshotFillVersion != _fillVersion ||
         _snapshotFillBlendVersion != blendVersion) {
-      _snapshotFillClone = paint.clone();
+      _snapshotFillClone = fillGradient == null
+          ? _plainFillSnapshot(paint)
+          : paint.clone();
       _snapshotFillVersion = _fillVersion;
       _snapshotFillBlendVersion = blendVersion;
     }
     return _snapshotFillClone;
+  }
+
+  /// The snapshot of [paint], the fill paint as it is now with a plain
+  /// colour: the one kept for that colour, or a new clone kept from here on.
+  Paint _plainFillSnapshot(Paint paint) {
+    final colors = _plainFillSnapshotColors;
+    final snapshots = _plainFillSnapshots;
+    if (_plainFillSnapshotBlendVersion != blendVersion) {
+      colors.fillRange(0, _plainFillSnapshotSlots, null);
+      snapshots.fillRange(0, _plainFillSnapshotSlots, null);
+      _plainFillSnapshotBlendVersion = blendVersion;
+    }
+    // What the paint holds, not [fillColor], which a sketch can assign.
+    final color = _appliedFillColor;
+    // Spread out, so colours a step apart don't crowd neighbouring slots.
+    final home = (color.toARGB32() * 0x9E3779B1) >>> 12;
+    var slot = 0;
+    for (var probe = 0; probe < _plainFillSnapshotProbes; probe++) {
+      slot = (home + probe) & (_plainFillSnapshotSlots - 1);
+      final kept = colors[slot];
+      if (kept == null) break;
+      if (kept == color) return snapshots[slot]!;
+      if (probe == _plainFillSnapshotProbes - 1) {
+        // All taken: replace them in turn, not always the same one.
+        slot =
+            (home + _plainFillSnapshotsReplaced++ % _plainFillSnapshotProbes) &
+            (_plainFillSnapshotSlots - 1);
+      }
+    }
+    final snapshot = paint.clone();
+    colors[slot] = color;
+    snapshots[slot] = snapshot;
+    return snapshot;
   }
 
   /// Like [snapshotFillPaint] but with any gradient shader stripped.

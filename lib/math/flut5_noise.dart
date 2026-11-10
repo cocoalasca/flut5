@@ -155,6 +155,8 @@ base mixin Flut5Noise {
     double yf = y - yi;
     double zf = z - zi;
 
+    if (zf == 0.0) return _perlinNoiseOnLayer(p, xi, yi, zi, xf, yf);
+
     double r = 0;
     double ampl = 0.5;
 
@@ -205,6 +207,60 @@ base mixin Flut5Noise {
       if (zf >= 1.0) {
         zi++;
         zf -= 1.0;
+      }
+    }
+
+    return r;
+  }
+
+  /// [_perlinNoise] for a `z` sitting exactly on a lattice layer — every
+  /// `noise(x)` and `noise(x, y)` call, where `z` is 0.
+  ///
+  /// The next layer's weight is then `_scaledCosine(0)`, exactly zero, in
+  /// every octave (doubling a fraction of zero leaves zero), so the full
+  /// blend reads that layer only to multiply it away. Leaving it out gives
+  /// the same value bit for bit.
+  double _perlinNoiseOnLayer(
+    Float64List p,
+    int xi,
+    int yi,
+    int zi,
+    double xf,
+    double yf,
+  ) {
+    double r = 0;
+    double ampl = 0.5;
+
+    for (int o = 0; o < _perlinOctaves; o++) {
+      final of_ = xi + (yi << _perlinYWrapB) + (zi << _perlinZWrapB);
+
+      final rxf = _scaledCosine(xf);
+      final ryf = _scaledCosine(yf);
+
+      double n1 = p[of_ & _perlinSize];
+      n1 += rxf * (p[(of_ + 1) & _perlinSize] - n1);
+
+      double n2 = p[(of_ + _perlinYWrap) & _perlinSize];
+      n2 += rxf * (p[(of_ + _perlinYWrap + 1) & _perlinSize] - n2);
+
+      n1 += ryf * (n2 - n1);
+
+      r += n1 * ampl;
+      ampl *= _perlinAmpFalloff;
+
+      xi <<= 1;
+      xf *= 2;
+      yi <<= 1;
+      yf *= 2;
+      zi <<= 1;
+
+      if (xf >= 1.0) {
+        xi++;
+        xf -= 1.0;
+      }
+      if (yf >= 1.0) {
+        yi++;
+        yf -= 1.0;
       }
     }
 

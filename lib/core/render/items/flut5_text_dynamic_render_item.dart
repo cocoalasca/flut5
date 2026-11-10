@@ -134,8 +134,12 @@ class TextDynamicRenderItem({
   }
 
   /// Blits one laid-out line: a flat loop over the line's drawable glyphs
-  /// with pre-baked offsets — one cache fetch per glyph, no measurement.
-  /// With [shadow], each glyph draws as that shadow instead of with [paint].
+  /// with pre-baked offsets and no measurement. With [shadow], each glyph
+  /// draws as that shadow instead of with [paint].
+  ///
+  /// The first time a line is drawn its glyph rasters are fetched from the
+  /// cache one by one and kept with the line; after that they come straight
+  /// from the line, for as long as the cache drops no texture.
   void _drawGlyphs(
     Canvas canvas,
     Flut5TextCache cache,
@@ -148,7 +152,35 @@ class TextDynamicRenderItem({
     Flut5ShadowSpec? shadow,
   }) {
     final spacing = _compositionSpacing;
-    for (int i = 0; i < line.glyphs.length; i++) {
+    final glyphCount = line.glyphs.length;
+
+    // A shadow may bake a silhouette as it draws, which can push textures
+    // out of the cache mid-line — rasters held from before would go stale.
+    // So the shadow pass always fetches glyph by glyph.
+    final kept = shadow == null
+        ? cache.resolvedGlyphs(line, paintingStyle, strokeWidth)
+        : null;
+    if (kept != null) {
+      for (int i = 0; i < glyphCount; i++) {
+        final cached = kept[i];
+        canvas.drawImageRect(
+          cached.image,
+          cached.srcRect,
+          Rect.fromLTWH(
+            startX + line.offsetWithSpacing(i, spacing) - cached.leftPad,
+            y,
+            cached.blitWidth,
+            cached.blitHeight,
+          ),
+          paint!,
+        );
+      }
+      return;
+    }
+
+    final generation = cache.textureGeneration;
+    final fetched = shadow == null ? <Flut5CachedText>[] : null;
+    for (int i = 0; i < glyphCount; i++) {
       final cached = cache.getOrCreate(
         text: line.glyphs[i],
         fontFamily: fontFamily,
@@ -160,17 +192,28 @@ class TextDynamicRenderItem({
         paintingStyle: paintingStyle,
         strokeWidth: strokeWidth,
       );
+      fetched?.add(cached);
+      // At the raster's own pixel size, so no texel is resampled.
       final dst = Rect.fromLTWH(
         startX + line.offsetWithSpacing(i, spacing) - cached.leftPad,
         y,
-        cached.drawWidth,
-        cached.height,
+        cached.blitWidth,
+        cached.blitHeight,
       );
       if (shadow != null) {
         shadow.paintText(canvas, cached, dst);
       } else {
         canvas.drawImageRect(cached.image, cached.srcRect, dst, paint!);
       }
+    }
+    if (fetched != null) {
+      cache.rememberGlyphs(
+        line,
+        paintingStyle,
+        strokeWidth,
+        fetched,
+        generation,
+      );
     }
   }
 

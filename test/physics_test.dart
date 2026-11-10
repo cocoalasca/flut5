@@ -668,6 +668,80 @@ void main() {
       expect(a.velocity.x, 0.0);
     });
 
+    test('touching pairs are found whichever way they lie, among many', () {
+      // Pairs overlapping by 1 in every direction, far from each other, so
+      // they straddle the borders of the search cells every which way.
+      final e = Flut5Engine()..particleCollision(iterations: 1);
+      final world = e.physicsEngine;
+      final pairs = <(Flut5PhysicsParticle, Flut5PhysicsParticle)>[];
+      final random = math.Random(4);
+      for (var i = 0; i < 400; i++) {
+        final x = (i % 20) * 40 + random.nextDouble() * 10;
+        final y = (i ~/ 20) * 40 + random.nextDouble() * 10;
+        final angle = i * math.pi / 8;
+        final a = world.createParticle(x, y)..radius = 2;
+        final b = world.createParticle(
+          x + 3 * math.cos(angle),
+          y + 3 * math.sin(angle),
+        )..radius = 2;
+        pairs.add((a, b));
+      }
+      world.update();
+      for (final (a, b) in pairs) {
+        expect(a.position.dist(b.position), closeTo(4, 1e-9));
+      }
+    });
+
+    test('a particle much bigger than the rest collides with all of them', () {
+      final e = Flut5Engine()..particleCollision(iterations: 1);
+      final world = e.physicsEngine;
+      // Enough small ones that the search cells are sized for them.
+      for (var i = 0; i < 200; i++) {
+        world.createParticle(1000 + (i % 20) * 10, (i ~/ 20) * 10).radius = 2;
+      }
+      final onItsEdge = [
+        for (var i = 7; i < 12; i++)
+          world.createParticle(
+            101 * math.cos(i * math.pi / 6),
+            101 * math.sin(i * math.pi / 6),
+          )..radius = 2,
+      ];
+      final giant = world.createParticle(0, 0)
+        ..radius = 100
+        ..mass = 1e9;
+      final lighterGiant = world.createParticle(0, 190)..radius = 100;
+      world.update();
+      for (final small in onItsEdge) {
+        expect(small.position.dist(giant.position), closeTo(102, 1e-6));
+      }
+      expect(lighterGiant.y - giant.y, closeTo(200, 1e-6));
+    });
+
+    test('particles nowhere, or impossibly far apart, are left alone', () {
+      final e = Flut5Engine()..particleCollision(iterations: 1);
+      final world = e.physicsEngine;
+      final a = world.createParticle(0, 0)..radius = 5;
+      final b = world.createParticle(8, 0)..radius = 5;
+      final lost = world.createParticle(double.nan, 0)..radius = 5;
+      final gone = world.createParticle(double.infinity, 3)..radius = 5;
+      world.update();
+      expect(b.x - a.x, closeTo(10, 1e-9));
+      expect(lost.x, isNaN);
+      expect(gone.x, double.infinity);
+
+      world
+        ..remove(lost)
+        ..remove(gone);
+      a.position.setValues(0, 0, 0);
+      b.position.setValues(8, 0, 0);
+      final far = world.createParticle(1e300, -1e300)..radius = 5;
+      final farther = world.createParticle(-1e308, 1e308)..radius = 5;
+      world.update();
+      expect(b.x - a.x, closeTo(10, 1e-9));
+      expect(far.x, 1e300);
+      expect(farther.y, 1e308);
+    });
+
     test('invalid settings are rejected', () {
       final e = Flut5Engine();
       expect(() => e.particleRestitution(-1), throwsArgumentError);
@@ -1147,6 +1221,39 @@ void main() {
       expect(() => physics.collisionIterations = 0, throwsArgumentError);
       expect(() => physics.polygonRestitution = -1, throwsArgumentError);
       expect(Flut5Engine().polygonRestitution(0.5), 0.5);
+    });
+
+    test('a polygon collides with the particles around it, among many', () {
+      final physics = world();
+      physics.createRect(200, 150, 100, 60).isStatic = true;
+      // A crowd elsewhere, so only a few of the particles are near it.
+      for (var i = 0; i < 300; i++) {
+        physics.createParticle((i % 30) * 4.0, (i ~/ 30) * 4.0).radius = 1;
+      }
+      final left = physics.createParticle(149, 150)..radius = 3;
+      final right = physics.createParticle(251, 160)..radius = 3;
+      final above = physics.createParticle(170, 119)..radius = 3;
+      final below = physics.createParticle(230, 181)..radius = 3;
+      final clear = physics.createParticle(146, 150)..radius = 3;
+      final big = physics.createParticle(200, 80)..radius = 50;
+      physics.update();
+      expect(left.x, closeTo(147, 1e-9));
+      expect(right.x, closeTo(253, 1e-9));
+      expect(above.y, closeTo(117, 1e-9));
+      expect(below.y, closeTo(183, 1e-9));
+      expect(clear.x, 146);
+      expect(big.y, closeTo(70, 1e-9));
+    });
+
+    test('points with no radius still collide with polygons', () {
+      final physics = world();
+      physics.createRect(200, 150, 100, 60).isStatic = true;
+      for (var i = 0; i < 300; i++) {
+        physics.createParticle((i % 30) * 4.0, (i ~/ 30) * 4.0);
+      }
+      final inside = physics.createParticle(152, 150);
+      physics.update();
+      expect(inside.x, closeTo(150, 1e-9));
     });
   });
 

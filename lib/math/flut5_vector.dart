@@ -129,9 +129,13 @@ final class Flut5Vector(double x, double y, [double z = 0.0]) extends Vector3 {
   /// Returns an exact copy of this vector.
   Flut5Vector copy() => Flut5Vector(x, y, z);
 
+  /// One generator for [random2D] and [random3D]: making a new one per
+  /// call costs more than the vector does.
+  static final math.Random _random = math.Random();
+
   /// Creates a unit vector from a random 2D angle.
   static Flut5Vector random2D() {
-    final angle = math.Random().nextDouble() * math.pi * 2;
+    final angle = _random.nextDouble() * math.pi * 2;
     return Flut5Vector(math.cos(angle), math.sin(angle));
   }
 
@@ -146,9 +150,8 @@ final class Flut5Vector(double x, double y, [double z = 0.0]) extends Vector3 {
 
   /// Creates a unit vector from a random 3D direction.
   static Flut5Vector random3D() {
-    final rng = math.Random();
-    final angle = rng.nextDouble() * math.pi * 2;
-    final vz = rng.nextDouble() * 2 - 1;
+    final angle = _random.nextDouble() * math.pi * 2;
+    final vz = _random.nextDouble() * 2 - 1;
     final vzBase = math.sqrt(1 - vz * vz);
     return Flut5Vector(vzBase * math.cos(angle), vzBase * math.sin(angle), vz);
   }
