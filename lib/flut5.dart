@@ -854,6 +854,8 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
 
   // ── Image ────────────────────────────────────────────────────────────────
   Future<Flut5Image> loadImage(dynamic source) => flut5.loadImage(source);
+  Flut5Image createImage(int width, int height) =>
+      flut5.createImage(width, height);
   void image(
     Flut5Image img,
     double x,

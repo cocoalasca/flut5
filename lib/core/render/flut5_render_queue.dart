@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
 import '../flut5_console.dart';
+import '../../image/flut5_image_handles.dart';
 import '../../text/flut5_font.dart';
 import '../flut5_shadow.dart';
 import 'flut5_dash.dart';
@@ -212,6 +213,17 @@ class Flut5RenderQueue {
   /// Running union of the destination rects in the open run, so the flushed
   /// item carries bounds without re-reading the float32 buffers.
   Rect? _atlasBounds;
+
+  /// Bitmaps this frame's items will paint, held through
+  /// [Flut5ImageHandles] so an `updatePixels()`, `resize()` or `dispose()`
+  /// later in the frame can't free them first. Released by [clear]. One
+  /// entry per standalone blit or atlas run, not per sprite.
+  final List<ui.Image> _heldImages = [];
+
+  void _holdImage(ui.Image image) {
+    _heldImages.add(image);
+    Flut5ImageHandles.hold(image);
+  }
 
   /// First sprite's rects in full double precision. A run that never grows
   /// past one flushes as a plain [ImageRenderItem] instead, which is both
@@ -1508,6 +1520,7 @@ class Flut5RenderQueue {
     if (!_canAtlas(src, dst)) {
       if (_fold.hasLinear) _materializeTransforms();
       final placed = _hasFoldOffset ? dst.shift(Offset(_foldDx, _foldDy)) : dst;
+      _holdImage(image);
       _addItem(
         ImageRenderItem(
           image: image,
@@ -1535,6 +1548,8 @@ class Flut5RenderQueue {
     _flushLines();
     _flushShapes();
 
+    // A new run holds its bitmap once; sprites joining it ride on that hold.
+    if (_pendingAtlasImage == null) _holdImage(image);
     _pendingAtlasImage = image;
     _pendingAtlasBlend = blendMode;
     _ensureAtlasCapacity(_atlasCount + 1);
@@ -2311,6 +2326,12 @@ class Flut5RenderQueue {
   /// kept alive, and the batches' paths are kept for the next frame to reuse.
   void clear() {
     _items.clear();
+    if (_heldImages.isNotEmpty) {
+      for (final image in _heldImages) {
+        Flut5ImageHandles.release(image);
+      }
+      _heldImages.clear();
+    }
     _releaseBatchPaths();
     _pointCount = 0;
     _pendingPointPaint = null;

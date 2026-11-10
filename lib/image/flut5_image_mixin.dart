@@ -42,6 +42,36 @@ mixin Flut5ImageMixin on Flut5Fill {
   /// cannot be read, and an [ArgumentError] for an unsupported source type.
   Future<Flut5Image> loadImage(dynamic source) => Flut5Image.load(source);
 
+  /// Creates a blank, fully transparent image of [width] × [height] pixels to
+  /// fill in yourself — p5's `createImage()`.
+  ///
+  /// Its [Flut5Image.pixels] are ready at once: no `loadPixels()` needed
+  /// (calling it anyway is harmless). Edit them directly or with
+  /// [Flut5Image.set], then [Flut5Image.updatePixels] to show the result:
+  ///
+  /// ```dart
+  /// late final Flut5Image ramp;
+  ///
+  /// @override
+  /// void setup() {
+  ///   ramp = createImage(256, 1);
+  ///   for (var x = 0; x < 256; x++) {
+  ///     ramp.set(x, 0, Color.fromARGB(255, x, 0, 255 - x));
+  ///   }
+  ///   ramp.updatePixels();
+  /// }
+  ///
+  /// @override
+  /// void draw() => image(ramp, 0, 0, width, 40);  // red-to-blue strip
+  /// ```
+  ///
+  /// Synchronous, so it works anywhere; create it once and edit it as often
+  /// as you like. An image created every frame needs [Flut5Image.dispose]
+  /// once it's no longer drawn. Throws a [RangeError] for a [width] or
+  /// [height] below 1.
+  Flut5Image createImage(int width, int height) =>
+      Flut5Image.create(width, height);
+
   /// Draws [img] with its top-left corner at ([x], [y]).
   ///
   /// Position is the corner, matching `rect()` (and p5's default `CORNER`
