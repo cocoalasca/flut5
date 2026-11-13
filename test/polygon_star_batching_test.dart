@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:flut5/flut5.dart';
@@ -11,8 +11,7 @@ void main() {
     ..noStroke();
 
   group('polygon/star — queue batching', () {
-    test('consecutive polygons with the same paint coalesce into one item',
-        () {
+    test('consecutive polygons with the same paint coalesce into one item', () {
       final e = engine();
       for (var i = 0; i < 10; i++) {
         e.polygon(i * 30.0, 50, 6, 20);
@@ -73,8 +72,7 @@ void main() {
       expect(e.renderQueue.items.single, isA<PathRenderItem>());
     });
 
-    test('folded translate bakes polygon geometry at shifted coordinates',
-        () {
+    test('folded translate bakes polygon geometry at shifted coordinates', () {
       final e = engine();
       e.renderQueue.flushPending();
       final slot = e.renderQueue.itemCount;

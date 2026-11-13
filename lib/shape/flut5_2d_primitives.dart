@@ -1,6 +1,8 @@
 import 'dart:math' as math;
 
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
+
+import '../core/flut5_engine_colors.dart';
 import '../core/flut5_console.dart';
 import '../math/flut5_trigonometry.dart';
 import 'flut5_stroke.dart';
@@ -17,13 +19,15 @@ mixin Flut52DPrimitives on Flut5Stroke, Flut5Fill, Flut5Trigonometry {
   // All snapshot caches now live on Flut5Fill/Flut5Stroke (shared with the
   // vertex API) so consecutive same-state draws batch by paint identity.
   Paint _pointPaintSnapshot() => snapshotPointPaint()!;
-  Paint? _linePaintForBounds(Rect bounds) => snapshotStrokePaintForShape(bounds);
+  Paint? _linePaintForBounds(Rect bounds) =>
+      snapshotStrokePaintForShape(bounds);
 
   // Shape-bounds-aware variants: when a gradient with no explicit rect is
   // active the shader is built against the shape's own bounding box instead
   // of the full canvas.
   Paint? _queuedFillForBounds(Rect bounds) => snapshotFillPaintForShape(bounds);
-  Paint? _queuedStrokeForBounds(Rect bounds) => snapshotStrokePaintForShape(bounds);
+  Paint? _queuedStrokeForBounds(Rect bounds) =>
+      snapshotStrokePaintForShape(bounds);
 
   // ---------------------------------------------------------------------------
   // Ellipse & Circle
@@ -44,7 +48,11 @@ mixin Flut52DPrimitives on Flut5Stroke, Flut5Fill, Flut5Trigonometry {
       markBatchDirty();
       return;
     }
-    renderQueue.appendEllipse(rect, _queuedFillForBounds(rect), _queuedStrokeForBounds(rect));
+    renderQueue.appendEllipse(
+      rect,
+      _queuedFillForBounds(rect),
+      _queuedStrokeForBounds(rect),
+    );
   }
 
   /// Draws a circle centered at ([x], [y]) with diameter [d].
@@ -53,15 +61,20 @@ mixin Flut52DPrimitives on Flut5Stroke, Flut5Fill, Flut5Trigonometry {
   /// ```
   void circle(double x, double y, double d) {
     if (batchPath != null) {
-      batchPath!.addOval(Rect.fromCenter(
-        center: Offset(x, y), width: d, height: d,
-      ));
+      batchPath!.addOval(
+        Rect.fromCenter(center: Offset(x, y), width: d, height: d),
+      );
       markBatchDirty();
       return;
     }
     final radius = d / 2;
     final bounds = Rect.fromCircle(center: Offset(x, y), radius: radius);
-    renderQueue.appendCircle(Offset(x, y), radius, _queuedFillForBounds(bounds), _queuedStrokeForBounds(bounds));
+    renderQueue.appendCircle(
+      Offset(x, y),
+      radius,
+      _queuedFillForBounds(bounds),
+      _queuedStrokeForBounds(bounds),
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -79,10 +92,12 @@ mixin Flut52DPrimitives on Flut5Stroke, Flut5Fill, Flut5Trigonometry {
   /// z-order is preserved. [beginBatch] / [endBatch] route through their own
   /// buffer and emit the same way.
   void point(double x, double y) {
-    if (strokeColor == Colors.transparent) return;
+    if (strokeColor == flut5Transparent) return;
     final points = batchPoints;
     if (points != null) {
-      points..add(x)..add(y);
+      points
+        ..add(x)
+        ..add(y);
       return;
     }
     renderQueue.appendPoint(x, y, _pointPaintSnapshot());
@@ -99,7 +114,7 @@ mixin Flut52DPrimitives on Flut5Stroke, Flut5Fill, Flut5Trigonometry {
       markBatchDirty();
       return;
     }
-    if (strokeColor == Colors.transparent) return;
+    if (strokeColor == flut5Transparent) return;
     final minX = x1 < x2 ? x1 : x2;
     final maxX = x1 > x2 ? x1 : x2;
     final minY = y1 < y2 ? y1 : y2;
@@ -135,13 +150,15 @@ mixin Flut52DPrimitives on Flut5Stroke, Flut5Fill, Flut5Trigonometry {
     if (batchPath != null) {
       if (tl != null || tr != null || br != null || bl != null) {
         Radius rad(double? r) => Radius.circular(r ?? 0.0);
-        batchPath!.addRRect(RRect.fromRectAndCorners(
-          Rect.fromLTWH(x, y, w, h),
-          topLeft: rad(tl),
-          topRight: rad(tr ?? tl),
-          bottomRight: rad(br ?? tl),
-          bottomLeft: rad(bl ?? tl),
-        ));
+        batchPath!.addRRect(
+          RRect.fromRectAndCorners(
+            Rect.fromLTWH(x, y, w, h),
+            topLeft: rad(tl),
+            topRight: rad(tr ?? tl),
+            bottomRight: rad(br ?? tl),
+            bottomLeft: rad(bl ?? tl),
+          ),
+        );
       } else {
         batchPath!.addRect(Rect.fromLTWH(x, y, w, h));
       }
@@ -196,9 +213,12 @@ mixin Flut52DPrimitives on Flut5Stroke, Flut5Fill, Flut5Trigonometry {
   /// flut5.triangle(50, 10, 10, 90, 90, 90);
   /// ```
   void triangle(
-    double x1, double y1,
-    double x2, double y2,
-    double x3, double y3,
+    double x1,
+    double y1,
+    double x2,
+    double y2,
+    double x3,
+    double y3,
   ) {
     if (batchPath != null) {
       batchPath!.moveTo(x1, y1);
@@ -209,14 +229,23 @@ mixin Flut52DPrimitives on Flut5Stroke, Flut5Fill, Flut5Trigonometry {
       return;
     }
     double minX = x1, maxX = x1;
-    if (x2 < minX) minX = x2; if (x2 > maxX) maxX = x2;
-    if (x3 < minX) minX = x3; if (x3 > maxX) maxX = x3;
+    if (x2 < minX) minX = x2;
+    if (x2 > maxX) maxX = x2;
+    if (x3 < minX) minX = x3;
+    if (x3 > maxX) maxX = x3;
     double minY = y1, maxY = y1;
-    if (y2 < minY) minY = y2; if (y2 > maxY) maxY = y2;
-    if (y3 < minY) minY = y3; if (y3 > maxY) maxY = y3;
+    if (y2 < minY) minY = y2;
+    if (y2 > maxY) maxY = y2;
+    if (y3 < minY) minY = y3;
+    if (y3 > maxY) maxY = y3;
     final bounds = Rect.fromLTRB(minX, minY, maxX, maxY);
     renderQueue.appendTriangle(
-      x1, y1, x2, y2, x3, y3,
+      x1,
+      y1,
+      x2,
+      y2,
+      x3,
+      y3,
       _queuedFillForBounds(bounds),
       _queuedStrokeForBounds(bounds),
     );
@@ -231,10 +260,14 @@ mixin Flut52DPrimitives on Flut5Stroke, Flut5Fill, Flut5Trigonometry {
   /// flut5.quad(10, 10, 90, 20, 85, 80, 15, 70);
   /// ```
   void quad(
-    double x1, double y1,
-    double x2, double y2,
-    double x3, double y3,
-    double x4, double y4,
+    double x1,
+    double y1,
+    double x2,
+    double y2,
+    double x3,
+    double y3,
+    double x4,
+    double y4,
   ) {
     if (batchPath != null) {
       batchPath!.moveTo(x1, y1);
@@ -246,16 +279,29 @@ mixin Flut52DPrimitives on Flut5Stroke, Flut5Fill, Flut5Trigonometry {
       return;
     }
     double minX = x1, maxX = x1;
-    if (x2 < minX) minX = x2; if (x2 > maxX) maxX = x2;
-    if (x3 < minX) minX = x3; if (x3 > maxX) maxX = x3;
-    if (x4 < minX) minX = x4; if (x4 > maxX) maxX = x4;
+    if (x2 < minX) minX = x2;
+    if (x2 > maxX) maxX = x2;
+    if (x3 < minX) minX = x3;
+    if (x3 > maxX) maxX = x3;
+    if (x4 < minX) minX = x4;
+    if (x4 > maxX) maxX = x4;
     double minY = y1, maxY = y1;
-    if (y2 < minY) minY = y2; if (y2 > maxY) maxY = y2;
-    if (y3 < minY) minY = y3; if (y3 > maxY) maxY = y3;
-    if (y4 < minY) minY = y4; if (y4 > maxY) maxY = y4;
+    if (y2 < minY) minY = y2;
+    if (y2 > maxY) maxY = y2;
+    if (y3 < minY) minY = y3;
+    if (y3 > maxY) maxY = y3;
+    if (y4 < minY) minY = y4;
+    if (y4 > maxY) maxY = y4;
     final bounds = Rect.fromLTRB(minX, minY, maxX, maxY);
     renderQueue.appendQuad(
-      x1, y1, x2, y2, x3, y3, x4, y4,
+      x1,
+      y1,
+      x2,
+      y2,
+      x3,
+      y3,
+      x4,
+      y4,
       _queuedFillForBounds(bounds),
       _queuedStrokeForBounds(bounds),
     );
@@ -293,7 +339,10 @@ mixin Flut52DPrimitives on Flut5Stroke, Flut5Fill, Flut5Trigonometry {
     // full oval rect, rather than the exact vertex extents.
     final bounds = Rect.fromCircle(center: Offset(x, y), radius: radius);
     renderQueue.appendRegularPolygon(
-      x, y, radius, sides,
+      x,
+      y,
+      radius,
+      sides,
       _queuedFillForBounds(bounds),
       _queuedStrokeForBounds(bounds),
     );
@@ -340,7 +389,11 @@ mixin Flut52DPrimitives on Flut5Stroke, Flut5Fill, Flut5Trigonometry {
     // Gradient bounds use the outer circumscribed circle, like polygon().
     final bounds = Rect.fromCircle(center: Offset(x, y), radius: outerRadius);
     renderQueue.appendStar(
-      x, y, innerRadius, outerRadius, points,
+      x,
+      y,
+      innerRadius,
+      outerRadius,
+      points,
       _queuedFillForBounds(bounds),
       _queuedStrokeForBounds(bounds),
     );
@@ -397,7 +450,9 @@ mixin Flut52DPrimitives on Flut5Stroke, Flut5Fill, Flut5Trigonometry {
         renderQueue.appendArc(rect, radStart, sweepAngle, false, fill, stroke);
 
       case .chord:
-        final path = Path()..arcTo(rect, radStart, sweepAngle, true)..close();
+        final path = Path()
+          ..arcTo(rect, radStart, sweepAngle, true)
+          ..close();
         renderQueue.appendShapePath(
           path,
           fill,
@@ -412,7 +467,7 @@ mixin Flut52DPrimitives on Flut5Stroke, Flut5Fill, Flut5Trigonometry {
 }
 
 /// Controls how an arc is closed.
-enum ArcMode {
+enum ArcMode() {
   /// Ends left open — stroke does not connect the two endpoints.
   open,
 

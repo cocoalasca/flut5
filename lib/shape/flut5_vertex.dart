@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
+
 import '../core/flut5_console.dart';
 import '../core/render/flut5_render_queue.dart';
 import 'flut5_stroke.dart';
@@ -20,7 +21,7 @@ import 'flut5_fill.dart';
 /// * simple / curve: `[x, y]`
 /// * quadratic: `[cx, cy, x3, y3]`
 /// * bezier: `[x2, y2, x3, y3, x4, y4]`
-class _VertexBuffer {
+class _VertexBuffer() {
   static const int typeSimple = 0;
   static const int typeBezier = 1;
   static const int typeQuadratic = 2;
@@ -94,9 +95,12 @@ class _VertexBuffer {
   }
 
   void addBezier(
-    double x2, double y2,
-    double x3, double y3,
-    double x4, double y4,
+    double x2,
+    double y2,
+    double x3,
+    double y3,
+    double x4,
+    double y4,
   ) {
     hasCurves = true;
     _addHeader(typeBezier, 6);
@@ -161,7 +165,7 @@ class _VertexBuffer {
 }
 
 /// Shape kind constants for [beginShape].
-enum ShapeMode {
+enum ShapeMode() {
   /// Default — connects vertices into a closed or open polygon.
   polygon,
 
@@ -261,8 +265,10 @@ mixin Flut5Vertex on Flut5Stroke, Flut5Fill {
     double minY = _vertices.endY(0), maxY = minY;
     for (int i = 1; i < _vertices.count; i++) {
       final vx = _vertices.endX(i), vy = _vertices.endY(i);
-      if (vx < minX) minX = vx; if (vx > maxX) maxX = vx;
-      if (vy < minY) minY = vy; if (vy > maxY) maxY = vy;
+      if (vx < minX) minX = vx;
+      if (vx > maxX) maxX = vx;
+      if (vy < minY) minY = vy;
+      if (vy > maxY) maxY = vy;
     }
     return Rect.fromLTRB(minX, minY, maxX, maxY);
   }
@@ -298,17 +304,24 @@ mixin Flut5Vertex on Flut5Stroke, Flut5Fill {
   /// Must be called after at least one [vertex] call and between
   /// [beginShape] and [endShape]. Only works in polygon mode.
   void bezierVertex(
-    double x2, double y2,
-    double x3, double y3,
-    double x4, double y4,
+    double x2,
+    double y2,
+    double x3,
+    double y3,
+    double x4,
+    double y4,
   ) {
     if (!_shapeActive) {
-      Flut5Console.printLater('bezierVertex() called outside beginShape/endShape');
+      Flut5Console.printLater(
+        'bezierVertex() called outside beginShape/endShape',
+      );
       return;
     }
     final target = _activeContour ?? _vertices;
     if (target.isEmpty) {
-      Flut5Console.printLater('vertex() must be used once before calling bezierVertex()');
+      Flut5Console.printLater(
+        'vertex() must be used once before calling bezierVertex()',
+      );
       return;
     }
     if (_shapeMode != .polygon) {
@@ -327,12 +340,16 @@ mixin Flut5Vertex on Flut5Stroke, Flut5Fill {
   /// [beginShape] and [endShape]. Only works in polygon mode.
   void quadraticVertex(double cx, double cy, double x3, double y3) {
     if (!_shapeActive) {
-      Flut5Console.printLater('quadraticVertex() called outside beginShape/endShape');
+      Flut5Console.printLater(
+        'quadraticVertex() called outside beginShape/endShape',
+      );
       return;
     }
     final target = _activeContour ?? _vertices;
     if (target.isEmpty) {
-      Flut5Console.printLater('vertex() must be used once before calling quadraticVertex()');
+      Flut5Console.printLater(
+        'vertex() must be used once before calling quadraticVertex()',
+      );
       return;
     }
     if (_shapeMode != .polygon) {
@@ -356,7 +373,9 @@ mixin Flut5Vertex on Flut5Stroke, Flut5Fill {
   /// polygon mode.
   void curveVertex(double x, double y) {
     if (!_shapeActive) {
-      Flut5Console.printLater('curveVertex() called outside beginShape/endShape');
+      Flut5Console.printLater(
+        'curveVertex() called outside beginShape/endShape',
+      );
       return;
     }
     if (_shapeMode != .polygon) {
@@ -373,7 +392,9 @@ mixin Flut5Vertex on Flut5Stroke, Flut5Fill {
   /// Only works in polygon mode.
   void beginContour() {
     if (!_shapeActive) {
-      Flut5Console.printLater('beginContour() called outside beginShape/endShape');
+      Flut5Console.printLater(
+        'beginContour() called outside beginShape/endShape',
+      );
       return;
     }
     if (_shapeMode != .polygon) {
@@ -472,11 +493,13 @@ mixin Flut5Vertex on Flut5Stroke, Flut5Fill {
       case .points:
         final radius = strokeWeightVal;
         for (int i = 0; i < v.count; i++) {
-          bp.addOval(Rect.fromCenter(
-            center: Offset(v.endX(i), v.endY(i)),
-            width: radius,
-            height: radius,
-          ));
+          bp.addOval(
+            Rect.fromCenter(
+              center: Offset(v.endX(i), v.endY(i)),
+              width: radius,
+              height: radius,
+            ),
+          );
         }
       case .lines:
         for (int i = 0; i + 1 < v.count; i += 2) {
@@ -555,15 +578,20 @@ mixin Flut5Vertex on Flut5Stroke, Flut5Fill {
           i++;
         case _VertexBuffer.typeBezier:
           path.cubicTo(
-            verts.coordAt(i, 0), verts.coordAt(i, 1),
-            verts.coordAt(i, 2), verts.coordAt(i, 3),
-            verts.coordAt(i, 4), verts.coordAt(i, 5),
+            verts.coordAt(i, 0),
+            verts.coordAt(i, 1),
+            verts.coordAt(i, 2),
+            verts.coordAt(i, 3),
+            verts.coordAt(i, 4),
+            verts.coordAt(i, 5),
           );
           i++;
         case _VertexBuffer.typeQuadratic:
           path.quadraticBezierTo(
-            verts.coordAt(i, 0), verts.coordAt(i, 1),
-            verts.coordAt(i, 2), verts.coordAt(i, 3),
+            verts.coordAt(i, 0),
+            verts.coordAt(i, 1),
+            verts.coordAt(i, 2),
+            verts.coordAt(i, 3),
           );
           i++;
         case _VertexBuffer.typeCurve:
@@ -572,7 +600,13 @@ mixin Flut5Vertex on Flut5Stroke, Flut5Fill {
               verts.typeAt(i) == _VertexBuffer.typeCurve) {
             i++;
           }
-          _addCatmullRomRun(path, verts, runStart, i - runStart, isFirst: false);
+          _addCatmullRomRun(
+            path,
+            verts,
+            runStart,
+            i - runStart,
+            isFirst: false,
+          );
       }
     }
 
@@ -673,7 +707,7 @@ mixin Flut5Vertex on Flut5Stroke, Flut5Fill {
     if (pointPaint == null) return;
     final coords = Float32List(_vertices.count * 2);
     for (int i = 0; i < _vertices.count; i++) {
-      coords[i * 2]     = _vertices.endX(i);
+      coords[i * 2] = _vertices.endX(i);
       coords[i * 2 + 1] = _vertices.endY(i);
     }
     renderQueue.appendPoints(coords, pointPaint);
@@ -683,8 +717,10 @@ mixin Flut5Vertex on Flut5Stroke, Flut5Fill {
     if (stroke == null) return;
     for (int i = 0; i + 1 < _vertices.count; i += 2) {
       renderQueue.appendLine(
-        _vertices.endX(i), _vertices.endY(i),
-        _vertices.endX(i + 1), _vertices.endY(i + 1),
+        _vertices.endX(i),
+        _vertices.endY(i),
+        _vertices.endX(i + 1),
+        _vertices.endY(i + 1),
         stroke,
       );
     }

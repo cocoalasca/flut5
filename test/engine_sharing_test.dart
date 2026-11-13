@@ -1,13 +1,13 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:flut5/flut5.dart';
 
-class _RootSketch extends Flut5Sketch;
+class _RootSketch() extends Flut5Sketch;
 
 class _Helper({super.flut5}) extends Flut5;
 
-class _EagerFieldSketch extends Flut5Sketch {
+class _EagerFieldSketch() extends Flut5Sketch {
   // Non-late field initializer: runs BEFORE the sketch's engine exists.
   final _Helper eager = _Helper();
   late final _Helper lazy = _Helper();

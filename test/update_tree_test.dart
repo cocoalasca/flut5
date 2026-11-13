@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -407,6 +407,6 @@ void main() {
 
 /// A hand-rolled controller — the other half of the mixin's audience, where
 /// there is no [Flut5] in the picture at all.
-class _Controller extends ChangeNotifier with Flut5ChangeNotifier {
+class _Controller() extends ChangeNotifier with Flut5ChangeNotifier {
   void bump() => notifyListeners();
 }

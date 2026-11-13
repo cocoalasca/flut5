@@ -5,11 +5,10 @@
 // * fetched from the cache once per line rather than once per glyph per
 //   frame, without ever drawing a texture the cache has let go of.
 import 'dart:io';
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flut5/flut5.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 

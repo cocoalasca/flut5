@@ -1,7 +1,10 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
+
+import '../core/flut5_engine_colors.dart';
+
 import 'package:flutter/services.dart' show rootBundle;
 
 import '../core/flut5_console.dart';
@@ -43,7 +46,7 @@ bool _gridCellAdviceShown = false;
 ///   Flut5TextArg.sampleFactor: 0.8,
 /// });
 /// ```
-abstract final class Flut5TextArg {
+abstract final class Flut5TextArg() {
   /// A [Flut5Font] to use instead of the loaded one.
   static const String font = 'font';
 
@@ -145,7 +148,7 @@ Flut5Font? _argFont(Map<String, dynamic>? args, String method) {
 }
 
 /// Controls which caching strategy [Flut5Text.text] uses.
-enum TextCacheMode {
+enum TextCacheMode() {
   /// Caches individual characters and composites them at draw time.
   /// Ideal for frequently-changing text (scores, timers, counters).
   dynamic,
@@ -616,8 +619,8 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
       _appendTextToClipMask(content, x, y);
       return;
     }
-    final bool hasFill = fillColor != Colors.transparent;
-    final bool hasStroke = strokeColor != Colors.transparent;
+    final bool hasFill = fillColor != flut5Transparent;
+    final bool hasStroke = strokeColor != flut5Transparent;
     if (!hasFill && !hasStroke) return;
 
     final Gradient? autoFillGrad =
@@ -686,8 +689,8 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
       _appendTextToClipMask(content, x, y);
       return;
     }
-    final bool hasFill = fillColor != Colors.transparent;
-    final bool hasStroke = strokeColor != Colors.transparent;
+    final bool hasFill = fillColor != flut5Transparent;
+    final bool hasStroke = strokeColor != flut5Transparent;
     if (!hasFill && !hasStroke) return;
 
     final Gradient? autoFillGrad =

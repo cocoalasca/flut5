@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
 
 import 'flut5_ui_element.dart';
 
@@ -38,10 +38,12 @@ base class Flut5Container({
     final resolved = props is String
         ? {props: value}
         : props as Map<String, dynamic>;
-    if (resolved.containsKey('align') && resolved['align'] != null)
+    if (resolved.containsKey('align') && resolved['align'] != null) {
       align = resolved['align'] as String;
-    if (resolved.containsKey('justify') && resolved['justify'] != null)
+    }
+    if (resolved.containsKey('justify') && resolved['justify'] != null) {
       justify = resolved['justify'] as String;
+    }
     if (resolved.containsKey('gap') && resolved['gap'] != null) {
       gap = (resolved['gap'] as num).toDouble();
       _cachedSpacer = null;
@@ -103,8 +105,9 @@ base class Flut5Container({
   /// property changes rebuild only that child — not the entire container.
   List<Widget> _resolveItems(BuildContext context) {
     return _items.map((item) {
-      if (item is Flut5UIElement)
+      if (item is Flut5UIElement) {
         return item.buildInteractiveListenable(context);
+      }
       return item as Widget;
     }).toList();
   }

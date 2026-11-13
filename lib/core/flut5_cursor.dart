@@ -2,10 +2,17 @@
 // for parity with the p5.js API.
 // ignore_for_file: constant_identifier_names
 
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
 
 /// p5-style cursor types accepted by [Flut5Cursor.cursor].
-enum Flut5CursorType { arrow, cross, hand, move, text, wait }
+enum Flut5CursorType() {
+  arrow,
+  cross,
+  hand,
+  move,
+  text,
+  wait,
+}
 
 // p5-style global constants — mirror `cursor(HAND)` / `cursor(ARROW)` usage.
 const Flut5CursorType ARROW = .arrow;

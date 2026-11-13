@@ -2,7 +2,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flut5/flut5.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -159,47 +159,50 @@ void main() {
     expect(cache.layoutCacheLength, 3);
   });
 
-  test('public spacing and line-height animations reuse warmed caches', () async {
-    final engine = Flut5Engine();
-    engine.textSize(21);
-    engine.noStroke();
-    engine.fill(Colors.white);
+  test(
+    'public spacing and line-height animations reuse warmed caches',
+    () async {
+      final engine = Flut5Engine();
+      engine.textSize(21);
+      engine.noStroke();
+      engine.fill(Colors.white);
 
-    Future<Uint8List> render(double spacing, double lineHeight) async {
-      engine.letterSpacing(spacing);
-      engine.textLeading(lineHeight);
-      engine.textDynamic('Hello\nWorld', 20, 10);
-      final recorder = ui.PictureRecorder();
-      engine.renderQueue.execute(Canvas(recorder));
-      engine.renderQueue.clear();
-      final picture = recorder.endRecording();
-      final image = await picture.toImage(400, 180);
-      picture.dispose();
-      final data = (await image.toByteData())!.buffer.asUint8List();
-      image.dispose();
-      return data;
-    }
+      Future<Uint8List> render(double spacing, double lineHeight) async {
+        engine.letterSpacing(spacing);
+        engine.textLeading(lineHeight);
+        engine.textDynamic('Hello\nWorld', 20, 10);
+        final recorder = ui.PictureRecorder();
+        engine.renderQueue.execute(Canvas(recorder));
+        engine.renderQueue.clear();
+        final picture = recorder.endRecording();
+        final image = await picture.toImage(400, 180);
+        picture.dispose();
+        final data = (await image.toByteData())!.buffer.asUint8List();
+        image.dispose();
+        return data;
+      }
 
-    final original = await render(0, 30);
-    final textureCount = cache.cacheLength;
-    final textureBytes = cache.cacheBytes;
-    expect(textureCount, greaterThan(0));
-    expect(cache.layoutCacheLength, 1);
-
-    // Each attribute must independently change the rendered result.
-    final wider = await render(3.125, 30);
-    expect(wider, isNot(orderedEquals(original)));
-    final taller = await render(3.125, 47.375);
-    expect(taller, isNot(orderedEquals(wider)));
-
-    for (var i = 0; i < 20; i++) {
-      await render(-1.25 + i * .137, 25.5 + i * .713);
+      final original = await render(0, 30);
+      final textureCount = cache.cacheLength;
+      final textureBytes = cache.cacheBytes;
+      expect(textureCount, greaterThan(0));
       expect(cache.layoutCacheLength, 1);
-      expect(cache.cacheLength, textureCount);
-      expect(cache.cacheBytes, textureBytes);
-    }
-    expect(await render(0, 30), orderedEquals(original));
-  });
+
+      // Each attribute must independently change the rendered result.
+      final wider = await render(3.125, 30);
+      expect(wider, isNot(orderedEquals(original)));
+      final taller = await render(3.125, 47.375);
+      expect(taller, isNot(orderedEquals(wider)));
+
+      for (var i = 0; i < 20; i++) {
+        await render(-1.25 + i * .137, 25.5 + i * .713);
+        expect(cache.layoutCacheLength, 1);
+        expect(cache.cacheLength, textureCount);
+        expect(cache.cacheBytes, textureBytes);
+      }
+      expect(await render(0, 30), orderedEquals(original));
+    },
+  );
 
   test('texture eviction leaves reusable layout geometry valid', () {
     final oldCap = cache.maxCacheSize;

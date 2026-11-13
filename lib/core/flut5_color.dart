@@ -1,6 +1,6 @@
 // ignore_for_file: constant_identifier_names
 
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
 
 /// p5-style blend mode constants for [Flut5Color.blendMode].
 const BlendMode BLEND = BlendMode.srcOver;

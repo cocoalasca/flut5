@@ -1,10 +1,10 @@
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
 
 /// Base class for all drawing commands stored in the Flut5 render queue.
 ///
 /// Contains the data and state necessary to correctly draw the object
 /// later in the render pass when the queue is executed.
-abstract class Flut5RenderItem {
+abstract class Flut5RenderItem() {
   /// Executes the deferred drawing command onto the provided [Canvas].
   void execute(Canvas canvas);
 

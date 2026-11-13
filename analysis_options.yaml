@@ -8,6 +8,7 @@ include: package:flutter_lints/flutter.yaml
 
 linter:
   rules:
+    use_primary_constructors: true
     use_declaring_parameters: true
     unnecessary_primary_constructor_body: true
     empty_container_bodies: true

@@ -11,7 +11,7 @@ part of 'flut5_physics_engine.dart';
 ///
 /// One instance is reused for every contact, so finding one allocates
 /// nothing.
-final class _ContactManifold {
+final class _ContactManifold() {
   /// Unit vector from the first body toward the second.
   double normalX = 0, normalY = 0;
 

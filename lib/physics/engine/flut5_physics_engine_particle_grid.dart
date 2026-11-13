@@ -13,7 +13,7 @@ part of 'flut5_physics_engine.dart';
 /// particles and nothing per pair. Collisions then move particles without
 /// refiling them: a particle pushed across a cell border is found again on
 /// the next pass.
-final class _ParticleGrid {
+final class _ParticleGrid() {
   /// How many cells the grid has across and down.
   int columns = 1;
   int rows = 1;

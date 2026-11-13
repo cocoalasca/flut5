@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:flut5/flut5.dart';
@@ -144,26 +144,25 @@ void main() {
       expect(split.buffer.asUint8List(), inOrder.buffer.asUint8List());
     });
 
-    test('diverges when a background follows content — hence the guard',
-        () async {
-      final e = engine();
-      e.fill(Colors.red);
-      e.circle(20, 20, 12);
-      e.background(const Color(0xAA204060));
-      e.renderQueue.flushPending();
+    test(
+      'diverges when a background follows content — hence the guard',
+      () async {
+        final e = engine();
+        e.fill(Colors.red);
+        e.circle(20, 20, 12);
+        e.background(const Color(0xAA204060));
+        e.renderQueue.flushPending();
 
-      expect(e.renderQueue.backgroundsPrecedeContent, isFalse);
+        expect(e.renderQueue.backgroundsPrecedeContent, isFalse);
 
-      final inOrder = await rasterize((c) => e.renderQueue.execute(c));
-      final split = await rasterize((c) => splitReplay(c, e.renderQueue));
+        final inOrder = await rasterize((c) => e.renderQueue.execute(c));
+        final split = await rasterize((c) => splitReplay(c, e.renderQueue));
 
-      // The split hoists the background above the circle, so it paints over
-      // it instead of under it. This is exactly what the predicate exists to
-      // prevent the painter from doing.
-      expect(
-        split.buffer.asUint8List(),
-        isNot(inOrder.buffer.asUint8List()),
-      );
-    });
+        // The split hoists the background above the circle, so it paints over
+        // it instead of under it. This is exactly what the predicate exists to
+        // prevent the painter from doing.
+        expect(split.buffer.asUint8List(), isNot(inOrder.buffer.asUint8List()));
+      },
+    );
   });
 }

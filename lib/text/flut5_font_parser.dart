@@ -42,8 +42,9 @@ class Flut5FontParser._() {
 
     _TableRecord requireTable(String tag) {
       final rec = tables[tag];
-      if (rec == null)
+      if (rec == null) {
         throw FormatException("Required table '$tag' not found.");
+      }
       return rec;
     }
 

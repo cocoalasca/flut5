@@ -3,7 +3,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-class _Listener with Flut5EventMixin {
+class _Listener() with Flut5EventMixin {
   final Map<String, int> counts = {};
   void _record(String event) =>
       counts.update(event, (n) => n + 1, ifAbsent: () => 1);

@@ -486,13 +486,15 @@ mixin _PhysicsSoftBodies {
 typedef _Spin = ({double centerX, double centerY, double angularMomentum});
 
 /// What [Flut5PhysicsEngine] keeps for each soft body it pulls into shape.
-final class _SoftBodySolving {
-  _SoftBodySolving(Flut5PhysicsSoftBody body, {required this.pullsPerPass})
-    : restX = Float64List.fromList([for (final p in body.particles) p.x]),
-      restY = Float64List.fromList([for (final p in body.particles) p.y]);
+final class _SoftBodySolving(
+  Flut5PhysicsSoftBody body, {
 
   /// How many times per collision pass its springs and areas are pulled.
-  final int pullsPerPass;
+  required final int pullsPerPass,
+}) {
+  this
+    : restX = Float64List.fromList([for (final p in body.particles) p.x]),
+      restY = Float64List.fromList([for (final p in body.particles) p.y]);
 
   /// Where each particle was when the body was made: its rest shape.
   final Float64List restX;

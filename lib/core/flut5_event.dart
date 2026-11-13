@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 
@@ -29,7 +29,12 @@ final class const ResizeEvent(
 /// sketch-level pointer callbacks ([Flut5EventMixin.onPointerDown],
 /// [Flut5EventMixin.onPointerUp], [Flut5EventMixin.onPointerMove],
 /// [Flut5EventMixin.onPointerDragged]).
-enum Flut5PointerPhase { down, up, move, drag }
+enum Flut5PointerPhase() {
+  down,
+  up,
+  move,
+  drag,
+}
 
 /// One pointer event captured during a frame, tagged with its [phase]. Buffered
 /// by [Flut5Event] and read by scroll-mode-style consumers such as the

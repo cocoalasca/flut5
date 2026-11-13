@@ -414,12 +414,10 @@ mixin _PhysicsPolygons {
 /// around them. Refreshed from its position and angle before each
 /// collision pass and after every push. Edge i runs from corner i to
 /// corner i + 1, and normal i points out of it.
-final class _PolygonShape {
-  _PolygonShape(this.polygon) {
+final class _PolygonShape(var Flut5PhysicsPolygon polygon) {
+  this {
     _measure();
   }
-
-  Flut5PhysicsPolygon polygon;
 
   late Float64List cornerX, cornerY, normalX, normalY;
   late Float64List _localNormalX, _localNormalY;
@@ -495,7 +493,7 @@ final class _PolygonShape {
 }
 
 /// A stretch of edge being cut down to where two polygons overlap.
-final class _Segment {
+final class _Segment() {
   double startX = 0, startY = 0, endX = 0, endY = 0;
 
   /// Cuts away the part of the segment in front of the line

@@ -2,7 +2,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 /// The noise algorithm used by [Flut5Noise.noise].
-enum NoiseMode {
+enum NoiseMode() {
   /// Gradient-based simplex noise.
   ///
   /// Returns values in `[-1, 1]`. Faster at higher dimensions, with fewer

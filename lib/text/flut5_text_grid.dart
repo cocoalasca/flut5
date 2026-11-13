@@ -5,7 +5,7 @@ import '../math/flut5_vector.dart';
 // ── Text grid ─────────────────────────────────────────────────────────
 
 /// State of a single cell in a [Flut5TextGrid].
-enum Flut5CellState {
+enum Flut5CellState() {
   /// The cell lies entirely outside the glyph outlines.
   empty,
 
@@ -260,22 +260,16 @@ class const Flut5TextGrid({
 /// A hand-written iterator rather than a `sync*` getter: walking a grid's
 /// cells is what a sketch does with it every frame, and the generator cost
 /// several times more per cell than the cell itself.
-final class _GridCells extends Iterable<Flut5TextCell> {
-  const _GridCells(this._grid, {required this.filledOnly});
-
-  final Flut5TextGrid _grid;
-  final bool filledOnly;
-
+final class const _GridCells(
+  final Flut5TextGrid _grid, {
+  required final bool filledOnly,
+}) extends Iterable<Flut5TextCell> {
   @override
   Iterator<Flut5TextCell> get iterator => _GridCellIterator(_grid, filledOnly);
 }
 
-final class _GridCellIterator implements Iterator<Flut5TextCell> {
-  _GridCellIterator(this._grid, this._filledOnly);
-
-  final Flut5TextGrid _grid;
-  final bool _filledOnly;
-
+final class _GridCellIterator(final Flut5TextGrid _grid, final bool _filledOnly)
+    implements Iterator<Flut5TextCell> {
   // Where the walk is: the cell last returned, or just before the first.
   int _row = 0;
   int _col = -1;

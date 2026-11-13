@@ -1,7 +1,7 @@
 import 'dart:math' as math;
 
 /// The unit system used to measure angles.
-enum AngleMode {
+enum AngleMode() {
   /// Radians are a unit of angular measure where a full circle is 2*pi.
   radians,
 

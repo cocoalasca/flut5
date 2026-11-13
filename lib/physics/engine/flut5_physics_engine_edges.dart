@@ -170,20 +170,18 @@ typedef _WindowLimits = ({
 });
 
 /// A window edge: the coordinate it blocks and which way is out through it.
-enum _WindowEdge {
+enum _WindowEdge({
+  /// The coordinate the edge blocks, as a vector index: `0` for x, `1` for y.
+  required final int axis,
+
+  /// `1` if leaving through this edge increases that coordinate (right,
+  /// bottom), `-1` if it decreases it (left, top).
+  required final double outward,
+}) {
   left(axis: 0, outward: -1),
   top(axis: 1, outward: -1),
   right(axis: 0, outward: 1),
   bottom(axis: 1, outward: 1);
-
-  const _WindowEdge({required this.axis, required this.outward});
-
-  /// The coordinate the edge blocks, as a vector index: `0` for x, `1` for y.
-  final int axis;
-
-  /// `1` if leaving through this edge increases that coordinate (right,
-  /// bottom), `-1` if it decreases it (left, top).
-  final double outward;
 
   /// The coordinate the edge runs along: y for left and right, x for top and
   /// bottom.

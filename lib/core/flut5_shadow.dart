@@ -1,6 +1,8 @@
 import 'dart:ui' show ImageFilter;
 
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
+
+import 'flut5_engine_colors.dart';
 
 import '../text/flut5_text_cache.dart';
 import 'render/flut5_render_queue.dart';
@@ -226,7 +228,7 @@ mixin Flut5Shadow {
   Offset _shadowOffset = Offset.zero;
   double _shadowBlur = 0;
   double _shadowSpread = 0;
-  Color _shadowColor = Colors.black;
+  Color _shadowColor = flut5Black;
   bool _shadowActive = false;
 
   /// Enables a drop shadow for subsequent drawing.

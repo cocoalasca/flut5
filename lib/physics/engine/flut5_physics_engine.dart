@@ -23,7 +23,7 @@ part 'flut5_physics_engine_contacts.dart';
 part 'flut5_physics_engine_soft_bodies.dart';
 
 /// When the engine runs [Flut5PhysicsEngine.update] each frame.
-enum PhysicsUpdateTiming {
+enum PhysicsUpdateTiming() {
   /// Step right before `draw()` (default), like a game loop's update →
   /// render. Draw always shows this frame's state, and forces applied from
   /// event handlers between frames are visible on the very next frame.
@@ -280,12 +280,10 @@ final class Flut5PhysicsEngine({Size Function()? windowSize})
 
 /// Read-only view of one of the engine's body lists that drops removed
 /// bodies before every read — see [Flut5PhysicsEngine.remove].
-final class _BodyListView<T extends Flut5PhysicsBody> extends ListBase<T> {
-  _BodyListView(this._engine, this._list);
-
-  final Flut5PhysicsEngine _engine;
-  final List<T> _list;
-
+final class _BodyListView<T extends Flut5PhysicsBody>(
+  final Flut5PhysicsEngine _engine,
+  final List<T> _list,
+) extends ListBase<T> {
   @override
   int get length {
     _engine._compact();
@@ -319,11 +317,12 @@ final class _BodyListView<T extends Flut5PhysicsBody> extends ListBase<T> {
 /// Walks one of the engine's body lists. Like any list's iterator, it throws
 /// a [ConcurrentModificationError] if a body is added or removed while it
 /// runs — collect what to remove, then remove it after the loop.
-final class _BodyListIterator<T> implements Iterator<T> {
-  _BodyListIterator(this._engine, this._list) : _length = _list.length;
+final class _BodyListIterator<T>(
+  final Flut5PhysicsEngine _engine,
+  final List<T> _list,
+) implements Iterator<T> {
+  this : _length = _list.length;
 
-  final Flut5PhysicsEngine _engine;
-  final List<T> _list;
   final int _length;
   int _index = 0;
   T? _current;

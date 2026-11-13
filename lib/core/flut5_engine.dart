@@ -3,7 +3,10 @@ import 'dart:typed_data';
 import 'dart:ui' as dart_ui;
 
 import 'package:flutter/foundation.dart' show kDebugMode, kIsWasm, kIsWeb;
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
+
+import 'flut5_engine_colors.dart';
+
 import 'package:flutter/scheduler.dart';
 
 import '../image/flut5_image_mixin.dart';
@@ -46,7 +49,7 @@ import 'sketch_environment.dart';
 /// * [Flut5Fill]: Defines fill color states and background drawing.
 /// * [Flut52DPrimitives]: Methods to draw primitives like circle, ellipse, and point.
 /// * [Flut5ImageMixin]: Loading and drawing bitmaps.
-final class Flut5Engine
+final class Flut5Engine()
     with
         Flut5Color,
         Flut5Math,
@@ -316,8 +319,8 @@ final class Flut5Engine
     if (pathEmpty && pointsEmpty) return;
 
     if (!pathEmpty) {
-      final bool hasFill = fillColor != Colors.transparent;
-      final bool hasStroke = strokeColor != Colors.transparent;
+      final bool hasFill = fillColor != flut5Transparent;
+      final bool hasStroke = strokeColor != flut5Transparent;
       final bool needsBounds =
           (hasFill && fillGradient != null && fillGradientRect == null) ||
           (hasStroke && strokeGradient != null && strokeGradientRect == null);
@@ -355,7 +358,7 @@ final class Flut5Engine
       }
     }
 
-    if (!pointsEmpty && strokeColor != Colors.transparent) {
+    if (!pointsEmpty && strokeColor != flut5Transparent) {
       final Paint pointPaint = getStrokePaint().clone()
         ..strokeCap = StrokeCap.round;
       renderQueue.enqueue(
@@ -1808,7 +1811,7 @@ final class Flut5Engine
 
 /// Simple [ChangeNotifier] subclass that exposes [fire] so the engine can
 /// notify trail-layer listeners without exposing [notifyListeners] itself.
-class _Flut5TrailRepaintNotifier extends ChangeNotifier {
+class _Flut5TrailRepaintNotifier() extends ChangeNotifier {
   bool _deferred = false;
 
   /// Notifies trail-layer listeners that the snapshot changed.

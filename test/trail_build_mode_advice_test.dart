@@ -1,11 +1,11 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:flut5/flut5.dart';
 
 /// Draws with a translucent background, which is what puts a frame through
 /// the trail-snapshot path.
-class _TrailSketch extends Flut5Sketch {
+class _TrailSketch() extends Flut5Sketch {
   @override
   void draw() {
     background(const Color(0x22000000));
@@ -15,7 +15,7 @@ class _TrailSketch extends Flut5Sketch {
 }
 
 /// Same drawing, opaque background — the fast path, no snapshot maintained.
-class _OpaqueSketch extends Flut5Sketch {
+class _OpaqueSketch() extends Flut5Sketch {
   @override
   void draw() {
     background(const Color(0xFF000000));
@@ -76,10 +76,7 @@ void main() {
 
   testWidgets('an opaque background never triggers it', (tester) async {
     final logs = await runAndCapture(tester, _OpaqueSketch());
-    expect(
-      logs.where((l) => l.contains('translucent background')),
-      isEmpty,
-    );
+    expect(logs.where((l) => l.contains('translucent background')), isEmpty);
     expect(Flut5Painter.debugTrailBuildModeAdviceShown, isFalse);
   });
 

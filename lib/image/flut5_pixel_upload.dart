@@ -25,7 +25,7 @@ import 'package:flutter/painting.dart';
 ///   uploading).
 ///
 /// One uploader per image: it owns that image's scratch buffer.
-class Flut5PixelUploader {
+class Flut5PixelUploader() {
   /// Whether `decodeImageFromPixelsSync` works on this backend. Settled by a
   /// 1×1 probe on first use, not by catching a failed real upload — so a
   /// genuine Impeller failure surfaces instead of silently switching routes.

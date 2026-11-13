@@ -16,7 +16,10 @@ import 'dart:ui';
 /// length to walk.
 Path dashPath(Path source, List<double> pattern, [double offset = 0]) {
   // Drop negatives (invalid dash lengths) and bail if nothing usable remains.
-  final dashes = <double>[for (final d in pattern) if (d >= 0) d];
+  final dashes = <double>[
+    for (final d in pattern)
+      if (d >= 0) d,
+  ];
   if (dashes.isEmpty) return source;
 
   // Canvas spec: an odd-count pattern is duplicated so on/off alternation is

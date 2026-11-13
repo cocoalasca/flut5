@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:flut5/flut5.dart';
@@ -54,7 +54,7 @@ Color pixelAt(ByteData rgba, int width, int x, int y) {
 }
 
 /// Exercises the unprefixed forwarders sketch authors actually write.
-class _ImageSketch extends Flut5Sketch {
+class _ImageSketch() extends Flut5Sketch {
   void paint(Flut5Image img) => image(img, 7, 9);
 }
 

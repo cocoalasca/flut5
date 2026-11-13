@@ -1,10 +1,12 @@
 import 'dart:ui' as ui;
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:flut5/flut5.dart';
 
+// Deliberately mutable: it records every rect passed to createShader.
+// ignore: prefer_const_constructors_in_immutables
 class _RecordingGradient() extends LinearGradient {
   this : super(colors: [Colors.red, Colors.blue]);
 

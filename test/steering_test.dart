@@ -2,7 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flut5/flut5.dart';
 
 // Create a dummy vehicle to test the mixin
-class Vehicle with Flut5Steering;
+class Vehicle() with Flut5Steering;
 
 void main() {
   group('Flut5Steering Physics', () {

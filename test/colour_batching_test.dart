@@ -10,7 +10,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flut5/flut5.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 const int _width = 320;
@@ -27,7 +27,11 @@ const _palette = [
 
 /// How a scene is drawn: as the queue batches it, or as ground truth with
 /// the batch closed after every shape or at every change of colour.
-enum _Closing { never, afterEveryShape, atEveryColourChange }
+enum _Closing() {
+  never,
+  afterEveryShape,
+  atEveryColourChange,
+}
 
 /// One drawing of a scene. Scenes set colours through [fill] and call
 /// [shapeDone] after each shape, so the ground-truth runs can close the

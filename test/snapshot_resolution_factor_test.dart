@@ -1,6 +1,6 @@
 import 'dart:math' as math;
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:flut5/flut5.dart';
@@ -56,9 +56,14 @@ void main() {
 
     test('per-mode setters reject percentages too', () {
       final e = Flut5Engine();
-      expect(() => e.frameSnapshotResolutionFactorDebug = 70,
-          throwsArgumentError);
-      expect(() => e.frameSnapshotResolutionFactorProd = 0, throwsArgumentError);
+      expect(
+        () => e.frameSnapshotResolutionFactorDebug = 70,
+        throwsArgumentError,
+      );
+      expect(
+        () => e.frameSnapshotResolutionFactorProd = 0,
+        throwsArgumentError,
+      );
     });
 
     test('per-mode method and p5-style accessor forms agree', () {
@@ -133,18 +138,20 @@ void main() {
       expect(e.frameSnapshotCapBinding, 'edge');
     });
 
-    test('the pixel budget binds on a square canvas the edge cap would miss',
-        () {
-      // 2000×2000 logical at dpr 2 = 4000×4000 = 16 MP native.
-      // edge: 3600 / 4000            = 0.900
-      // px:   sqrt(8M/4M)/2 = 1.414/2 = 0.707  → pixels are tighter
-      final e = sized(const Size(2000, 2000), 2.0);
-      expect(
-        e.effectiveFrameSnapshotResolutionFactor,
-        closeTo(math.sqrt(8000000 / 4000000) / 2, 1e-9),
-      );
-      expect(e.frameSnapshotCapBinding, 'px');
-    });
+    test(
+      'the pixel budget binds on a square canvas the edge cap would miss',
+      () {
+        // 2000×2000 logical at dpr 2 = 4000×4000 = 16 MP native.
+        // edge: 3600 / 4000            = 0.900
+        // px:   sqrt(8M/4M)/2 = 1.414/2 = 0.707  → pixels are tighter
+        final e = sized(const Size(2000, 2000), 2.0);
+        expect(
+          e.effectiveFrameSnapshotResolutionFactor,
+          closeTo(math.sqrt(8000000 / 4000000) / 2, 1e-9),
+        );
+        expect(e.frameSnapshotCapBinding, 'px');
+      },
+    );
 
     test('the request wins when it is already below what the caps allow', () {
       final e = sized(const Size(2400, 1400), 2.0)
@@ -233,15 +240,17 @@ void main() {
       );
     });
 
-    test('reading the p5-style accessor does not mark the quality explicit',
-        () {
-      final e = Flut5Engine()..adaptiveSnapshotFilterQuality = true;
-      expect(e.snapshotFilterQuality(), FilterQuality.low);
-      // Still adaptive — a bare read must not pin the kernel.
-      expect(
-        e.effectiveFrameSnapshotFilterQuality(upscaleRatio: 2.0),
-        FilterQuality.high,
-      );
-    });
+    test(
+      'reading the p5-style accessor does not mark the quality explicit',
+      () {
+        final e = Flut5Engine()..adaptiveSnapshotFilterQuality = true;
+        expect(e.snapshotFilterQuality(), FilterQuality.low);
+        // Still adaptive — a bare read must not pin the kernel.
+        expect(
+          e.effectiveFrameSnapshotFilterQuality(upscaleRatio: 2.0),
+          FilterQuality.high,
+        );
+      },
+    );
   });
 }

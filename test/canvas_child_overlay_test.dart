@@ -1,11 +1,11 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:flut5/flut5.dart';
 
 /// Records every pointer event the sketch is handed, so a test can assert what
 /// the overlay let through.
-class _RecordingSketch extends Flut5Sketch {
+class _RecordingSketch() extends Flut5Sketch {
   final List<String> seen = [];
 
   @override

@@ -1,10 +1,17 @@
 import 'dart:typed_data';
 
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
 
 import '../flut5_render_item.dart';
 
-enum TransformType { push, pop, translate, scale, rotate, matrix }
+enum TransformType() {
+  push,
+  pop,
+  translate,
+  scale,
+  rotate,
+  matrix,
+}
 
 class TransformRenderItem._(
   final TransformType type, {

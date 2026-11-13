@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import 'flut5_ui_element.dart';
 import 'flut5_style_builder.dart';

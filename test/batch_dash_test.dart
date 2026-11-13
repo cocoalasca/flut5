@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:flut5/flut5.dart';
@@ -16,8 +16,7 @@ void main() {
   }
 
   group('dash support in beginBatch/endBatch', () {
-    test('filled + dashed batch splits into solid fill and dashed stroke',
-        () {
+    test('filled + dashed batch splits into solid fill and dashed stroke', () {
       final e = Flut5Engine()
         ..fill(Colors.white)
         ..stroke(Colors.black);
@@ -59,7 +58,10 @@ void main() {
     });
 
     test('batched dash matches the same shape dashed outside a batch', () {
-      Path dashedPathOf(void Function(Flut5Engine) draw, {required bool batch}) {
+      Path dashedPathOf(
+        void Function(Flut5Engine) draw, {
+        required bool batch,
+      }) {
         final e = Flut5Engine()
           ..noFill()
           ..stroke(Colors.black);

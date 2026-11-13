@@ -2,7 +2,7 @@ part of 'flut5_physics_engine.dart';
 
 /// How particles turn. Set it with [Flut5PhysicsEngine.rotationMode]; draw a
 /// particle turned with `rotate(p.angle)`.
-enum PhysicsRotationMode {
+enum PhysicsRotationMode() {
   /// Particles never turn: the engine leaves `angle` and `angularVelocity`
   /// alone. The default, and the cheapest.
   none,

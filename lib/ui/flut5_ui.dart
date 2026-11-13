@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
 
 import 'flut5_ui_element.dart';
 import 'flut5_button.dart';
@@ -8,7 +8,7 @@ import 'flut5_slider.dart';
 import 'flut5_toggle.dart';
 import 'flut5_checkbox.dart';
 
-final class Flut5UI extends ChangeNotifier {
+final class Flut5UI() extends ChangeNotifier {
   final List<Flut5UIElement> _elements = [];
   List<Flut5UIElement> get elements => List.unmodifiable(_elements);
   bool _disposed = false;

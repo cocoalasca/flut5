@@ -7,8 +7,9 @@ import 'flut5_physics_body.dart';
 ///
 /// Rotation is in the screen plane: [angle] and [angularVelocity] are in
 /// radians, clockwise on screen, like `rotate()`.
-abstract class Flut5PhysicsRigidBody extends Flut5PhysicsBody {
-  Flut5PhysicsRigidBody(double x, double y) : position = Flut5Vector(x, y);
+abstract class Flut5PhysicsRigidBody(double x, double y)
+    extends Flut5PhysicsBody {
+  this : position = Flut5Vector(x, y);
 
   /// Current position — for a polygon, its center of mass.
   final Flut5Vector position;

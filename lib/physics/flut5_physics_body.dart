@@ -7,7 +7,7 @@ import 'engine/flut5_physics_engine.dart';
 /// them. Force generators (springs) push in the first pass and movers
 /// (particles) integrate in the second, so the result never depends on the
 /// order bodies were created in.
-abstract class Flut5PhysicsBody {
+abstract class Flut5PhysicsBody() {
   /// First pass: add this body's forces to the bodies it acts on. No-op by
   /// default.
   void accumulateForces(Flut5PhysicsEngine physics) {}

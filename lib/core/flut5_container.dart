@@ -25,7 +25,11 @@ import 'render/items/flut5_transform_render_item.dart';
 ///   container, exposing content that would otherwise be hidden.
 /// * [visible] — the background rect is still drawn, but no clip is
 ///   installed; inner content can spill past the container's bounds.
-enum Flut5ContainerOverflow { hidden, scroll, visible }
+enum Flut5ContainerOverflow() {
+  hidden,
+  scroll,
+  visible,
+}
 
 /// How a [Flut5ContainerOverflow.scroll] container behaves when the user drags
 /// its content past the edge of the content's bounding box.
@@ -41,7 +45,11 @@ enum Flut5ContainerOverflow { hidden, scroll, visible }
 ///   past it, and fling momentum is killed on contact.
 /// * [bounce] — the content rubber-bands past the edge while dragging, then
 ///   springs back to the edge when released (browser / iOS feel). Default.
-enum Flut5ContainerOverscroll { free, clamp, bounce }
+enum Flut5ContainerOverscroll() {
+  free,
+  clamp,
+  bounce,
+}
 
 /// Which input(s) may pan a [Flut5ContainerOverflow.scroll] container.
 ///
@@ -53,14 +61,21 @@ enum Flut5ContainerOverscroll { free, clamp, bounce }
 /// * [scroll] — only the wheel scrolls; mouse dragging is ignored (touch
 ///   dragging still works on mobile).
 /// * [drag] — only dragging scrolls; the wheel is ignored.
-enum Flut5ContainerOverscrollInput { auto, scroll, drag }
+enum Flut5ContainerOverscrollInput() {
+  auto,
+  scroll,
+  drag,
+}
 
 /// Direction a [Flut5ContainerMixin.beginLayout] scope flows the containers
 /// opened inside it.
 ///
 /// * [horizontal] — containers are placed left → right.
 /// * [vertical] — containers are placed top → bottom.
-enum Flut5LayoutDirection { horizontal, vertical }
+enum Flut5LayoutDirection() {
+  horizontal,
+  vertical,
+}
 
 /// Whether a [Flut5ContainerMixin.beginLayout] scope wraps its containers onto
 /// new lines when they overflow the main axis — mirrors CSS `flex-wrap`.
@@ -81,7 +96,11 @@ enum Flut5LayoutDirection { horizontal, vertical }
 ///   is single-pass, so within a line each container is aligned to the
 ///   cross-axis end. Falls back to [wrap] when the scope's cross size is
 ///   unknown.
-enum Flut5LayoutWrap { noWrap, wrap, wrapReverse }
+enum Flut5LayoutWrap() {
+  noWrap,
+  wrap,
+  wrapReverse,
+}
 
 /// How a [Flut5ContainerMixin.beginLayout] scope aligns containers along the
 /// cross axis within their line — mirrors CSS `align-items`.
@@ -97,7 +116,11 @@ enum Flut5LayoutWrap { noWrap, wrap, wrapReverse }
 ///
 /// Under [Flut5LayoutWrap.wrapReverse] the cross axis flips, exactly as in
 /// CSS: [start] hugs the bottom of the line, [end] the top.
-enum Flut5LayoutAlign { start, center, end }
+enum Flut5LayoutAlign() {
+  start,
+  center,
+  end,
+}
 
 /// How a [Flut5ContainerMixin.beginLayout] scope distributes free main-axis
 /// space among a line's containers — mirrors CSS `justify-content`.
@@ -113,7 +136,7 @@ enum Flut5LayoutAlign { start, center, end }
 /// * [spaceAround] — split so each container has equal space around it
 ///   (half-size margins at the line's edges).
 /// * [spaceEvenly] — equal space between containers and at both edges.
-enum Flut5LayoutJustify {
+enum Flut5LayoutJustify() {
   start,
   center,
   end,
@@ -124,7 +147,7 @@ enum Flut5LayoutJustify {
 
 /// Per-container persistent state used by [Flut5ContainerOverflow.scroll].
 /// Lives across frames so the accumulated drag offset survives.
-class _Flut5ContainerScrollState {
+class _Flut5ContainerScrollState() {
   double offsetX = 0;
   double offsetY = 0;
 

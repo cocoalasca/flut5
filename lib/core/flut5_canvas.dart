@@ -3,7 +3,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart'
     show kDebugMode, kIsWasm, kIsWeb, mapEquals, visibleForTesting;
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter/scheduler.dart';
 
 import '../flut5.dart';
@@ -12,7 +12,7 @@ import '../flut5.dart';
 ///
 /// Internally hooked to a [Ticker] that fires continuously.
 
-class Flut5CanvasRepaintController extends ChangeNotifier {
+class Flut5CanvasRepaintController() extends ChangeNotifier {
   /// Notifies listeners (the CustomPainter) that a new frame should be drawn.
   void refresh() {
     notifyListeners();
@@ -104,7 +104,8 @@ class const Flut5Canvas({
   }
 }
 
-class _Flut5CanvasState extends State<Flut5Canvas>
+class _Flut5CanvasState()
+    extends State<Flut5Canvas>
     with SingleTickerProviderStateMixin {
   late Ticker _ticker;
   late Flut5Painter _painter;

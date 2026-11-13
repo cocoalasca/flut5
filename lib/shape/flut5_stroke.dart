@@ -1,5 +1,7 @@
 import 'package:flutter/foundation.dart' show listEquals;
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
+
+import '../core/flut5_engine_colors.dart';
 import '../core/flut5_console.dart';
 import '../core/render/flut5_render_queue.dart';
 
@@ -47,7 +49,7 @@ mixin Flut5Stroke {
 
   /// Current stroke color. When a gradient is active this stays opaque so
   /// `strokeColor != Colors.transparent` still signals "has stroke" downstream.
-  Color strokeColor = Colors.black;
+  Color strokeColor = flut5Black;
 
   /// Current stroke gradient, or `null` when stroking with a solid color.
   Gradient? strokeGradient;
@@ -65,18 +67,18 @@ mixin Flut5Stroke {
   /// Lets a repeated call with the same value return early without trusting
   /// [strokeColor] and [strokeWeightVal], which are public fields a sketch
   /// can assign directly.
-  Color _appliedStrokeColor = Colors.black;
+  Color _appliedStrokeColor = flut5Black;
   double _appliedStrokeWeight = 1.0;
 
   final Paint _strokePaint = Paint()
-    ..color = Colors.black
+    ..color = flut5Black
     ..style = PaintingStyle.stroke
     ..strokeWidth = 1.0
     ..strokeCap = StrokeCap.round
     ..strokeJoin = StrokeJoin.miter;
 
   final Paint _strokeFillPaint = Paint()
-    ..color = Colors.black
+    ..color = flut5Black
     ..style = PaintingStyle.fill
     ..strokeWidth = 1.0
     ..strokeCap = StrokeCap.round
@@ -155,16 +157,16 @@ mixin Flut5Stroke {
       // Unchanged: keeping the version also keeps the per-shape shader cache.
       if (strokeGradient == input &&
           strokeGradientRect == rect &&
-          strokeColor == Colors.black &&
-          _appliedStrokeColor == Colors.black) {
+          strokeColor == flut5Black &&
+          _appliedStrokeColor == flut5Black) {
         return;
       }
       strokeGradient = input;
       strokeGradientRect = rect;
-      _appliedStrokeColor = Colors.black;
-      strokeColor = Colors.black;
-      _strokePaint.color = Colors.black;
-      _strokeFillPaint.color = Colors.black;
+      _appliedStrokeColor = flut5Black;
+      strokeColor = flut5Black;
+      _strokePaint.color = flut5Black;
+      _strokeFillPaint.color = flut5Black;
     } else {
       Flut5Console.printLater(
         'stroke(): expected Color or Gradient, got ${input.runtimeType} — ignored',
@@ -182,16 +184,16 @@ mixin Flut5Stroke {
       );
     }
     if (strokeGradient == null &&
-        strokeColor == Colors.transparent &&
-        _appliedStrokeColor == Colors.transparent) {
+        strokeColor == flut5Transparent &&
+        _appliedStrokeColor == flut5Transparent) {
       return;
     }
-    _appliedStrokeColor = Colors.transparent;
-    strokeColor = Colors.transparent;
+    _appliedStrokeColor = flut5Transparent;
+    strokeColor = flut5Transparent;
     strokeGradient = null;
     strokeGradientRect = null;
-    _strokePaint.color = Colors.transparent;
-    _strokeFillPaint.color = Colors.transparent;
+    _strokePaint.color = flut5Transparent;
+    _strokeFillPaint.color = flut5Transparent;
     _strokePaint.shader = null;
     _strokeFillPaint.shader = null;
     _shaderGradient = null;
@@ -328,9 +330,11 @@ mixin Flut5Stroke {
   /// is reused from [_autoGradientStrokePaints] whenever the same gradient
   /// and bounds recur — static geometry pays for `createShader` only once.
   Paint? snapshotStrokePaintForShape(Rect shapeBounds) {
-    if (strokeColor == Colors.transparent) return null;
+    if (strokeColor == flut5Transparent) return null;
     final gradient = strokeGradient;
-    if (gradient == null || strokeGradientRect != null) return snapshotStrokePaint();
+    if (gradient == null || strokeGradientRect != null) {
+      return snapshotStrokePaint();
+    }
     // getStrokePaint() first — it can bump the version when the shader rect
     // changes, and the cache epoch below must reflect that.
     final base = getStrokePaint();
@@ -358,7 +362,7 @@ mixin Flut5Stroke {
   /// builds the shader against the laid-out text bounds at draw time, so the
   /// queued paint must carry everything *except* the shader.
   Paint? snapshotStrokePaintNoShader() {
-    if (strokeColor == Colors.transparent) return null;
+    if (strokeColor == flut5Transparent) return null;
     final paint = getStrokePaint();
     if (_snapshotStrokeNoShaderVersion != _strokeVersion ||
         _snapshotStrokeNoShaderBlendVersion != blendVersion) {
@@ -373,7 +377,7 @@ mixin Flut5Stroke {
   /// when stroke is transparent. Stable across calls until stroke state
   /// changes, so the render queue can auto-batch by paint identity.
   Paint? snapshotStrokePaint() {
-    if (strokeColor == Colors.transparent) return null;
+    if (strokeColor == flut5Transparent) return null;
     final paint = getStrokePaint();
     if (_snapshotStrokeVersion != _strokeVersion ||
         _snapshotStrokeBlendVersion != blendVersion) {
@@ -388,7 +392,7 @@ mixin Flut5Stroke {
   /// [StrokeCap.round]), or `null` when stroke is transparent. Used by
   /// [Canvas.drawRawPoints] batching.
   Paint? snapshotPointPaint() {
-    if (strokeColor == Colors.transparent) return null;
+    if (strokeColor == flut5Transparent) return null;
     final paint = getStrokePaint();
     if (_snapshotPointVersion != _strokeVersion ||
         _snapshotPointBlendVersion != blendVersion) {

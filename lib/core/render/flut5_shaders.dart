@@ -9,7 +9,7 @@ import '../flut5_console.dart';
 /// test's fake clock, so awaiting it would stall `setup()` — and it normally
 /// lands before the first frame. Code that replays a render queue on its own
 /// canvas, tests included, should await [load] first.
-abstract final class Flut5Shaders {
+abstract final class Flut5Shaders() {
   static Future<void>? _loading;
   static bool _loaded = false;
   static ui.FragmentProgram? _palette;

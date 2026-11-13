@@ -1,6 +1,6 @@
 import 'dart:ui' as ui;
 
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flut5/text/flut5_text_cache.dart';
 
 import '../flut5_render_item.dart';
@@ -303,7 +303,7 @@ class TextRenderItem({
 /// the source paint or the glyph quality changes — queued paints are
 /// immutable snapshots, so identity stands for content, and the colour
 /// filter is a native object not worth rebuilding on every draw.
-class _GlyphTint {
+class _GlyphTint() {
   Paint? _source;
   FilterQuality? _quality;
   final Paint _paint = Paint();

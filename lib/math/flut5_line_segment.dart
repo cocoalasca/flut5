@@ -15,11 +15,9 @@ import 'flut5_vector.dart';
 ///
 /// Coordinates are in whatever drawing space the wall is used in — see
 /// `Flut5Intersection`. Ray tests are 2-D, so `z` is ignored.
-final class Flut5LineSegment {
+final class Flut5LineSegment(double x1, double y1, double x2, double y2) {
   /// Creates a segment from ([x1], [y1]) to ([x2], [y2]).
-  Flut5LineSegment(double x1, double y1, double x2, double y2)
-    : start = Flut5Vector(x1, y1),
-      end = Flut5Vector(x2, y2);
+  this : start = Flut5Vector(x1, y1), end = Flut5Vector(x2, y2);
 
   /// The first end of the segment.
   Flut5Vector start;

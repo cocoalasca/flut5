@@ -17,7 +17,7 @@ import 'dart:ui' as ui;
 /// Process-wide rather than per queue because one image can be queued by
 /// several sketches in the same frame. Internal plumbing — not exported from
 /// `package:flut5/flut5.dart`.
-abstract final class Flut5ImageHandles {
+abstract final class Flut5ImageHandles() {
   /// Handle → number of outstanding holds across every render queue.
   static final Map<ui.Image, int> _holdCounts = Map.identity();
 

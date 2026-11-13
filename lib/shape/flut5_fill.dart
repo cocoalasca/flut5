@@ -1,6 +1,8 @@
 import 'dart:ui' as ui;
 
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
+
+import '../core/flut5_engine_colors.dart';
 import '../core/flut5_console.dart';
 import '../core/render/flut5_render_queue.dart';
 
@@ -31,7 +33,7 @@ mixin Flut5Fill {
 
   /// Current fill color. When a gradient is active this stays opaque so
   /// `fillColor != Colors.transparent` still signals "has fill" downstream.
-  Color fillColor = Colors.black;
+  Color fillColor = flut5Black;
 
   /// Current fill gradient, or `null` when filling with a solid color.
   Gradient? fillGradient;
@@ -48,10 +50,10 @@ mixin Flut5Fill {
   /// The color [fill] / [noFill] last wrote into the paint. Lets a repeated
   /// call with the same value return early without trusting [fillColor],
   /// which is a public field a sketch can assign directly.
-  Color _appliedFillColor = Colors.black;
+  Color _appliedFillColor = flut5Black;
 
   final Paint _fillPaint = Paint()
-    ..color = Colors.black
+    ..color = flut5Black
     ..style = PaintingStyle.fill;
 
   Gradient? _shaderGradient;
@@ -150,15 +152,15 @@ mixin Flut5Fill {
       // so `fill(gradient)` every frame stops rebuilding every shader.
       if (fillGradient == input &&
           fillGradientRect == rect &&
-          fillColor == Colors.black &&
-          _appliedFillColor == Colors.black) {
+          fillColor == flut5Black &&
+          _appliedFillColor == flut5Black) {
         return;
       }
       fillGradient = input;
       fillGradientRect = rect;
-      _appliedFillColor = Colors.black;
-      fillColor = Colors.black;
-      _fillPaint.color = Colors.black;
+      _appliedFillColor = flut5Black;
+      fillColor = flut5Black;
+      _fillPaint.color = flut5Black;
     } else {
       Flut5Console.printLater(
         'fill(): expected Color or Gradient, got ${input.runtimeType} — ignored',
@@ -176,15 +178,15 @@ mixin Flut5Fill {
       );
     }
     if (fillGradient == null &&
-        fillColor == Colors.transparent &&
-        _appliedFillColor == Colors.transparent) {
+        fillColor == flut5Transparent &&
+        _appliedFillColor == flut5Transparent) {
       return;
     }
-    _appliedFillColor = Colors.transparent;
-    fillColor = Colors.transparent;
+    _appliedFillColor = flut5Transparent;
+    fillColor = flut5Transparent;
     fillGradient = null;
     fillGradientRect = null;
-    _fillPaint.color = Colors.transparent;
+    _fillPaint.color = flut5Transparent;
     _fillPaint.shader = null;
     _shaderGradient = null;
     _shaderRect = null;
@@ -197,9 +199,11 @@ mixin Flut5Fill {
   /// is reused from [_autoGradientFillPaints] whenever the same gradient and
   /// bounds recur — static geometry pays for `createShader` only once.
   Paint? snapshotFillPaintForShape(Rect shapeBounds) {
-    if (fillColor == Colors.transparent) return null;
+    if (fillColor == flut5Transparent) return null;
     final gradient = fillGradient;
-    if (gradient == null || fillGradientRect != null) return snapshotFillPaint();
+    if (gradient == null || fillGradientRect != null) {
+      return snapshotFillPaint();
+    }
     // getFillPaint() first — it can bump the version when the shader rect
     // changes, and the cache epoch below must reflect that.
     final base = getFillPaint();
@@ -228,7 +232,7 @@ mixin Flut5Fill {
   /// instance back whenever it is set again, too, so the paint is shared
   /// with shapes already queued: never change it.
   Paint? snapshotFillPaint() {
-    if (fillColor == Colors.transparent) return null;
+    if (fillColor == flut5Transparent) return null;
     final paint = getFillPaint();
     if (_snapshotFillVersion != _fillVersion ||
         _snapshotFillBlendVersion != blendVersion) {
@@ -280,7 +284,7 @@ mixin Flut5Fill {
   /// the shader against the laid-out text bounds at draw time, so the queued
   /// paint must carry everything *except* the shader.
   Paint? snapshotFillPaintNoShader() {
-    if (fillColor == Colors.transparent) return null;
+    if (fillColor == flut5Transparent) return null;
     final paint = getFillPaint();
     if (_snapshotFillNoShaderVersion != _fillVersion ||
         _snapshotFillNoShaderBlendVersion != blendVersion) {

@@ -8,7 +8,7 @@
 // performance — read them as upper bounds and compare ratios.
 import 'dart:ui' as ui;
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:flut5/flut5.dart';
@@ -32,8 +32,9 @@ double bench(void Function() body, {int warmup = 5, int runs = 15}) {
 void main() {
   test('container overflow cost per frame', () {
     final engine = Flut5Engine();
-    engine.environment =
-        const SketchEnvironment().withSize(const Size(800, 100000));
+    engine.environment = const SketchEnvironment().withSize(
+      const Size(800, 100000),
+    );
 
     void frame(Flut5ContainerOverflow mode, int count) {
       engine.renderQueue.clear();
@@ -83,14 +84,18 @@ void main() {
     final b100 = bench(() => bareFrame(100));
     final b500 = bench(() => bareFrame(500));
     // ignore: avoid_print
-    print('${'bare rects (no containers)'.padRight(26)} '
-        '${fmt(b10)}  ${fmt(b100)}  ${fmt(b500)}');
+    print(
+      '${'bare rects (no containers)'.padRight(26)} '
+      '${fmt(b10)}  ${fmt(b100)}  ${fmt(b500)}',
+    );
 
     final s1 = bench(() => frame(Flut5ContainerOverflow.scroll, 1));
     final s10 = bench(() => frame(Flut5ContainerOverflow.scroll, 10));
     final s50 = bench(() => frame(Flut5ContainerOverflow.scroll, 50));
     // ignore: avoid_print
-    print('scroll: 1 → ${fmt(s1)} ms, 10 → ${fmt(s10)} ms, '
-        '50 → ${fmt(s50)} ms');
+    print(
+      'scroll: 1 → ${fmt(s1)} ms, 10 → ${fmt(s10)} ms, '
+      '50 → ${fmt(s50)} ms',
+    );
   }, skip: 'benchmark — run manually with --run-skipped');
 }

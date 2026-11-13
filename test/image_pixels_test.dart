@@ -4,7 +4,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:flut5/flut5.dart';
@@ -81,7 +81,7 @@ List<String> flushWarnings() {
 }
 
 /// Exercises the unprefixed createImage() forwarder.
-class _CreateImageSketch extends Flut5Sketch {
+class _CreateImageSketch() extends Flut5Sketch {
   Flut5Image make(int width, int height) => createImage(width, height);
 }
 

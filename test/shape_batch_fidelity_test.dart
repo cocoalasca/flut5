@@ -2,7 +2,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flut5/flut5.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 typedef _Draw = void Function(Flut5Engine e);
@@ -278,10 +278,7 @@ void main() {
           (e) => e.triangle(20, 20, 120, 20, 70, 120),
           (e) => e.triangle(60, 40, 110, 140, 160, 40),
         ],
-        [
-          (e) => e.rect(20, 20, 100, 100),
-          (e) => e.rect(160, 60, -100, 100),
-        ],
+        [(e) => e.rect(20, 20, 100, 100), (e) => e.rect(160, 60, -100, 100)],
         [
           (e) => e.ellipse(70, 70, 100, 100),
           (e) => e.ellipse(110, 110, -100, 80),
@@ -304,33 +301,35 @@ void main() {
       );
     });
 
-    test('a counter-clockwise polygon renders the same written backwards',
-        () async {
-      // The queue reverses these; lone shapes must not move a pixel for it.
-      for (final style in <Flut5Engine Function()>[
-        filled,
-        () => Flut5Engine()
-          ..fill(Colors.white)
-          ..stroke(Colors.red)
-          ..strokeWeight(5)
-          ..strokeJoin(StrokeJoin.miter),
-      ]) {
-        final e = style();
-        e.triangle(30.5, 20.25, 90.75, 160.5, 170.25, 40.5);
-        final forward = Path()
-          ..moveTo(30.5, 20.25)
-          ..lineTo(90.75, 160.5)
-          ..lineTo(170.25, 40.5)
-          ..close();
-        final fill = e.snapshotFillPaint(), stroke = e.snapshotStrokePaint();
-        final actual = await _pixels(e.renderQueue.execute);
-        final expected = await _pixels((c) {
-          c.drawPath(forward, fill!);
-          if (stroke != null) c.drawPath(forward, stroke);
-        });
-        expect(actual, expected);
-      }
-    });
+    test(
+      'a counter-clockwise polygon renders the same written backwards',
+      () async {
+        // The queue reverses these; lone shapes must not move a pixel for it.
+        for (final style in <Flut5Engine Function()>[
+          filled,
+          () => Flut5Engine()
+            ..fill(Colors.white)
+            ..stroke(Colors.red)
+            ..strokeWeight(5)
+            ..strokeJoin(StrokeJoin.miter),
+        ]) {
+          final e = style();
+          e.triangle(30.5, 20.25, 90.75, 160.5, 170.25, 40.5);
+          final forward = Path()
+            ..moveTo(30.5, 20.25)
+            ..lineTo(90.75, 160.5)
+            ..lineTo(170.25, 40.5)
+            ..close();
+          final fill = e.snapshotFillPaint(), stroke = e.snapshotStrokePaint();
+          final actual = await _pixels(e.renderQueue.execute);
+          final expected = await _pixels((c) {
+            c.drawPath(forward, fill!);
+            if (stroke != null) c.drawPath(forward, stroke);
+          });
+          expect(actual, expected);
+        }
+      },
+    );
   });
 
   group('Gradients under a folded translate', () {
@@ -436,7 +435,12 @@ void main() {
       final e = filled();
       chord(e, 50);
       final path = Path()
-        ..arcTo(Rect.fromCenter(center: const Offset(50, 50), width: 30, height: 30), 0, 2, true)
+        ..arcTo(
+          Rect.fromCenter(center: const Offset(50, 50), width: 30, height: 30),
+          0,
+          2,
+          true,
+        )
         ..close();
       final paint = e.snapshotFillPaint()!;
       expect(
@@ -649,9 +653,8 @@ void main() {
       triangleAt(scaled, 0, 0);
       triangleAt(scaled, 40, 0);
       final paths = [
-        for (final item in (scaled..renderQueue.flushPending())
-            .renderQueue
-            .items)
+        for (final item
+            in (scaled..renderQueue.flushPending()).renderQueue.items)
           if (item is PathRenderItem) item,
       ];
       expect(paths, hasLength(2));

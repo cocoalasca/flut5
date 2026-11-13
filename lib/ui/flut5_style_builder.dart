@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
 
 /// Resolves shadow input into a [List<BoxShadow>].
 /// Accepts: a single [BoxShadow], a [List<BoxShadow>], a [Map] (parsed),
@@ -20,7 +20,8 @@ List<BoxShadow>? resolveShadows(dynamic value) {
 /// Supported keys: color, blur, spread, offset (Offset), offsetX, offsetY.
 /// [offset] takes precedence over [offsetX]/[offsetY] if both are provided.
 BoxShadow _mapToBoxShadow(Map map) {
-  final Offset offset = (map['offset'] as Offset?) ??
+  final Offset offset =
+      (map['offset'] as Offset?) ??
       Offset(
         (map['offsetX'] as num?)?.toDouble() ?? 0.0,
         (map['offsetY'] as num?)?.toDouble() ?? 0.0,
@@ -44,7 +45,9 @@ BoxDecoration buildDecoration(Map<String, dynamic> map) {
 
   return BoxDecoration(
     color: fill,
-    border: stroke != null ? Border.all(color: stroke, width: strokeWeight) : null,
+    border: stroke != null
+        ? Border.all(color: stroke, width: strokeWeight)
+        : null,
     borderRadius: borderRadius > 0 ? BorderRadius.circular(borderRadius) : null,
     boxShadow: shadows,
   );
@@ -65,7 +68,9 @@ TextStyle? buildTextStyle(Map<String, dynamic> map) {
       fontWeight == null &&
       letterSpacing == null &&
       lineHeight == null &&
-      color == null) { return null; }
+      color == null) {
+    return null;
+  }
 
   return TextStyle(
     fontFamily: fontFamily,
@@ -116,18 +121,29 @@ LinearGradient? resolveLinearGradient(dynamic value) {
 /// Accepts a [FontWeight] directly or a numeric weight (100–900).
 FontWeight? resolveWeight(dynamic weight) {
   if (weight == null) return null;
-  if (weight is FontWeight) { return weight; }
+  if (weight is FontWeight) {
+    return weight;
+  }
   if (weight is num) {
     switch (weight.toInt()) {
-      case 100: return FontWeight.w100;
-      case 200: return FontWeight.w200;
-      case 300: return FontWeight.w300;
-      case 400: return FontWeight.w400;
-      case 500: return FontWeight.w500;
-      case 600: return FontWeight.w600;
-      case 700: return FontWeight.w700;
-      case 800: return FontWeight.w800;
-      case 900: return FontWeight.w900;
+      case 100:
+        return FontWeight.w100;
+      case 200:
+        return FontWeight.w200;
+      case 300:
+        return FontWeight.w300;
+      case 400:
+        return FontWeight.w400;
+      case 500:
+        return FontWeight.w500;
+      case 600:
+        return FontWeight.w600;
+      case 700:
+        return FontWeight.w700;
+      case 800:
+        return FontWeight.w800;
+      case 900:
+        return FontWeight.w900;
     }
   }
   return null;

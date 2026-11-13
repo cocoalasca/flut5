@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:flut5/flut5.dart';
@@ -38,7 +38,7 @@ class const _Host({required final _CountingSketch sketch})
   State<_Host> createState() => _HostState();
 }
 
-class _HostState extends State<_Host> {
+class _HostState() extends State<_Host> {
   Map<String, dynamic> props = {'count': 0};
 
   void update(Map<String, dynamic> next) => setState(() => props = next);

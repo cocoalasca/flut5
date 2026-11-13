@@ -33,7 +33,13 @@ part of 'flut5_physics_particle.dart';
 /// just one of its particles tears it there: that particle stops and the
 /// springs and areas it belongs to stop pulling, though the lists still
 /// hold them.
-final class Flut5PhysicsSoftBody extends Flut5PhysicsBody {
+final class Flut5PhysicsSoftBody._(
+  _Structure structure, {
+  // Not a declaring parameter: `stiffness` is a validating setter (0 to 1),
+  // and the constructor body routes the value through it.
+  // ignore: use_declaring_parameters
+  required double stiffness,
+}) extends Flut5PhysicsBody {
   /// A soft body with a particle at each of [points], relative to ([x],
   /// [y]), held together by the structure you give, as indices into
   /// [points]:
@@ -183,7 +189,7 @@ final class Flut5PhysicsSoftBody extends Flut5PhysicsBody {
     );
   }
 
-  Flut5PhysicsSoftBody._(_Structure structure, {required double stiffness})
+  this
     : particles = List.unmodifiable(structure.particles),
       springs = List.unmodifiable(structure.springs),
       areas = List.unmodifiable(structure.areas),
@@ -437,15 +443,14 @@ double _signedArea(List<Flut5Vector> points) {
 
 /// A spring of a [Flut5PhysicsSoftBody], pulling particles [a] and [b] back
 /// to [restLength] apart with the body's [Flut5PhysicsSoftBody.stiffness].
-final class Flut5PhysicsSoftSpring {
-  Flut5PhysicsSoftSpring._(this.a, this.b)
-    : restLength = a.position.distanceTo(b.position);
-
+final class Flut5PhysicsSoftSpring._(
   /// One end.
-  final Flut5PhysicsParticle a;
+  final Flut5PhysicsParticle a,
 
   /// The other end.
-  final Flut5PhysicsParticle b;
+  final Flut5PhysicsParticle b,
+) {
+  this : restLength = a.position.distanceTo(b.position);
 
   /// The distance between [a] and [b] when the body was made, which the
   /// spring pulls back to.
@@ -457,8 +462,8 @@ final class Flut5PhysicsSoftSpring {
 ///
 /// The area is signed by which way the loop runs, so a loop turned inside
 /// out is pulled back the right way round.
-final class Flut5PhysicsSoftArea {
-  Flut5PhysicsSoftArea._(List<Flut5PhysicsParticle> particles)
+final class Flut5PhysicsSoftArea._(List<Flut5PhysicsParticle> particles) {
+  this
     : particles = List.unmodifiable(particles),
       restArea = _signedArea([for (final p in particles) p.position]);
 
@@ -492,7 +497,21 @@ final class Flut5PhysicsSoftArea {
 /// for (final p in jelly.outline) vertex(p.x, p.y);
 /// endShape(close: true);
 /// ```
-final class Flut5PhysicsSoftRect extends Flut5PhysicsSoftBody {
+final class Flut5PhysicsSoftRect._(
+  /// Width at creation, before any squashing.
+  final double width,
+
+  /// Height at creation, before any squashing.
+  final double height,
+
+  /// How many particles run across each row.
+  final int columns,
+
+  /// How many particles run down each column.
+  final int rows,
+  super.structure, {
+  required super.stiffness,
+}) extends Flut5PhysicsSoftBody {
   /// A [width] × [height] grid of particles centered on ([x], [y]), with
   /// its corner particles exactly on the rect's corners.
   ///
@@ -590,26 +609,7 @@ final class Flut5PhysicsSoftRect extends Flut5PhysicsSoftBody {
     );
   }
 
-  Flut5PhysicsSoftRect._(
-    this.width,
-    this.height,
-    this.columns,
-    this.rows,
-    super.structure, {
-    required super.stiffness,
-  }) : super._();
-
-  /// Width at creation, before any squashing.
-  final double width;
-
-  /// Height at creation, before any squashing.
-  final double height;
-
-  /// How many particles run across each row.
-  final int columns;
-
-  /// How many particles run down each column.
-  final int rows;
+  this : super._();
 
   /// The particle at [column] (from the left) and [row] (from the top) —
   /// `particleAt(0, 0)` is the top-left corner.

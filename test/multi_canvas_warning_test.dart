@@ -1,9 +1,9 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:flut5/flut5.dart';
 
-class _EmptySketch extends Flut5Sketch;
+class _EmptySketch() extends Flut5Sketch;
 
 /// Two fixed-size canvases side by side, each hosting its own sketch.
 Widget _twoCanvases() => MaterialApp(

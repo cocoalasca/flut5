@@ -22,9 +22,8 @@ part 'flut5_physics_soft_body.dart';
 /// p.applyForce(springForce(p.position, anchor));
 /// circle(p.x, p.y, 20);
 /// ```
-final class Flut5PhysicsParticle extends Flut5PhysicsRigidBody {
-  Flut5PhysicsParticle(super.x, super.y);
-
+final class Flut5PhysicsParticle(super.x, super.y)
+    extends Flut5PhysicsRigidBody {
   /// Collision radius: the particle's edge is this far from [position]. With
   /// `windowBoundsCollision()` on it bounces when its edge touches a window
   /// edge, and with `particleCollision()` on when it touches another

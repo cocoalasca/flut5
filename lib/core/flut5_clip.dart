@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
 
 import 'flut5_console.dart';
 import 'flut5_transform.dart';
@@ -98,11 +98,7 @@ mixin Flut5Clip on Flut5Transform {
   ///   flut5.pop();
   /// }
   /// ```
-  void clipPath(
-    Object source, {
-    bool invert = false,
-    bool antiAlias = true,
-  }) {
+  void clipPath(Object source, {bool invert = false, bool antiAlias = true}) {
     final Path path;
     if (source is Path) {
       path = source;

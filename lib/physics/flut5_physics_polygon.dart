@@ -25,7 +25,14 @@ import 'flut5_physics_rigid_body.dart';
 ///   endShape(close: true);
 /// }
 /// ```
-final class Flut5PhysicsPolygon extends Flut5PhysicsRigidBody {
+final class Flut5PhysicsPolygon._(
+  super.x,
+  super.y,
+  List<Flut5Vector> localCorners,
+
+  /// Moment of inertia per unit of mass, from the shape alone.
+  final double _inertiaPerMass,
+) extends Flut5PhysicsRigidBody {
   /// A polygon at ([x], [y]) with [corners] relative to that point, in
   /// either direction around the shape.
   ///
@@ -46,19 +53,11 @@ final class Flut5PhysicsPolygon extends Flut5PhysicsRigidBody {
     );
   }
 
-  Flut5PhysicsPolygon._(
-    super.x,
-    super.y,
-    List<Flut5Vector> localCorners,
-    this._inertiaPerMass,
-  ) : localCorners = List.unmodifiable(localCorners);
+  this : localCorners = List.unmodifiable(localCorners);
 
   /// The corners relative to [position] before rotation, clockwise on
   /// screen. They never change; [corners] gives them moved and turned.
   final List<Flut5Vector> localCorners;
-
-  /// Moment of inertia per unit of mass, from the shape alone.
-  final double _inertiaPerMass;
 
   /// Whether physics leaves this body where it is: no gravity, no forces,
   /// and collisions never push or turn it — a platform, a wall, the ground.
@@ -116,16 +115,18 @@ final class Flut5PhysicsPolygon extends Flut5PhysicsRigidBody {
 /// rect(-r.width / 2, -r.height / 2, r.width, r.height);
 /// pop();
 /// ```
-final class Flut5PhysicsRect extends Flut5PhysicsPolygon {
-  /// A [width] × [height] rect centered on ([x], [y]). Both must be > 0.
-  Flut5PhysicsRect(double x, double y, this.width, this.height)
-    : super._(x, y, _corners(width, height), _inertia(width, height));
+final class Flut5PhysicsRect(
+  double x,
+  double y,
 
   /// Width before rotation.
-  final double width;
+  final double width,
 
   /// Height before rotation.
-  final double height;
+  final double height,
+) extends Flut5PhysicsPolygon {
+  /// A [width] × [height] rect centered on ([x], [y]). Both must be > 0.
+  this : super._(x, y, _corners(width, height), _inertia(width, height));
 
   static List<Flut5Vector> _corners(double width, double height) {
     if (width <= 0 || height <= 0) {
@@ -149,9 +150,12 @@ final class Flut5PhysicsRect extends Flut5PhysicsPolygon {
 /// A convex outline checked and measured once: its corners centered on its
 /// center of mass and ordered clockwise on screen, and how its area spreads
 /// around that center.
-final class _ConvexShape {
-  _ConvexShape._(this.corners, this.centerX, this.centerY, this.inertiaPerMass);
-
+final class _ConvexShape._(
+  final List<Flut5Vector> corners,
+  final double centerX,
+  final double centerY,
+  final double inertiaPerMass,
+) {
   /// Validates [given] and measures it. See [Flut5PhysicsPolygon.new] for
   /// what is rejected.
   factory _ConvexShape.from(List<Flut5Vector> given) {
@@ -225,11 +229,6 @@ final class _ConvexShape {
 
     return _ConvexShape._(centered, centerX, centerY, inertiaPerMass);
   }
-
-  final List<Flut5Vector> corners;
-  final double centerX;
-  final double centerY;
-  final double inertiaPerMass;
 
   /// The z part of `a × b` for two flat vectors.
   static double _cross(Flut5Vector a, Flut5Vector b) => a.x * b.y - a.y * b.x;

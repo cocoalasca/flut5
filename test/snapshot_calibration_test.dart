@@ -1,6 +1,6 @@
 import 'dart:ui' as ui;
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:flut5/flut5.dart';
@@ -38,17 +38,19 @@ void main() {
     ..frameSnapshotResolutionFactorMax = ceiling;
 
   group('defaults', () {
-    test('the mode floor under a 1.0 ceiling means calibration runs by default',
-        () {
-      final e = Flut5Engine();
-      // `flutter test` is a native debug build, so the debug default for
-      // non-JS-web targets applies (0.8; JavaScript web would be 0.7).
-      expect(e.frameSnapshotResolutionFactor, 0.8);
-      expect(e.frameSnapshotResolutionFactorMax, 1.0);
-      // Every sketch starts conservative for its build mode and climbs.
-      expect(e.frameSnapshotCalibrating, isTrue);
-      expect(e.frameSnapshotCalibratedFactor, 0.8);
-    });
+    test(
+      'the mode floor under a 1.0 ceiling means calibration runs by default',
+      () {
+        final e = Flut5Engine();
+        // `flutter test` is a native debug build, so the debug default for
+        // non-JS-web targets applies (0.8; JavaScript web would be 0.7).
+        expect(e.frameSnapshotResolutionFactor, 0.8);
+        expect(e.frameSnapshotResolutionFactorMax, 1.0);
+        // Every sketch starts conservative for its build mode and climbs.
+        expect(e.frameSnapshotCalibrating, isTrue);
+        expect(e.frameSnapshotCalibratedFactor, 0.8);
+      },
+    );
 
     test('a capable device reaches full resolution from the defaults', () {
       final e = Flut5Engine();
@@ -155,21 +157,23 @@ void main() {
       expect(e.frameSnapshotCalibrationOutcome, 'no headroom');
     });
 
-    test('a longer interval buys resolution, since capture amortizes further',
-        () {
-      // Same device, same budget: at interval 2 the per-frame share of a
-      // capture is half its cost, at interval 4 a quarter. The search should
-      // find the longer interval affords more resolution — the trade the
-      // amortized comparison exists to expose.
-      final slow = ranged(0.5, 1.0)..frameSnapshotInterval = 2;
-      feed(slow, 40.0, 48);
-      final fast = ranged(0.5, 1.0)..frameSnapshotInterval = 4;
-      feed(fast, 40.0, 48);
-      expect(
-        fast.frameSnapshotCalibratedFactor,
-        greaterThan(slow.frameSnapshotCalibratedFactor),
-      );
-    });
+    test(
+      'a longer interval buys resolution, since capture amortizes further',
+      () {
+        // Same device, same budget: at interval 2 the per-frame share of a
+        // capture is half its cost, at interval 4 a quarter. The search should
+        // find the longer interval affords more resolution — the trade the
+        // amortized comparison exists to expose.
+        final slow = ranged(0.5, 1.0)..frameSnapshotInterval = 2;
+        feed(slow, 40.0, 48);
+        final fast = ranged(0.5, 1.0)..frameSnapshotInterval = 4;
+        feed(fast, 40.0, 48);
+        expect(
+          fast.frameSnapshotCalibratedFactor,
+          greaterThan(slow.frameSnapshotCalibratedFactor),
+        );
+      },
+    );
 
     test('a fixed per-call cost no longer pins the search to the floor', () {
       // The web shape: 5.5 ms of resolution-independent overhead plus a small
@@ -269,8 +273,10 @@ void main() {
 
     test('rejects percentages on both knobs', () {
       final e = Flut5Engine();
-      expect(() => e.frameSnapshotResolutionFactorMax = 100,
-          throwsArgumentError);
+      expect(
+        () => e.frameSnapshotResolutionFactorMax = 100,
+        throwsArgumentError,
+      );
       expect(() => e.frameSnapshotResolutionFactorMax = 0, throwsArgumentError);
     });
   });

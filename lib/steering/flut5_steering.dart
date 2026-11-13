@@ -2,7 +2,7 @@ import 'package:flut5/core/flut5_console.dart';
 import 'package:flut5/math/flut5_vector.dart';
 
 /// Whether steering methods return a copy or a direct reference.
-enum SteeringReturnMode {
+enum SteeringReturnMode() {
   /// Returns a new copy each call. Safe to store.
   copy,
 
@@ -182,11 +182,7 @@ mixin Flut5Steering {
   /// returned vector is zero.
   ///
   /// [returnCopy] overrides the global mode for this call.
-  Flut5Vector flee(
-    Flut5Vector target, {
-    double? fleeRadius,
-    bool? returnCopy,
-  }) {
+  Flut5Vector flee(Flut5Vector target, {double? fleeRadius, bool? returnCopy}) {
     if (fleeRadius != null &&
         position.distanceToSquared(target) > fleeRadius * fleeRadius) {
       _steer.setValues(0.0, 0.0, 0.0);

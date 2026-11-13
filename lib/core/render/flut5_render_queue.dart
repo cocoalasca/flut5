@@ -2,7 +2,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
 
 import '../flut5_console.dart';
 import '../../image/flut5_image_handles.dart';
@@ -80,7 +80,7 @@ export 'items/flut5_transform_render_item.dart';
 /// at append time, including across push/pop scopes. Uniform scale adjusts
 /// stroke widths; differing widths split batches. Nonuniform scale, matrices,
 /// and operations that require canvas-local paint effects still emit transforms.
-class Flut5RenderQueue {
+class Flut5RenderQueue() {
   final List<Flut5RenderItem> _items = [];
 
   // ── Pending points (auto-batched via drawRawPoints/PointMode.points) ──
@@ -2859,7 +2859,7 @@ extension Flut5PaintCloner on Paint {
 /// cannot be hashed. The queue then closes the batch — one extra draw call —
 /// and the next batch sizes a fresh grid from the shapes that follow, so the
 /// per-shape cost stays bounded whatever the sketch draws.
-class _ShapeOverlapIndex {
+class _ShapeOverlapIndex() {
   static const int _scanLimit = 16;
   static const int _firstSlots = 64;
   static const int _maxCells = 16;
@@ -3141,15 +3141,16 @@ class _TransformedImageRenderItem(
 /// A degenerate scope (block below one logical pixel, empty canvas, or a
 /// transform that collapses the plane) passes its items straight through to
 /// the parent canvas.
-class _PixelatePass {
-  _PixelatePass(
-    PixelateBeginRenderItem scope,
-    this.parent,
-    Matrix4 logical,
-    this._palettes,
-  ) : logical = logical,
-      _palette = scope.palette,
-      canvas = parent {
+class _PixelatePass(
+  PixelateBeginRenderItem scope,
+  final Canvas parent,
+
+  /// Logical pixels → [canvas] pixels, before any transform inside the
+  /// scope. The base a nested scope builds its grid on.
+  var Matrix4 logical,
+  final _PaletteImages _palettes,
+) {
+  this : _palette = scope.palette, canvas = parent {
     final size = scope.blockSize;
     if (!(size >= 1) || !size.isFinite) return;
     final cols = (scope.width / size).ceil();
@@ -3172,23 +3173,16 @@ class _PixelatePass {
     _back = fromCurrent..multiply(logical);
     final recorder = _recorder = ui.PictureRecorder();
     canvas = Canvas(recorder)..transform(toBlocks.storage);
-    this.logical = blocks;
+    logical = blocks;
   }
 
   static final Paint _blockPaint = Paint()..filterQuality = FilterQuality.none;
 
-  final Canvas parent;
-
   /// Where the scope's items draw.
   Canvas canvas;
 
-  /// Logical pixels → [canvas] pixels, before any transform inside the
-  /// scope. The base a nested scope builds its grid on.
-  Matrix4 logical;
-
   ui.PictureRecorder? _recorder;
   final List<Color>? _palette;
-  final _PaletteImages _palettes;
   late final Matrix4 _back;
   late final int _cols;
   late final int _rows;
@@ -3279,7 +3273,7 @@ class _PixelatePass {
 /// Kept for the frames that use them: [endFrame] drops every palette the
 /// frame just ended did not draw with, so the cache grows to what a frame
 /// needs and an animated palette never piles up textures.
-class _PaletteImages {
+class _PaletteImages() {
   Map<_PaletteKey, ui.Image> _current = {};
   Map<_PaletteKey, ui.Image> _previous = {};
 
@@ -3313,10 +3307,8 @@ class _PaletteImages {
   }
 }
 
-class _PaletteKey {
-  _PaletteKey(this.colors) : hashCode = Object.hashAll(colors);
-
-  final List<Color> colors;
+class _PaletteKey(final List<Color> colors) {
+  this : hashCode = Object.hashAll(colors);
 
   @override
   final int hashCode;

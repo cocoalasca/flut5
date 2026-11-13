@@ -20,8 +20,18 @@ TODO: List what your package can do. Maybe include images, gifs, or videos.
 
 ## Getting started
 
-Requires Dart 3.13 or later and Flutter 3.47 or later. The package, bundled
-example, and sibling demos use Dart 3.13 primary constructors.
+Requires Dart 3.14 or later and Flutter 3.50 or later. The package, bundled
+example, and sibling demos use primary constructors.
+
+Build your app with the standalone `material_ui` package rather than the
+deprecated `package:flutter/material.dart`; flut5's slider, toggle, and
+checkbox are `material_ui` widgets and need a `material_ui` `MaterialApp` /
+`Scaffold` above them:
+
+```sh
+flutter pub add material_ui
+dart fix --apply --code=migrate_design_widgets
+```
 
 Run `flutter pub get` after upgrading Flutter, then restart the Dart analysis
 server in your editor so it picks up the new SDK and language version.
