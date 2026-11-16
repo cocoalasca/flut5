@@ -2,9 +2,8 @@ import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/widgets.dart';
 
-import 'flut5_engine_colors.dart';
-
 import '../text/flut5_text_cache.dart';
+import 'flut5_engine_colors.dart';
 import 'render/flut5_render_queue.dart';
 
 /// Immutable descriptor of an active drop shadow.

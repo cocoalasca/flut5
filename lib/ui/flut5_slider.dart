@@ -120,17 +120,24 @@ base class Flut5Slider(
 
   @override
   Widget buildInner(BuildContext context) {
-    final slider = Slider(
-      min: min,
-      max: max,
-      value: value,
-      onChanged: (val) {
-        value = val;
-        notifyListeners();
-        if (_onChanged != null) {
-          _onChanged!(val);
-        }
-      },
+    // Slider asserts a `material_ui` Material above it. Supplying one here
+    // (transparent: it paints nothing) keeps the slider working in apps whose
+    // tree has none — a WidgetsApp, or the deprecated
+    // `package:flutter/material.dart`, whose Material is a different type.
+    final slider = Material(
+      type: MaterialType.transparency,
+      child: Slider(
+        min: min,
+        max: max,
+        value: value,
+        onChanged: (val) {
+          value = val;
+          notifyListeners();
+          if (_onChanged != null) {
+            _onChanged!(val);
+          }
+        },
+      ),
     );
     // Vertical: rotate 270° so dragging up increases the value.
     if (_direction == Axis.vertical) {

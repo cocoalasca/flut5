@@ -3,11 +3,8 @@ import 'dart:typed_data';
 import 'dart:ui' as dart_ui;
 
 import 'package:flutter/foundation.dart' show kDebugMode, kIsWasm, kIsWeb;
-import 'package:flutter/widgets.dart';
-
-import 'flut5_engine_colors.dart';
-
 import 'package:flutter/scheduler.dart';
+import 'package:flutter/widgets.dart';
 
 import '../image/flut5_image_mixin.dart';
 import '../math/flut5_intersection.dart';
@@ -25,6 +22,7 @@ import '../shape/flut5_vertex.dart';
 import '../text/flut5_text.dart';
 import '../ui/flut5_ui.dart';
 import 'flut5_blur.dart';
+import 'flut5_engine_colors.dart';
 import 'flut5_pixelate.dart';
 import 'flut5_clip.dart';
 import 'flut5_color.dart';

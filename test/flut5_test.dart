@@ -1867,6 +1867,333 @@ void main() {
     });
   });
 
+  group('softmax', () {
+    test('matches exp(x) / sum(exp(x)) and sums to 1', () {
+      final engine = Flut5Engine();
+      final probabilities = engine.softmax([1, 2, 3]);
+      final total = math.exp(1) + math.exp(2) + math.exp(3);
+      expect(probabilities, hasLength(3));
+      expect(probabilities[0], closeTo(math.exp(1) / total, 1e-12));
+      expect(probabilities[1], closeTo(math.exp(2) / total, 1e-12));
+      expect(probabilities[2], closeTo(math.exp(3) / total, 1e-12));
+      expect(probabilities.reduce((a, b) => a + b), closeTo(1, 1e-12));
+    });
+
+    test('keeps input order and ranks larger inputs higher', () {
+      final engine = Flut5Engine();
+      final probabilities = engine.softmax([0.5, -2, 3.25, 1]);
+      expect(probabilities[2], greaterThan(probabilities[3]));
+      expect(probabilities[3], greaterThan(probabilities[0]));
+      expect(probabilities[0], greaterThan(probabilities[1]));
+    });
+
+    test('equal inputs share the mass evenly', () {
+      final engine = Flut5Engine();
+      for (final probability in engine.softmax([4, 4, 4, 4])) {
+        expect(probability, closeTo(0.25, 1e-12));
+      }
+      expect(engine.softmax([-7.5]), [1.0]);
+    });
+
+    test('is unchanged by shifting every input by a constant', () {
+      final engine = Flut5Engine();
+      final base = engine.softmax([1, 2, 3]);
+      final shifted = engine.softmax([101, 102, 103]);
+      for (var index = 0; index < base.length; index++) {
+        expect(shifted[index], closeTo(base[index], 1e-12));
+      }
+    });
+
+    test('large inputs do not overflow', () {
+      final engine = Flut5Engine();
+      final probabilities = engine.softmax([1000, 1001]);
+      expect(probabilities.every((p) => p.isFinite), isTrue);
+      expect(probabilities[1], closeTo(math.exp(1) / (1 + math.exp(1)), 1e-12));
+    });
+
+    test('negative infinity rules an entry out', () {
+      final engine = Flut5Engine();
+      final probabilities = engine.softmax([double.negativeInfinity, 0, 0]);
+      expect(probabilities[0], 0);
+      expect(probabilities[1], closeTo(0.5, 1e-12));
+      expect(probabilities[2], closeTo(0.5, 1e-12));
+    });
+
+    test('an empty list returns an empty list', () {
+      final engine = Flut5Engine();
+      expect(engine.softmax(const <num>[]), isEmpty);
+    });
+
+    test('does not modify the input list', () {
+      final engine = Flut5Engine();
+      final values = <double>[3, 1, 2];
+      engine.softmax(values);
+      expect(values, [3, 1, 2]);
+    });
+
+    test('a temperature of 1 is the default', () {
+      final engine = Flut5Engine();
+      expect(engine.softmax([0.2, -1, 4], 1), engine.softmax([0.2, -1, 4]));
+    });
+
+    test('divides each input by the temperature', () {
+      final engine = Flut5Engine();
+      const temperature = 0.5;
+      final probabilities = engine.softmax([1, 2, 3], temperature);
+      final weights = [
+        for (final value in [1, 2, 3]) math.exp(value / temperature),
+      ];
+      final total = weights.reduce((a, b) => a + b);
+      for (var index = 0; index < weights.length; index++) {
+        expect(probabilities[index], closeTo(weights[index] / total, 1e-12));
+      }
+    });
+
+    test('lower temperature sharpens, higher flattens', () {
+      final engine = Flut5Engine();
+      final standard = engine.softmax([1, 2, 3]);
+      final sharp = engine.softmax([1, 2, 3], 0.25);
+      final flat = engine.softmax([1, 2, 3], 10);
+      expect(sharp[2], greaterThan(standard[2]));
+      expect(flat[2], lessThan(standard[2]));
+      expect(flat[2], closeTo(1 / 3, 0.05));
+      for (final result in [sharp, flat]) {
+        expect(result.reduce((a, b) => a + b), closeTo(1, 1e-12));
+      }
+    });
+
+    test('temperature 0 gives everything to the largest input', () {
+      final engine = Flut5Engine();
+      expect(engine.softmax([1, 5, 3], 0), [0.0, 1.0, 0.0]);
+      // A tie for largest splits evenly.
+      expect(engine.softmax([5, 1, 5], 0), [0.5, 0.0, 0.5]);
+    });
+
+    test('a tiny positive temperature approaches the temperature-0 result', () {
+      final engine = Flut5Engine();
+      final probabilities = engine.softmax([1, 5, 3], 1e-3);
+      expect(probabilities[1], closeTo(1, 1e-12));
+      expect(probabilities.every((p) => p.isFinite), isTrue);
+    });
+
+    test('a negative or NaN temperature throws', () {
+      final engine = Flut5Engine();
+      expect(() => engine.softmax([1, 2], -0.5), throwsArgumentError);
+      expect(() => engine.softmax([1, 2], double.nan), throwsArgumentError);
+    });
+
+    test('infinite entries split the whole total', () {
+      final engine = Flut5Engine();
+      final probabilities = engine.softmax([
+        double.infinity,
+        3,
+        double.infinity,
+      ]);
+      expect(probabilities, [0.5, 0.0, 0.5]);
+    });
+
+    test('NaN anywhere makes every result NaN', () {
+      final engine = Flut5Engine();
+      for (final temperature in [0, 1]) {
+        final probabilities = engine.softmax([1, double.nan, 2], temperature);
+        expect(probabilities.every((p) => p.isNaN), isTrue);
+      }
+    });
+  });
+
+  group('exp', () {
+    test("raises Euler's number to the given power", () {
+      final engine = Flut5Engine();
+      expect(engine.exp(0), 1.0);
+      expect(engine.exp(1), math.e);
+      expect(engine.exp(-1), closeTo(1 / math.e, 1e-15));
+      expect(engine.exp(2.5), math.exp(2.5));
+    });
+
+    test('accepts ints and doubles', () {
+      final engine = Flut5Engine();
+      expect(engine.exp(3), engine.exp(3.0));
+    });
+
+    test('overflows to infinity and underflows to zero', () {
+      final engine = Flut5Engine();
+      expect(engine.exp(710), double.infinity);
+      expect(engine.exp(-1000), 0.0);
+    });
+  });
+
+  group('randomWeightedIndex', () {
+    /// Draws [draws] picks from [weights] and returns how often each index
+    /// came back, as a fraction of [draws].
+    List<double> pickFrequencies(
+      Flut5Engine engine,
+      List<num> weights, {
+      int draws = 40000,
+    }) {
+      final counts = List<int>.filled(weights.length, 0);
+      for (var draw = 0; draw < draws; draw++) {
+        counts[engine.randomWeightedIndex(weights)]++;
+      }
+      return [for (final count in counts) count / draws];
+    }
+
+    test('picks each index in proportion to its weight', () {
+      final engine = Flut5Engine()..randomSeed(42);
+      final frequencies = pickFrequencies(engine, [1, 3, 6]);
+      expect(frequencies[0], closeTo(0.1, 0.01));
+      expect(frequencies[1], closeTo(0.3, 0.01));
+      expect(frequencies[2], closeTo(0.6, 0.01));
+    });
+
+    test('weights that sum to 1 work the same as raw scores', () {
+      final engine = Flut5Engine()..randomSeed(7);
+      final frequencies = pickFrequencies(engine, <double>[0.25, 0.75]);
+      expect(frequencies[1], closeTo(0.75, 0.01));
+    });
+
+    test('takes softmax output directly', () {
+      final engine = Flut5Engine()..randomSeed(3);
+      final weights = engine.softmax([1, 2, 3]);
+      final frequencies = pickFrequencies(engine, weights);
+      for (var index = 0; index < weights.length; index++) {
+        expect(frequencies[index], closeTo(weights[index], 0.01));
+      }
+    });
+
+    test('a weight of 0 is never picked', () {
+      final engine = Flut5Engine()..randomSeed(1);
+      final frequencies = pickFrequencies(engine, [0, 5, 0, 5, 0]);
+      expect(frequencies[0], 0);
+      expect(frequencies[2], 0);
+      expect(frequencies[4], 0);
+      expect(frequencies[1] + frequencies[3], 1);
+    });
+
+    test('a single positive weight is always picked', () {
+      final engine = Flut5Engine();
+      for (var draw = 0; draw < 1000; draw++) {
+        expect(engine.randomWeightedIndex([0, 0, 2.5, 0]), 2);
+      }
+    });
+
+    test('randomSeed makes the picks reproducible', () {
+      final engine = Flut5Engine();
+      List<int> pickSequence() => [
+        for (var draw = 0; draw < 50; draw++)
+          engine.randomWeightedIndex([2, 1, 4, 3]),
+      ];
+      engine.randomSeed(99);
+      final first = pickSequence();
+      engine.randomSeed(99);
+      expect(pickSequence(), first);
+    });
+
+    test('rejects weights there is nothing to pick from', () {
+      final engine = Flut5Engine();
+      expect(() => engine.randomWeightedIndex([]), throwsArgumentError);
+      expect(() => engine.randomWeightedIndex([0, 0]), throwsArgumentError);
+      expect(() => engine.randomWeightedIndex([1, -1]), throwsArgumentError);
+      expect(
+        () => engine.randomWeightedIndex([1, double.nan]),
+        throwsArgumentError,
+      );
+      expect(
+        () => engine.randomWeightedIndex([1, double.infinity]),
+        throwsArgumentError,
+      );
+      expect(
+        () => engine.randomWeightedIndex([double.maxFinite, double.maxFinite]),
+        throwsArgumentError,
+      );
+    });
+
+    test('the error names the offending index', () {
+      final engine = Flut5Engine();
+      expect(
+        () => engine.randomWeightedIndex([1, 2, -3]),
+        throwsA(
+          isA<ArgumentError>().having(
+            (error) => error.message,
+            'message',
+            contains('index 2 is -3'),
+          ),
+        ),
+      );
+    });
+  });
+
+  group('softmaxWeightedSelection', () {
+    test('picks each index with its softmax probability', () {
+      final engine = Flut5Engine()..randomSeed(5);
+      const values = [1, 2, 3];
+      final expected = engine.softmax(values);
+      const draws = 40000;
+      final counts = List<int>.filled(values.length, 0);
+      for (var draw = 0; draw < draws; draw++) {
+        counts[engine.softmaxWeightedSelection(values)]++;
+      }
+      for (var index = 0; index < values.length; index++) {
+        expect(counts[index] / draws, closeTo(expected[index], 0.01));
+      }
+    });
+
+    test('defaults to a temperature of 1', () {
+      final engine = Flut5Engine();
+      List<int> pickSequence([num? temperature]) => [
+        for (var draw = 0; draw < 50; draw++)
+          temperature == null
+              ? engine.softmaxWeightedSelection([0.5, 2, -1, 1])
+              : engine.softmaxWeightedSelection([0.5, 2, -1, 1], temperature),
+      ];
+      engine.randomSeed(11);
+      final withDefault = pickSequence();
+      engine.randomSeed(11);
+      expect(pickSequence(1), withDefault);
+    });
+
+    test('matches softmax followed by randomWeightedIndex', () {
+      final engine = Flut5Engine();
+      const values = [4, -2, 0.5, 3];
+      engine.randomSeed(21);
+      final combined = [
+        for (var draw = 0; draw < 50; draw++)
+          engine.softmaxWeightedSelection(values, 0.7),
+      ];
+      engine.randomSeed(21);
+      final separate = [
+        for (var draw = 0; draw < 50; draw++)
+          engine.randomWeightedIndex(engine.softmax(values, 0.7)),
+      ];
+      expect(combined, separate);
+    });
+
+    test('temperature 0 always picks the largest value', () {
+      final engine = Flut5Engine();
+      for (var draw = 0; draw < 1000; draw++) {
+        expect(engine.softmaxWeightedSelection([-3, 8, 2], 0), 1);
+      }
+    });
+
+    test('accepts negative scores', () {
+      final engine = Flut5Engine()..randomSeed(2);
+      final index = engine.softmaxWeightedSelection([-5, -1, -3]);
+      expect(index, inInclusiveRange(0, 2));
+    });
+
+    test('rejects empty values and bad temperatures', () {
+      final engine = Flut5Engine();
+      expect(() => engine.softmaxWeightedSelection([]), throwsArgumentError);
+      expect(
+        () => engine.softmaxWeightedSelection([1, double.nan]),
+        throwsArgumentError,
+      );
+      expect(
+        () => engine.softmaxWeightedSelection([1, 2], -1),
+        throwsArgumentError,
+      );
+    });
+  });
+
   group('Simplex noise (default mode)', () {
     test('returns values in [-1, 1] for 1-D inputs', () {
       final engine = Flut5Engine();

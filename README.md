@@ -23,10 +23,10 @@ TODO: List what your package can do. Maybe include images, gifs, or videos.
 Requires Dart 3.14 or later and Flutter 3.50 or later. The package, bundled
 example, and sibling demos use primary constructors.
 
-Build your app with the standalone `material_ui` package rather than the
-deprecated `package:flutter/material.dart`; flut5's slider, toggle, and
-checkbox are `material_ui` widgets and need a `material_ui` `MaterialApp` /
-`Scaffold` above them:
+Flutter 3.50 deprecates `package:flutter/material.dart` in favour of the
+standalone `material_ui` package. flut5 works in apps built with either, but
+its slider picks up your app's theme only from a `material_ui` app, so
+migrating is recommended:
 
 ```sh
 flutter pub add material_ui

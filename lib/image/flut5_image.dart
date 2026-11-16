@@ -6,6 +6,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter/services.dart' show AssetManifest, rootBundle;
 
 import '../core/flut5_console.dart';
+import '../core/flut5_engine_colors.dart';
 import 'flut5_image_handles.dart';
 import 'flut5_pixel_upload.dart';
 
@@ -678,8 +679,6 @@ class Flut5Image._(
     _replaceBitmap(uploader.upload(straightRgba, _image.width, _image.height));
   }
 
-  static const Color _transparentBlack = Color(0x00000000);
-
   /// The colour of the pixel at ([x], [y]).
   ///
   /// p5's `img.get(x, y)`. It reads [pixels], so it needs them loaded —
@@ -701,9 +700,9 @@ class Flut5Image._(
   /// use [getRegion].
   Color get(num x, num y) {
     final loaded = _loadedPixelsOrWarn('get() returned transparent');
-    if (loaded == null) return _transparentBlack;
+    if (loaded == null) return flut5Transparent;
     final offset = _pixelOffset(x, y);
-    if (offset < 0) return _transparentBlack;
+    if (offset < 0) return flut5Transparent;
     return Color.fromARGB(
       loaded[offset + 3],
       loaded[offset],

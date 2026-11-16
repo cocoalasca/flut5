@@ -539,8 +539,15 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
       flut5.dist(a, b, x2, y2);
   double distSq(Object a, Object b, [num? x2, num? y2]) =>
       flut5.distSq(a, b, x2, y2);
+  double exp(num n) => flut5.exp(n);
+  List<double> softmax(List<num> values, [num temperature = 1]) =>
+      flut5.softmax(values, temperature);
   double random([num? min, num? max]) => flut5.random(min, max);
   T randomChoice<T>(List<T> items) => flut5.randomChoice(items);
+  int randomWeightedIndex(List<num> weights) =>
+      flut5.randomWeightedIndex(weights);
+  int softmaxWeightedSelection(List<num> values, [num temperature = 1]) =>
+      flut5.softmaxWeightedSelection(values, temperature);
   double randomGaussian([double mean = 0.0, double sd = 1.0]) =>
       flut5.randomGaussian(mean, sd);
   void randomSeed(int seed) => flut5.randomSeed(seed);

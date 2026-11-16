@@ -1,4 +1,6 @@
-import 'package:material_ui/material_ui.dart';
+import 'package:flutter/widgets.dart';
+// Colour and icon constants only: this element builds no Material widget.
+import 'package:material_ui/material_ui.dart' show Colors, Icons;
 
 import 'flut5_ui_element.dart';
 import 'flut5_style_builder.dart';

@@ -1,13 +1,11 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter/widgets.dart';
 
-import '../core/flut5_engine_colors.dart';
-
-import 'package:flutter/services.dart' show rootBundle;
-
 import '../core/flut5_console.dart';
+import '../core/flut5_engine_colors.dart';
 import '../core/render/flut5_render_queue.dart';
 import '../core/sketch_environment.dart';
 import '../math/flut5_vector.dart';
