@@ -5,7 +5,7 @@ description: Whenever a public method, getter, setter, or field is added to Flut
 
 # Engine Forwarder Rule
 
-Any public method, getter, setter, or field added to `Flut5Engine` or any class/mixin it extends or uses (`Flut5Fill`, `Flut5Stroke`, `Flut52DPrimitives`, `Flut5Transform`, `Flut5Trigonometry`, `Flut5Text`, `Flut5Noise`, `Flut5Vertex`, `Flut5UI`, etc.) **must** have a matching one-line forwarder in the `Flut5` class in `lib/flut5.dart`.
+Any public method, getter, setter, or field added to `Flut5Engine` or any class/mixin it extends or uses (`Flut5Fill`, `Flut5Stroke`, `Flut52DPrimitives`, `Flut5Transform`, `Flut5Trigonometry`, `Flut5Text`, `Flut5Noise`, `Flut5Vertex`, etc.) **must** have a matching one-line forwarder in the `Flut5` class in `lib/flut5.dart`.
 
 ## Why
 

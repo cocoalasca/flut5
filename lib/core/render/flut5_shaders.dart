@@ -13,6 +13,7 @@ abstract final class Flut5Shaders() {
   static Future<void>? _loading;
   static bool _loaded = false;
   static ui.FragmentProgram? _palette;
+  static ui.FragmentProgram? _paletteStroke;
 
   /// Whether [load] has started and not finished yet.
   static bool get isLoading => _loading != null && !_loaded;
@@ -22,12 +23,22 @@ abstract final class Flut5Shaders() {
   /// the shader could not be loaded.
   static ui.FragmentProgram? get palette => _palette;
 
+  /// Outlines the palette colours that have a stroke, from [palette]'s index
+  /// output — see `shaders/flut5_palette_stroke.frag`. `null` until [load]
+  /// completes, or when the shader could not be loaded.
+  static ui.FragmentProgram? get paletteStroke => _paletteStroke;
+
   /// Loads every shader. Safe to call any number of times; never throws — a
   /// shader that fails to load stays `null`, with a console warning.
   static Future<void> load() => _loading ??= _load();
 
   static Future<void> _load() async {
-    _palette = await _program('flut5_palette.frag');
+    final (palette, paletteStroke) = await (
+      _program('flut5_palette.frag'),
+      _program('flut5_palette_stroke.frag'),
+    ).wait;
+    _palette = palette;
+    _paletteStroke = paletteStroke;
     _loaded = true;
   }
 

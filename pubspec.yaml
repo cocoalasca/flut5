@@ -25,6 +25,7 @@ dev_dependencies:
 flutter:
   shaders:
     - shaders/flut5_palette.frag
+    - shaders/flut5_palette_stroke.frag
 
   # To add assets to your package, add an assets section, like this:
   # assets:

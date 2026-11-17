@@ -66,7 +66,7 @@ void main() {
   tearDown(() {
     listener.disposeEvents();
     engine.events.dispose();
-    engine.ui.dispose();
+    engine.flut5Widgets.dispose();
     engine.disposeCursor();
   });
 
@@ -105,7 +105,7 @@ void main() {
     final other = Flut5Engine();
     addTearDown(() {
       other.events.dispose();
-      other.ui.dispose();
+      other.flut5Widgets.dispose();
       other.disposeCursor();
     });
     listener.listenEvents(engine);

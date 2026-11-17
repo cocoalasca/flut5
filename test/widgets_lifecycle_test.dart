@@ -2,18 +2,76 @@ import 'package:flut5/flut5.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+/// A helper that is not a sketch. Built during `setup()`, it adopts the
+/// sketch's engine (global mode), so its `flut5Widgets` is the sketch's.
+class _LegendHelper() extends Flut5 {
+  late final Flut5Label legend = flut5Widgets.createLabel('Legend');
+}
+
+/// Creates its widgets through the unprefixed `flut5Widgets` entry point.
+class _WidgetSketch() extends Flut5Sketch {
+  late Flut5Button resetButton;
+  late _LegendHelper helper;
+
+  @override
+  void setup() {
+    resetButton = flut5Widgets.createButton('Reset')..position(20, 30);
+    helper = _LegendHelper()..legend.position(20, 60);
+  }
+}
+
 void main() {
-  late Flut5UI ui;
-  setUp(() => ui = Flut5UI());
-  tearDown(() => ui.dispose());
+  group('flut5Widgets entry point', () {
+    setUp(() {
+      Flut5.instanceMode = false;
+      Flut5Engine.current = null;
+      Flut5Canvas.debugResetMultiCanvasWarning();
+    });
+
+    testWidgets('a sketch and its helpers create widgets on its canvas', (
+      tester,
+    ) async {
+      final sketch = _WidgetSketch();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SizedBox(
+            width: 300,
+            height: 300,
+            child: Flut5Canvas(sketch: sketch),
+          ),
+        ),
+      );
+      // setup() runs in a post-frame callback and the ticker never settles.
+      for (var i = 0; i < 8; i++) {
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+
+      expect(sketch.flut5Widgets, same(sketch.flut5.flut5Widgets));
+      expect(sketch.helper.flut5Widgets, same(sketch.flut5Widgets));
+      expect(sketch.flut5Widgets.elements, [
+        sketch.resetButton,
+        sketch.helper.legend,
+      ]);
+      expect(find.text('Reset'), findsOneWidget);
+      expect(find.text('Legend'), findsOneWidget);
+      expect(
+        tester.getTopLeft(find.text('Reset')),
+        tester.getTopLeft(find.byType(Flut5Canvas)) + const Offset(20, 30),
+      );
+    });
+  });
+
+  late Flut5Widgets widgets;
+  setUp(() => widgets = Flut5Widgets());
+  tearDown(() => widgets.dispose());
 
   for (final placement in ['append', 'prepend', 'insert']) {
     testWidgets('$placement children are released on removal', (tester) async {
       await tester.pumpWidget(const MaterialApp(home: SizedBox()));
       final context = tester.element(find.byType(SizedBox).first);
-      final container = ui.createContainer();
+      final container = widgets.createContainer();
       for (var i = 0; i < 25; i++) {
-        final button = ui.createButton('Temporary $i');
+        final button = widgets.createButton('Temporary $i');
         switch (placement) {
           case 'append':
             container.append(button);
@@ -25,15 +83,15 @@ void main() {
         button.remove();
       }
       expect((container.buildInner(context) as Row).children, isEmpty);
-      expect(ui.elements, [container]);
-      ui.clear();
-      expect(ui.elements, isEmpty);
+      expect(widgets.elements, [container]);
+      widgets.clear();
+      expect(widgets.elements, isEmpty);
     });
   }
 
   testWidgets('removing a mounted child rebuilds its parent', (tester) async {
-    final container = ui.createContainer();
-    final button = ui.createButton('Remove me');
+    final container = widgets.createContainer();
+    final button = widgets.createButton('Remove me');
     container.append(button);
     await tester.pumpWidget(
       MaterialApp(home: Builder(builder: container.buildInteractiveListenable)),
@@ -51,9 +109,9 @@ void main() {
   ) async {
     await tester.pumpWidget(const MaterialApp(home: SizedBox()));
     final context = tester.element(find.byType(SizedBox).first);
-    final first = ui.createContainer();
-    final second = ui.createContainer();
-    final button = ui.createButton('Moved');
+    final first = widgets.createContainer();
+    final second = widgets.createContainer();
+    final button = widgets.createButton('Moved');
     first.append(button);
     second.append(button);
     second.prepend(button);
@@ -64,7 +122,7 @@ void main() {
     button.setLabel('Still alive');
     button.remove();
     expect((second.buildInner(context) as Row).children, isEmpty);
-    ui.clear();
+    widgets.clear();
   });
 
   testWidgets('nested removal releases the subtree exactly once', (
@@ -72,9 +130,9 @@ void main() {
   ) async {
     await tester.pumpWidget(const MaterialApp(home: SizedBox()));
     final context = tester.element(find.byType(SizedBox).first);
-    final parent = ui.createContainer();
-    final child = ui.createContainer();
-    final button = ui.createButton('Nested');
+    final parent = widgets.createContainer();
+    final child = widgets.createContainer();
+    final button = widgets.createButton('Nested');
     parent.append(child);
     child.append(button);
     child.remove();
@@ -84,7 +142,7 @@ void main() {
       () => ChangeNotifier.debugAssertNotDisposed(button),
       throwsFlutterError,
     );
-    ui.clear();
+    widgets.clear();
   });
 
   testWidgets(
@@ -92,8 +150,8 @@ void main() {
     (tester) async {
       await tester.pumpWidget(const MaterialApp(home: SizedBox()));
       final context = tester.element(find.byType(SizedBox).first);
-      final container = ui.createContainer();
-      final button = ui.createButton('Old');
+      final container = widgets.createContainer();
+      final button = widgets.createButton('Old');
       container.append(button);
       const replacement = Text('Replacement');
       container.setChildren([replacement]);
@@ -102,23 +160,23 @@ void main() {
         () => ChangeNotifier.debugAssertNotDisposed(button),
         throwsFlutterError,
       );
-      ui.clear();
+      widgets.clear();
       expect((container.buildInner(context) as Row).children, isEmpty);
     },
   );
 
   test('rejects ownership cycles without changing the existing tree', () {
-    final parent = ui.createContainer();
-    final child = ui.createContainer();
+    final parent = widgets.createContainer();
+    final child = widgets.createContainer();
     parent.append(child);
     expect(() => parent.append(parent), throwsArgumentError);
     expect(() => child.append(parent), throwsArgumentError);
-    expect(ui.elements, [parent]);
-    ui.clear();
+    expect(widgets.elements, [parent]);
+    widgets.clear();
   });
 
   test('UI disposal also disposes its remaining children', () {
-    final other = Flut5UI();
+    final other = Flut5Widgets();
     final parent = other.createContainer();
     final button = other.createButton('Owned');
     parent.append(button);

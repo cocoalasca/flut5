@@ -302,7 +302,7 @@ class _Flut5CanvasState()
 
     // Reset UI elements before setup so repeated setup runs, such as hot reload,
     // do not duplicate sketch-owned controls.
-    widget.sketch.flut5.ui.clear();
+    widget.sketch.flut5.flut5Widgets.clear();
     // Same for physics bodies registered by a previous setup run.
     widget.sketch.flut5.physicsEngine.clear();
 
@@ -463,8 +463,8 @@ class _Flut5CanvasState()
           autofocus: true,
           onKeyEvent: widget.sketch.flut5.events.addKeyEvent,
           child: ListenableBuilder(
-            listenable: widget.sketch.flut5.ui,
-            // This child is cached — it does NOT rebuild when Flut5UI notifies
+            listenable: widget.sketch.flut5.flut5Widgets,
+            // Cached child: it does NOT rebuild when Flut5Widgets notifies
             child: ValueListenableBuilder<MouseCursor>(
               valueListenable: widget.sketch.flut5.cursorNotifier,
               child: Listener(
@@ -504,7 +504,7 @@ class _Flut5CanvasState()
             builder: (context, canvas) {
               return Flut5UIScope(
                 transitionDuration: Duration(
-                  milliseconds: widget.sketch.flut5.ui.transitionMs,
+                  milliseconds: widget.sketch.flut5.flut5Widgets.transitionMs,
                 ),
                 child: Stack(
                   fit: StackFit.expand,
@@ -531,7 +531,7 @@ class _Flut5CanvasState()
                       ),
                     // UI layer: only this part rebuilds on notification.
                     // Stays on top — sketch-owned controls outrank app chrome.
-                    ...widget.sketch.flut5.ui.elements.map(
+                    ...widget.sketch.flut5.flut5Widgets.elements.map(
                       (e) => e.build(context),
                     ),
                   ],

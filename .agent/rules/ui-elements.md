@@ -5,6 +5,9 @@ description: Guidelines for creating or modifying Flut5 UI elements (buttons, la
 
 # Flut5 UI Element Rules
 
+## Entry point
+Sketches create every element through `flut5Widgets` (a `Flut5Widgets`, in `lib/widgets/flut5_widgets.dart`), e.g. `flut5Widgets.createButton('Reset')`. A new element type gets a `createX` method on `Flut5Widgets` and lives in `lib/widgets/`. Don't add per-method forwarders to `Flut5` for `createX` — the single `flut5Widgets` getter is the forwarder.
+
 ## Multi-shadow support
 All UI elements support multiple shadows via the `shadow` style key. When creating new element types or adding default styles:
 

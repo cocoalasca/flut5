@@ -1,6 +1,6 @@
 ---
 name: engine-forwarders
-description: Use whenever a public method, getter, setter, or field is added to or edited on Flut5Engine or any of its mixins (Flut5Fill, Flut5Stroke, Flut52DPrimitives, Flut5Transform, Flut5Clip, Flut5Trigonometry, Flut5Text, Flut5Noise, Flut5Vertex, Flut5UI, Flut5Cursor, etc.). Ensures the matching one-line forwarder is also added to the Flut5 base class in lib/flut5.dart so sketch authors can call the member unprefixed.
+description: Use whenever a public method, getter, setter, or field is added to or edited on Flut5Engine or any of its mixins (Flut5Fill, Flut5Stroke, Flut52DPrimitives, Flut5Transform, Flut5Clip, Flut5Trigonometry, Flut5Text, Flut5Noise, Flut5Vertex, Flut5Cursor, etc.). Ensures the matching one-line forwarder is also added to the Flut5 base class in lib/flut5.dart so sketch authors can call the member unprefixed.
 ---
 
 # Engine forwarder skill

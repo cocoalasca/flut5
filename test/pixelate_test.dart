@@ -102,14 +102,15 @@ void main() {
     const black = Color(0xFF000000);
     const white = Color(0xFFFFFFFF);
 
-    test('the shader loaded', () {
+    test('the shaders loaded', () {
       expect(Flut5Shaders.palette, isNotNull);
+      expect(Flut5Shaders.paletteStroke, isNotNull);
     });
 
     test('every block takes a palette colour', () async {
       const palette = [black, white, red, blue];
       final e = filled();
-      e.beginPixelate(10, palette);
+      e.beginPixelate(10, _fills(palette));
       e.background(const Color(0xFF202020));
       e.fill(const Color(0xFFE01010));
       e.circle(100, 100, 120);
@@ -131,7 +132,7 @@ void main() {
 
     test('a block takes the colour nearest its average', () async {
       final e = filled();
-      e.beginPixelate(10, const [red, blue, purple, black]);
+      e.beginPixelate(10, _fills(const [red, blue, purple, black]));
       e.background(black);
       e.fill(red);
       e.rect(40, 40, 5, 10);
@@ -150,7 +151,7 @@ void main() {
       expect(_nearestRgb(target, const [darker, lighter]), darker);
       expect(_nearestOklab(target, const [darker, lighter]), lighter);
       final e = filled()..fill(target);
-      e.beginPixelate(10, const [darker, lighter]);
+      e.beginPixelate(10, _fills(const [darker, lighter]));
       e.rect(0, 0, 200, 200);
       e.endPixelate();
       final p = await _pixels(e.renderQueue.execute);
@@ -175,7 +176,7 @@ void main() {
       final rng = math.Random(7);
       final colors = <Color>[];
       final e = filled();
-      e.beginPixelate(10, palette);
+      e.beginPixelate(10, _fills(palette));
       for (var j = 0; j < 20; j++) {
         for (var i = 0; i < 20; i++) {
           final c = Color.fromARGB(
@@ -206,23 +207,55 @@ void main() {
       expect(checked, greaterThan(380));
     });
 
-    test('a block keeps its coverage', () async {
+    test('a block at least half covered is solid, below that empty', () async {
       final e = filled()..fill(red);
-      e.beginPixelate(10, const [blue]);
-      e.rect(40, 40, 5, 10); // half of the block at (40, 40)
+      e.beginPixelate(10, const [PaletteColor(blue)]);
+      e.rect(40, 40, 7, 10); // 70% of the block at (40, 40)
+      e.rect(80, 40, 3, 10); // 30% of the block at (80, 40)
       e.endPixelate();
       final p = await _pixels(e.renderQueue.execute);
-      // Premultiplied readback: half-covered blue is (0, 0, 128, 128).
-      final px = _pixel(p, 45, 45);
-      expect(px >> 16, 0);
-      expect(px >> 8 & 0xFF, closeTo(128, 4));
-      expect(px & 0xFF, closeTo(128, 4));
-      expect(_pixel(p, 25, 25) & 0xFF, 0);
+      expect(_pixel(p, 45, 45), _packed(blue));
+      expect(_pixel(p, 85, 45), 0);
+      expect(_pixel(p, 25, 25), 0);
+    });
+
+    test('with nothing behind the shapes, every block is exact', () async {
+      const palette = [red, blue];
+      final e = filled();
+      e.beginPixelate(10, _fills(palette));
+      e.fill(const Color(0xFFE01010));
+      e.circle(70, 100, 110);
+      e.fill(const Color(0xFF3030F0));
+      e.circle(140, 90, 70);
+      e.endPixelate();
+      final p = await _pixels(e.renderQueue.execute);
+      final allowed = {0, ...palette.map(_packed)};
+      for (var y = 0; y < 200; y++) {
+        for (var x = 0; x < 200; x++) {
+          expect(allowed, contains(_pixel(p, x, y)), reason: '($x, $y)');
+        }
+      }
+    });
+
+    test('a shape under half opacity needs something behind it', () async {
+      Future<Uint8List> draw({required bool background}) {
+        final e = filled();
+        e.beginPixelate(10, const [PaletteColor(red), PaletteColor(black)]);
+        if (background) e.background(black);
+        e.fill(const Color(0x60FF0000));
+        e.rect(0, 0, 200, 200);
+        e.endPixelate();
+        return _pixels(e.renderQueue.execute);
+      }
+
+      expect(_pixel(await draw(background: false), 100, 100), 0);
+      // Over black, 38% red averages to a dark red: nearest is black.
+      expect(_pixel(await draw(background: true), 100, 100), _packed(black));
     });
 
     test('a translucent palette colour thins the block', () async {
       final e = filled()..fill(red);
-      e.beginPixelate(10, const [Color(0x80FF0000)]);
+      e.beginPixelate(10, const [PaletteColor(Color(0x80FF0000))]);
       e.rect(0, 0, 200, 200);
       e.endPixelate();
       final p = await _pixels(e.renderQueue.execute);
@@ -234,7 +267,7 @@ void main() {
     });
 
     test('an empty palette keeps the average colour', () async {
-      void draw(Flut5Engine e, List<Color>? palette) {
+      void draw(Flut5Engine e, List<PaletteColor>? palette) {
         e.beginPixelate(10, palette);
         e.fill(const Color(0xFF3366CC));
         e.circle(100, 100, 120);
@@ -252,12 +285,12 @@ void main() {
     });
 
     test('changing the list afterwards leaves the frame alone', () async {
-      final palette = [red];
+      final palette = [const PaletteColor(red)];
       final e = filled()..fill(white);
       e.beginPixelate(10, palette);
       e.rect(0, 0, 200, 200);
       e.endPixelate();
-      palette[0] = blue;
+      palette[0] = const PaletteColor(blue);
       final p = await _pixels(e.renderQueue.execute);
       expect(_pixel(p, 100, 100), _packed(red));
     });
@@ -266,7 +299,10 @@ void main() {
       final e = filled();
       Future<Uint8List> frame() async {
         e.renderQueue.clear();
-        e.beginPixelate(10, [black, red]);
+        e.beginPixelate(10, [
+          const PaletteColor(black),
+          const PaletteColor(red, stroke: white),
+        ]);
         e.fill(const Color(0xFFCC2222));
         e.circle(100, 100, 120);
         e.endPixelate();
@@ -276,6 +312,176 @@ void main() {
       final first = await frame();
       expect(await frame(), first);
       expect(await frame(), first);
+    });
+  });
+
+  // Block size 10 on a 200×200 canvas: 20×20 blocks, and every rect below
+  // lands on whole blocks, so each block is one flat colour.
+  group('Palette strokes', () {
+    setUpAll(Flut5Shaders.load);
+
+    const red = Color(0xFFFF0000);
+    const blue = Color(0xFF0000FF);
+    const black = Color(0xFF000000);
+    const white = Color(0xFFFFFFFF);
+    const yellow = Color(0xFFFFFF00);
+
+    test('compares by value', () {
+      expect(
+        PaletteColor(red, stroke: white),
+        PaletteColor(red, stroke: white),
+      );
+      expect(
+        PaletteColor(red, stroke: white).hashCode,
+        PaletteColor(red, stroke: white).hashCode,
+      );
+      expect(PaletteColor(red), isNot(PaletteColor(red, stroke: white)));
+    });
+
+    test('a stroked colour is outlined where it meets another', () async {
+      final e = filled();
+      e.beginPixelate(10, const [
+        PaletteColor(black),
+        PaletteColor(red, stroke: white),
+      ]);
+      e.background(black);
+      e.fill(red);
+      e.rect(50, 50, 100, 100); // blocks 5…14 both ways
+      e.endPixelate();
+      final p = await _pixels(e.renderQueue.execute);
+      for (final (column, row) in [(5, 5), (5, 10), (14, 10), (10, 5)]) {
+        expect(_block(p, column, row), _packed(white), reason: '$column,$row');
+      }
+      expect(_block(p, 10, 10), _packed(red));
+      expect(_block(p, 6, 6), _packed(red));
+      // The unstroked side keeps its fill.
+      expect(_block(p, 4, 10), _packed(black));
+      expect(_block(p, 0, 0), _packed(black));
+    });
+
+    test('an empty neighbour counts as another colour', () async {
+      final e = filled()..fill(red);
+      e.beginPixelate(10, const [PaletteColor(red, stroke: white)]);
+      e.rect(50, 50, 100, 100);
+      e.endPixelate();
+      final p = await _pixels(e.renderQueue.execute);
+      expect(_block(p, 5, 10), _packed(white));
+      expect(_block(p, 14, 14), _packed(white));
+      expect(_block(p, 10, 10), _packed(red));
+      expect(_block(p, 4, 10), 0);
+    });
+
+    test(
+      'only side neighbours count, and the canvas border is no edge',
+      () async {
+        final e = filled();
+        e.beginPixelate(10, const [
+          PaletteColor(black),
+          PaletteColor(red, stroke: white),
+        ]);
+        e.background(red);
+        e.fill(black);
+        e.rect(100, 100, 10, 10); // block (10, 10)
+        e.endPixelate();
+        final p = await _pixels(e.renderQueue.execute);
+        expect(_block(p, 10, 10), _packed(black));
+        for (final (column, row) in [(9, 10), (11, 10), (10, 9), (10, 11)]) {
+          expect(
+            _block(p, column, row),
+            _packed(white),
+            reason: '$column,$row',
+          );
+        }
+        for (final (column, row) in [(9, 9), (11, 11), (0, 0), (19, 19)]) {
+          expect(_block(p, column, row), _packed(red), reason: '$column,$row');
+        }
+      },
+    );
+
+    test(
+      'where two stroked colours meet, the later one draws the edge',
+      () async {
+        Future<Uint8List> halves(List<PaletteColor> palette) {
+          final e = filled();
+          e.beginPixelate(10, palette);
+          e.fill(red);
+          e.rect(0, 0, 100, 200); // columns 0…9
+          e.fill(blue);
+          e.rect(100, 0, 100, 200); // columns 10…19
+          e.endPixelate();
+          return _pixels(e.renderQueue.execute);
+        }
+
+        const redOutlined = PaletteColor(red, stroke: white);
+        const blueOutlined = PaletteColor(blue, stroke: yellow);
+
+        var p = await halves(const [redOutlined, blueOutlined]);
+        expect(_block(p, 9, 10), _packed(red));
+        expect(_block(p, 10, 10), _packed(yellow));
+        expect(_block(p, 5, 10), _packed(red));
+        expect(_block(p, 15, 10), _packed(blue));
+
+        p = await halves(const [blueOutlined, redOutlined]);
+        expect(_block(p, 9, 10), _packed(white));
+        expect(_block(p, 10, 10), _packed(blue));
+      },
+    );
+
+    test(
+      'a later colour without a stroke leaves the edge to the stroked one',
+      () async {
+        final e = filled();
+        e.beginPixelate(10, const [
+          PaletteColor(red, stroke: white),
+          PaletteColor(blue),
+        ]);
+        e.fill(red);
+        e.rect(0, 0, 100, 200);
+        e.fill(blue);
+        e.rect(100, 0, 100, 200);
+        e.endPixelate();
+        final p = await _pixels(e.renderQueue.execute);
+        expect(_block(p, 9, 10), _packed(white));
+        expect(_block(p, 10, 10), _packed(blue));
+      },
+    );
+
+    test('an outline is solid with nothing behind the shape', () async {
+      final e = filled()..fill(red);
+      e.beginPixelate(10, const [PaletteColor(red, stroke: white)]);
+      e.circle(100, 100, 130);
+      e.endPixelate();
+      final p = await _pixels(e.renderQueue.execute);
+      final seen = <int>{};
+      for (var y = 0; y < 200; y++) {
+        for (var x = 0; x < 200; x++) {
+          seen.add(_pixel(p, x, y));
+        }
+      }
+      expect(seen, {0, _packed(red), _packed(white)});
+      // Leftmost drawn block of the middle row: the outline.
+      final row = [
+        for (var column = 0; column < 20; column++) _block(p, column, 10),
+      ];
+      expect(row.firstWhere((px) => px != 0), _packed(white));
+    });
+
+    test('blocks off the edges draw exactly as without strokes', () async {
+      // Green never wins a block, so its stroke changes nothing — but it
+      // sends the scope through the stroke pass, whose fills and empty
+      // blocks must match the single pass byte for byte.
+      const green = Color(0xFF00FF00);
+      Future<Uint8List> draw(PaletteColor greenEntry) {
+        final e = filled();
+        e.beginPixelate(10, [const PaletteColor(red), greenEntry]);
+        e.fill(red);
+        e.circle(100, 100, 150);
+        e.endPixelate();
+        return _pixels(e.renderQueue.execute);
+      }
+
+      final plain = await draw(const PaletteColor(green));
+      expect(await draw(const PaletteColor(green, stroke: white)), plain);
     });
   });
 
@@ -433,6 +639,15 @@ int _pixel(Uint8List p, int x, int y) {
   final o = (y * 200 + x) * 4;
   return p[o] << 24 | p[o + 1] << 16 | p[o + 2] << 8 | p[o + 3];
 }
+
+/// The centre pixel of the 10×10 block at [column], [row].
+int _block(Uint8List p, int column, int row) =>
+    _pixel(p, column * 10 + 5, row * 10 + 5);
+
+/// A palette of [colors] without strokes.
+List<PaletteColor> _fills(List<Color> colors) => [
+  for (final colour in colors) PaletteColor(colour),
+];
 
 /// Alpha-weighted centre and total alpha, skipping [exclude].
 (double, double, double) _centroid(Uint8List p, {required Rect? exclude}) {

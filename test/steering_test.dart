@@ -1,161 +1,426 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flut5/flut5.dart';
 
-// Create a dummy vehicle to test the mixin
-class Vehicle() with Flut5Steering;
-
 void main() {
-  group('Flut5Steering Physics', () {
-    test('initializes with zero vectors', () {
-      final v = Vehicle();
-      expect(v.position.x, 0.0);
-      expect(v.velocity.x, 0.0);
-      expect(v.acceleration.x, 0.0);
-      expect(v.maxVelocity, 4.0);
-      expect(v.maxForce, 0.1);
+  late Flut5Engine engine;
+
+  setUp(() => engine = Flut5Engine());
+
+  group('seek', () {
+    test('generates a force toward the target, capped at maxForce', () {
+      final force = engine.seek(
+        Flut5Vector(0, 0),
+        Flut5Vector.zero(),
+        Flut5Vector(100, 0),
+      );
+
+      expect(force.x, greaterThan(0.0));
+      expect(force.y, 0.0);
+      expect(force.mag(), closeTo(0.1, 1e-12));
     });
 
-    test('applyForce accumulates acceleration', () {
-      final v = Vehicle();
-      v.applyForce(Flut5Vector(2, 3));
-      v.applyForce(Flut5Vector(1, -1));
-      expect(v.acceleration.x, 3.0);
-      expect(v.acceleration.y, 2.0);
+    test('uses the limits passed in', () {
+      final force = engine.seek(
+        Flut5Vector(0, 0),
+        Flut5Vector.zero(),
+        Flut5Vector(100, 0),
+        maxVelocity: 3.0,
+        maxForce: 10.0,
+      );
+
+      // maxForce is above maxVelocity, so the force is the full desired
+      // velocity.
+      expect(force.x, closeTo(3.0, 1e-12));
+      expect(force.y, 0.0);
     });
 
-    test('configSteering updates limitations', () {
-      final v = Vehicle();
-      v.configSteering(maxVelocity: 10.0, maxForce: 2.0);
-      expect(v.maxVelocity, 10.0);
-      expect(v.maxForce, 2.0);
+    test('subtracts the current velocity', () {
+      final force = engine.seek(
+        Flut5Vector(3, 5),
+        Flut5Vector(1, -2),
+        Flut5Vector(37, -19),
+        maxForce: 100.0,
+      );
+
+      final expected = Flut5Vector(
+        37,
+        -19,
+      ).sub(Flut5Vector(3, 5)).setMag(4.0).sub(Flut5Vector(1, -2));
+      expect(force.x, closeTo(expected.x, 1e-12));
+      expect(force.y, closeTo(expected.y, 1e-12));
     });
 
-    test('configSteering leaves omitted limits untouched', () {
-      final v = Vehicle();
-      v.configSteering(maxVelocity: 10.0, maxForce: 2.0);
+    test('does not modify its arguments', () {
+      final position = Flut5Vector(3, 5);
+      final velocity = Flut5Vector(1, -2);
+      final target = Flut5Vector(37, -19);
 
-      v.configSteering(maxVelocity: 20.0);
-      expect(v.maxVelocity, 20.0);
-      expect(v.maxForce, 2.0);
+      engine.seek(position, velocity, target);
 
-      v.configSteering(maxForce: 3.0);
-      expect(v.maxVelocity, 20.0);
-      expect(v.maxForce, 3.0);
-
-      v.configSteering();
-      expect(v.maxVelocity, 20.0);
-      expect(v.maxForce, 3.0);
+      expect([position.x, position.y], [3.0, 5.0]);
+      expect([velocity.x, velocity.y], [1.0, -2.0]);
+      expect([target.x, target.y], [37.0, -19.0]);
     });
   });
 
-  group('Flut5Steering Behaviors', () {
-    test('seek generates force towards target', () {
-      final v = Vehicle();
-      v.position.setValues(0, 0, 0);
+  group('arrive', () {
+    test('slows down within slowingRadius', () {
+      final far = engine.arrive(
+        Flut5Vector(0, 0),
+        Flut5Vector.zero(),
+        Flut5Vector(200, 0), // outside the default 100 slowingRadius
+        maxForce: 10.0,
+        returnCopy: true,
+      );
+      final near = engine.arrive(
+        Flut5Vector(0, 0),
+        Flut5Vector.zero(),
+        Flut5Vector(50, 0), // inside the default 100 slowingRadius
+        maxForce: 10.0,
+        returnCopy: true,
+      );
 
-      // Target is directly to the right
-      v.applyForce(v.seek(Flut5Vector(100, 0)));
-
-      // Acceleration should be pointing right (x > 0, y == 0)
-      expect(v.acceleration.x, greaterThan(0.0));
-      expect(v.acceleration.y, 0.0);
-
-      // The applied force should be limited by maxForce
-      expect(v.acceleration.mag(), closeTo(v.maxForce, 0.001));
+      expect(far.x, closeTo(4.0, 1e-12));
+      expect(near.x, closeTo(2.0, 1e-12)); // 50 / 100 * maxVelocity
     });
 
-    test('arrive slows down within slowingRadius', () {
-      final vFar = Vehicle()..configSteering(maxVelocity: 4.0, maxForce: 10.0);
-      vFar.position.setValues(0, 0, 0);
-      vFar.applyForce(
-        vFar.arrive(Flut5Vector(200, 0)),
-      ); // Outside default 100 slowingRadius
+    test('honours a custom slowingRadius', () {
+      final force = engine.arrive(
+        Flut5Vector(0, 0),
+        Flut5Vector.zero(),
+        Flut5Vector(50, 0),
+        slowingRadius: 200.0,
+        maxVelocity: 8.0,
+        maxForce: 10.0,
+      );
 
-      final vNear = Vehicle()..configSteering(maxVelocity: 4.0, maxForce: 10.0);
-      vNear.position.setValues(0, 0, 0);
-      vNear.applyForce(
-        vNear.arrive(Flut5Vector(50, 0)),
-      ); // Inside default 100 slowingRadius
-
-      // Inline physics update
-      vFar.velocity.add(vFar.acceleration);
-      vFar.velocity.limit(vFar.maxVelocity);
-      vNear.velocity.add(vNear.acceleration);
-      vNear.velocity.limit(vNear.maxVelocity);
-
-      // Both should move right, but near should be slower
-      expect(vFar.velocity.x, greaterThan(vNear.velocity.x));
+      expect(force.x, closeTo(2.0, 1e-12)); // 50 / 200 * 8
     });
-    test('flee generates force away from target within radius', () {
-      final v = Vehicle();
-      v.position.setValues(0, 0, 0);
+  });
 
-      // Target is directly to the right, within the radius
-      v.applyForce(v.flee(Flut5Vector(20, 0), fleeRadius: 50.0));
+  group('flee', () {
+    test('generates a force away from a target within the radius', () {
+      final force = engine.flee(
+        Flut5Vector(0, 0),
+        Flut5Vector.zero(),
+        Flut5Vector(20, 0),
+        fleeRadius: 50.0,
+      );
 
-      // Force should be pointing LEFT (x < 0) since the target is on the right
-      expect(v.acceleration.x, lessThan(0.0));
-      expect(v.acceleration.y, 0.0);
+      expect(force.x, lessThan(0.0));
+      expect(force.y, 0.0);
     });
 
-    test('flee ignores targets outside radius', () {
-      final v = Vehicle();
-      v.position.setValues(0, 0, 0);
+    test('ignores targets outside the radius', () {
+      final force = engine.flee(
+        Flut5Vector(0, 0),
+        Flut5Vector.zero(),
+        Flut5Vector(100, 0),
+        fleeRadius: 50.0,
+      );
 
-      // Target is outside the radius
-      v.applyForce(v.flee(Flut5Vector(100, 0), fleeRadius: 50.0));
-
-      // No force should be applied
-      expect(v.acceleration.x, 0.0);
-      expect(v.acceleration.y, 0.0);
-      expect(v.acceleration.z, 0.0);
+      expect([force.x, force.y, force.z], [0.0, 0.0, 0.0]);
     });
 
-    test('flee with no radius always applies a force', () {
-      final v = Vehicle();
-      v.position.setValues(0, 0, 0);
+    test('with no radius always applies a force', () {
+      final force = engine.flee(
+        Flut5Vector(0, 0),
+        Flut5Vector.zero(),
+        Flut5Vector(1000, 0),
+      );
 
-      // Far away, but no radius given — the force is still produced
-      v.applyForce(v.flee(Flut5Vector(1000, 0)));
-
-      expect(v.acceleration.x, lessThan(0.0));
-      expect(v.acceleration.y, 0.0);
+      expect(force.x, lessThan(0.0));
+      expect(force.y, 0.0);
     });
 
-    test(
-      'flee reverses the desired velocity, not the whole steering force',
-      () {
-        final target = Flut5Vector(37, -19);
+    test('reverses the desired velocity, not the whole steering force', () {
+      final force = engine.flee(
+        Flut5Vector(3, 5),
+        Flut5Vector(1, -2),
+        Flut5Vector(37, -19),
+      );
 
-        final v = Vehicle();
-        v.position.setValues(3, 5, 0);
-        v.velocity.setValues(1, -2, 0);
-        final fleeForce = v.flee(target, returnCopy: true);
+      // desired = setMag(position - target, maxVelocity); steer = desired - velocity
+      final expected = Flut5Vector(3, 5)
+          .sub(Flut5Vector(37, -19))
+          .setMag(4.0)
+          .sub(Flut5Vector(1, -2))
+          .limit(0.1);
 
-        // desired = setMag(position - target, maxVelocity); steer = desired - velocity
-        final expected = Flut5Vector(3, 5)
-            .sub(Flut5Vector(37, -19))
-            .setMag(v.maxVelocity)
-            .sub(Flut5Vector(1, -2))
-            .limit(v.maxForce);
+      expect(force.x, closeTo(expected.x, 1e-12));
+      expect(force.y, closeTo(expected.y, 1e-12));
+      expect(force.z, closeTo(expected.z, 1e-12));
+    });
 
-        expect(fleeForce.x, closeTo(expected.x, 1e-12));
-        expect(fleeForce.y, closeTo(expected.y, 1e-12));
-        expect(fleeForce.z, closeTo(expected.z, 1e-12));
-      },
-    );
-
-    test('flee still steers away when charging the target at max speed', () {
-      final v = Vehicle();
-      v.position.setValues(0, 0, 0);
+    test('still steers away when charging the target at max speed', () {
       // Moving straight at the target at full speed — the case where negating
       // seek would have produced zero force.
-      v.velocity.setValues(v.maxVelocity, 0, 0);
+      final force = engine.flee(
+        Flut5Vector(0, 0),
+        Flut5Vector(4.0, 0),
+        Flut5Vector(20, 0),
+      );
 
-      final fleeForce = v.flee(Flut5Vector(20, 0), returnCopy: true);
+      expect(force.x, closeTo(-0.1, 1e-12));
+      expect(force.y, closeTo(0.0, 1e-12));
+    });
+  });
 
-      expect(fleeForce.x, closeTo(-v.maxForce, 1e-12));
-      expect(fleeForce.y, closeTo(0.0, 1e-12));
+  group('separation', () {
+    test('pushes away from a close neighbor, capped at maxForce', () {
+      final force = engine.separation(Flut5Vector(0, 0), Flut5Vector.zero(), [
+        Flut5Vector(10, 0),
+      ], separationRadius: 50.0);
+
+      expect(force.x, closeTo(-0.1, 1e-12));
+      expect(force.y, 0.0);
+    });
+
+    test('matches the reference flocking formula', () {
+      final position = Flut5Vector(3, 5);
+      final velocity = Flut5Vector(1, -2);
+      final neighbors = [Flut5Vector(13, 5), Flut5Vector(3, -25)];
+
+      final force = engine.separation(
+        position,
+        velocity,
+        neighbors,
+        maxForce: 100.0,
+      );
+
+      // Sum of (position - neighbor) / distance², set to maxVelocity, minus
+      // velocity.
+      final expected = Flut5Vector.zero();
+      for (final neighbor in neighbors) {
+        final away = position.copy().sub(neighbor);
+        expected.add(away.copy().div(away.length2));
+      }
+      expected
+        ..setMag(4.0)
+        ..sub(velocity);
+
+      expect(force.x, closeTo(expected.x, 1e-12));
+      expect(force.y, closeTo(expected.y, 1e-12));
+      // The closer neighbor (10 px to the right) dominates the farther one
+      // (30 px below), so the push is mostly to the left.
+      expect(force.x.abs(), greaterThan(force.y.abs()));
+    });
+
+    test('ignores neighbors outside separationRadius', () {
+      final force = engine.separation(Flut5Vector(0, 0), Flut5Vector(1, 1), [
+        Flut5Vector(100, 0),
+        Flut5Vector(0, 60),
+      ], separationRadius: 50.0);
+
+      expect([force.x, force.y, force.z], [0.0, 0.0, 0.0]);
+    });
+
+    test('with no radius every neighbor counts', () {
+      final force = engine.separation(Flut5Vector(0, 0), Flut5Vector.zero(), [
+        Flut5Vector(1000, 0),
+      ]);
+
+      expect(force.x, lessThan(0.0));
+    });
+
+    test('skips its own position in the neighbor list', () {
+      final position = Flut5Vector(0, 0);
+
+      final alone = engine.separation(position, Flut5Vector.zero(), [position]);
+      expect([alone.x, alone.y, alone.z], [0.0, 0.0, 0.0]);
+
+      final withOther = engine.separation(position, Flut5Vector.zero(), [
+        position,
+        Flut5Vector(0, 10),
+      ]);
+      expect(withOther.x, 0.0);
+      expect(withOther.y, closeTo(-0.1, 1e-12));
+    });
+
+    test('brakes when the pushes cancel out', () {
+      final force = engine.separation(Flut5Vector(0, 0), Flut5Vector(1, 0), [
+        Flut5Vector(10, 0),
+        Flut5Vector(-10, 0),
+      ], maxForce: 100.0);
+
+      expect(force.x, closeTo(-1.0, 1e-12));
+      expect(force.y, 0.0);
+    });
+
+    test('does not modify its arguments', () {
+      final position = Flut5Vector(3, 5);
+      final velocity = Flut5Vector(1, -2);
+      final neighbor = Flut5Vector(8, 5);
+
+      engine.separation(position, velocity, [neighbor]);
+
+      expect([position.x, position.y], [3.0, 5.0]);
+      expect([velocity.x, velocity.y], [1.0, -2.0]);
+      expect([neighbor.x, neighbor.y], [8.0, 5.0]);
+    });
+
+    test('follows the steering return mode', () {
+      engine.steeringTurboMode(true);
+      final shared = engine.seek(
+        Flut5Vector(0, 0),
+        Flut5Vector.zero(),
+        Flut5Vector(100, 0),
+      );
+      final separated = engine.separation(
+        Flut5Vector(0, 0),
+        Flut5Vector.zero(),
+        [Flut5Vector(10, 0)],
+      );
+
+      expect(identical(shared, separated), isTrue);
+    });
+  });
+
+  group('cohesion', () {
+    test('steers toward the center of the neighbors', () {
+      final force = engine.cohesion(Flut5Vector(0, 0), Flut5Vector.zero(), [
+        Flut5Vector(10, 10),
+        Flut5Vector(30, -10),
+      ], maxForce: 100.0);
+
+      // Center (20, 0), straight to the right at maxVelocity.
+      expect(force.x, closeTo(4.0, 1e-12));
+      expect(force.y, closeTo(0.0, 1e-12));
+    });
+
+    test('is seek toward the center', () {
+      final position = Flut5Vector(3, 5);
+      final velocity = Flut5Vector(1, -2);
+      final neighbors = [
+        Flut5Vector(13, 5),
+        Flut5Vector(3, -25),
+        Flut5Vector(-7, 11),
+      ];
+
+      final force = engine.cohesion(position, velocity, neighbors);
+      final center = Flut5Vector(13 + 3 - 7, 5 - 25 + 11).div(3);
+      final expected = engine.seek(position, velocity, center);
+
+      expect(force.x, closeTo(expected.x, 1e-12));
+      expect(force.y, closeTo(expected.y, 1e-12));
+      expect(force.z, closeTo(expected.z, 1e-12));
+    });
+
+    test('ignores neighbors outside cohesionRadius', () {
+      final force = engine.cohesion(Flut5Vector(0, 0), Flut5Vector.zero(), [
+        Flut5Vector(0, 20),
+        Flut5Vector(500, 0),
+      ], cohesionRadius: 50.0);
+
+      // Only the neighbor below counts, so the pull is straight down.
+      expect(force.x, 0.0);
+      expect(force.y, closeTo(0.1, 1e-12));
+    });
+
+    test('returns zero when no neighbor is in range', () {
+      final force = engine.cohesion(Flut5Vector(0, 0), Flut5Vector(1, 1), [
+        Flut5Vector(500, 0),
+      ], cohesionRadius: 50.0);
+
+      expect([force.x, force.y, force.z], [0.0, 0.0, 0.0]);
+    });
+
+    test('skips its own position in the neighbor list', () {
+      final position = Flut5Vector(0, 0);
+
+      final alone = engine.cohesion(position, Flut5Vector.zero(), [position]);
+      expect([alone.x, alone.y, alone.z], [0.0, 0.0, 0.0]);
+
+      final withOthers = engine.cohesion(position, Flut5Vector.zero(), [
+        position,
+        Flut5Vector(20, 0),
+        Flut5Vector(40, 0),
+      ], maxForce: 100.0);
+      expect(withOthers.x, closeTo(4.0, 1e-12));
+      expect(withOthers.y, 0.0);
+    });
+
+    test('brakes when already on the center', () {
+      final force = engine.cohesion(Flut5Vector(0, 0), Flut5Vector(1, 0), [
+        Flut5Vector(10, 0),
+        Flut5Vector(-10, 0),
+      ], maxForce: 100.0);
+
+      expect(force.x, closeTo(-1.0, 1e-12));
+      expect(force.y, 0.0);
+    });
+
+    test('does not modify its arguments', () {
+      final position = Flut5Vector(3, 5);
+      final velocity = Flut5Vector(1, -2);
+      final neighbor = Flut5Vector(8, 5);
+
+      engine.cohesion(position, velocity, [neighbor]);
+
+      expect([position.x, position.y], [3.0, 5.0]);
+      expect([velocity.x, velocity.y], [1.0, -2.0]);
+      expect([neighbor.x, neighbor.y], [8.0, 5.0]);
+    });
+
+    test('follows the steering return mode', () {
+      engine.steeringTurboMode(true);
+      final shared = engine.seek(
+        Flut5Vector(0, 0),
+        Flut5Vector.zero(),
+        Flut5Vector(100, 0),
+      );
+      final pulled = engine.cohesion(Flut5Vector(0, 0), Flut5Vector.zero(), [
+        Flut5Vector(10, 0),
+      ]);
+
+      expect(identical(shared, pulled), isTrue);
+    });
+  });
+
+  group('return mode', () {
+    final position = Flut5Vector(0, 0);
+    final velocity = Flut5Vector.zero();
+    final target = Flut5Vector(100, 0);
+
+    test('copy mode (default) returns a new vector each call', () {
+      final first = engine.seek(position, velocity, target);
+      final second = engine.seek(position, velocity, target);
+
+      expect(identical(first, second), isFalse);
+    });
+
+    test('turbo mode returns the same shared vector each call', () {
+      engine.steeringTurboMode(true);
+      final first = engine.seek(position, velocity, target);
+      final second = engine.flee(position, velocity, target);
+
+      expect(identical(first, second), isTrue);
+    });
+
+    test('returnCopy overrides the mode for one call', () {
+      engine.steeringTurboMode(true);
+      final shared = engine.seek(position, velocity, target);
+      final copied = engine.seek(position, velocity, target, returnCopy: true);
+
+      expect(identical(shared, copied), isFalse);
+    });
+
+    test('resetSteeringMode goes back to copies', () {
+      engine.steeringReturnMode(SteeringReturnMode.ref);
+      engine.resetSteeringMode();
+      final first = engine.seek(position, velocity, target);
+      final second = engine.seek(position, velocity, target);
+
+      expect(identical(first, second), isFalse);
+    });
+
+    test('the mode belongs to the engine, not the process', () {
+      engine.steeringTurboMode(true);
+      final other = Flut5Engine();
+      final first = other.seek(position, velocity, target);
+      final second = other.seek(position, velocity, target);
+
+      expect(identical(first, second), isFalse);
     });
   });
 }

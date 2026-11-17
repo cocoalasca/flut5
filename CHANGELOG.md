@@ -1,5 +1,32 @@
 ## 0.0.1
 
+* **Breaking:** widgets are now created through `flut5Widgets`, callable
+  unprefixed from any `Flut5` subclass: `flut5Widgets.createButton('Reset')`,
+  `flut5Widgets.createSlider(0, 1)`, and likewise for labels, toggles,
+  checkboxes and containers. It replaces `ui` / `flut5.ui`. `Flut5UI` is
+  renamed `Flut5Widgets`, the engine field `ui` is now `flut5Widgets`, and
+  the files moved from `lib/ui/` to `lib/widgets/`. To migrate, replace
+  `flut5.ui.` and `ui.` with `flut5Widgets.`.
+* **Breaking:** steering is now global. `seek`, `arrive` and `flee` are
+  engine methods callable unprefixed from any `Flut5` subclass, like
+  `springForce`. They take the body's `position` and `velocity` as
+  `Flut5Vector`s, plus `maxVelocity`/`maxForce` (defaults `4`/`0.1`), and
+  return the steering force: `ball.applyForce(seek(ball.position,
+  ball.velocity, target))`. The `Flut5Steering` mixin no longer gives a class
+  `position`/`velocity`/`acceleration`, `applyForce`, `configSteering`,
+  `setDamping` or `updateSteering`. Use a `Flut5PhysicsParticle` or your own
+  vectors instead. The unused `Flut5SteeringNavigation` mixin is removed.
+  `steeringTurboMode`, `steeringReturnMode` and `resetSteeringMode` now set
+  the mode for one engine, not the whole process.
+* Add `separation(position, velocity, neighbors, {separationRadius})`, the
+  flocking rule that steers a body away from crowding neighbors. Each
+  neighbor within the radius pushes it away, weighted by `1 / distance`, and
+  the result is a steering force like `seek`'s. The body's own position can
+  be in `neighbors`; it is skipped.
+* Add `cohesion(position, velocity, neighbors, {cohesionRadius})`, the
+  flocking rule that steers a body toward the center of its neighbors. It
+  averages the neighbors within the radius and seeks that point. Like
+  `separation`, it skips the body's own position.
 * Add `softmax(values, [temperature])`, which turns a list of numbers into
   probabilities that sum to 1. A temperature below 1 sharpens the result
   toward the largest input, above 1 flattens it, and 0 gives all of it to
@@ -12,6 +39,16 @@
 * Add `softmaxWeightedSelection(values, [temperature])`, which runs
   `softmax` then `randomWeightedIndex` in one call to pick an index by
   score. The temperature defaults to 1, like `softmax`.
+* **Breaking:** `beginPixelate`'s palette is now a list of `PaletteColor`s.
+  Wrap each colour as `PaletteColor(c)`. Every block now comes out solid in
+  an exact palette colour, or empty: a block is drawn when what's drawn in
+  it covers at least half of it, so edges stay sharp even with no
+  background inside the scope. Give a colour a `stroke` to outline it:
+  `PaletteColor(orange, stroke: purple)` draws its blocks that touch another
+  colour, or an empty block, on one of their four sides in the stroke
+  colour. Where two stroked colours meet, the later one in the palette draws
+  the edge, so outlines stay one block thick. A palette without strokes
+  costs what it did; one with strokes adds a second pass over the blocks.
 * Release removed container children and transfer ownership when moving them
   between containers. Clear child references during UI teardown.
 * Cancel previous event subscriptions when calling `listenEvents()` again.

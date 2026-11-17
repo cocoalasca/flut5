@@ -19,8 +19,9 @@ import '../shape/flut5_2d_primitives.dart';
 import '../shape/flut5_fill.dart';
 import '../shape/flut5_stroke.dart';
 import '../shape/flut5_vertex.dart';
+import '../steering/flut5_steering.dart';
 import '../text/flut5_text.dart';
-import '../ui/flut5_ui.dart';
+import '../widgets/flut5_widgets.dart';
 import 'flut5_blur.dart';
 import 'flut5_engine_colors.dart';
 import 'flut5_pixelate.dart';
@@ -47,6 +48,8 @@ import 'sketch_environment.dart';
 /// * [Flut5Fill]: Defines fill color states and background drawing.
 /// * [Flut52DPrimitives]: Methods to draw primitives like circle, ellipse, and point.
 /// * [Flut5ImageMixin]: Loading and drawing bitmaps.
+/// * [Flut5Steering]: Steering behaviors (seek, arrive, flee, separation,
+///   cohesion).
 final class Flut5Engine()
     with
         Flut5Color,
@@ -66,6 +69,7 @@ final class Flut5Engine()
         Flut5Intersection,
         Flut5Spring,
         Flut5Collision,
+        Flut5Steering,
         Flut5Transform,
         Flut5Clip,
         Flut5ContainerMixin,
@@ -234,8 +238,9 @@ final class Flut5Engine()
     },
   );
 
-  /// UI management for rendering Flut5 UI elements.
-  final Flut5UI ui = Flut5UI();
+  /// Creates and owns this sketch's widgets (buttons, sliders, containers…),
+  /// drawn above the canvas. See [Flut5Widgets].
+  final Flut5Widgets flut5Widgets = Flut5Widgets();
 
   /// The physics world: creates particles (and future body types) and steps
   /// them every frame. See [Flut5PhysicsEngine].

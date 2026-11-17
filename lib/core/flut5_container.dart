@@ -360,9 +360,9 @@ class _Flut5ContainerFrame({
 /// so its clip, optional scroll translate, and any unbalanced state inside
 /// the scope stay contained.
 ///
-/// Distinct from the `createContainer()` UI widget in `lib/ui/flut5_ui.dart`,
-/// which builds a Flutter layout container — this is a low-level canvas
-/// drawing helper.
+/// Distinct from the `flut5Widgets.createContainer()` widget in
+/// `lib/widgets/flut5_widgets.dart`, which builds a Flutter layout
+/// container — this is a low-level canvas drawing helper.
 mixin Flut5ContainerMixin on Flut5Transform, Flut52DPrimitives, Flut5Clip {
   /// Open containers, innermost last. Pushed by [beginContainer], popped by
   /// [endContainer], force-cleared once per frame by the painter.

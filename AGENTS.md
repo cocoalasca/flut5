@@ -7,7 +7,7 @@ Guidance for AI coding agents working on the Flut5 package. Mirrors the Claude-s
 - `lib/flut5.dart` — public entry point. Exports every public file and defines the `Flut5` base class that sketch authors extend.
 - `lib/core/flut5_engine.dart` — the engine instance, composed from mixins (`Flut5Fill`, `Flut5Stroke`, `Flut52DPrimitives`, `Flut5Vertex`, `Flut5Transform`, `Flut5Clip`, `Flut5Text`, `Flut5Cursor`, etc.).
 - `lib/core/render/` — deferred render queue and per-item executors. All drawing goes through `Flut5RenderQueue`.
-- `lib/shape/`, `lib/text/`, `lib/image/`, `lib/math/`, `lib/ui/` — feature areas; each surface is a mixin on the engine.
+- `lib/shape/`, `lib/text/`, `lib/image/`, `lib/math/`, `lib/widgets/` — feature areas; each surface is a mixin on the engine (widgets are a subsystem object instead: `flut5Widgets`, a `Flut5Widgets`).
 
 ## Project rules
 
@@ -42,7 +42,7 @@ Full rule with rationale and edge cases: [`.agent/rules/engine-forwarders.md`](.
 
 ### UI elements
 
-See [`.agent/rules/ui-elements.md`](.agent/rules/ui-elements.md) for the corresponding rule covering `Flut5UI` element conventions.
+See [`.agent/rules/ui-elements.md`](.agent/rules/ui-elements.md) for the corresponding rule covering conventions for the elements `flut5Widgets` creates.
 
 ## Mapping to per-tool configuration
 

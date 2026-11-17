@@ -13,9 +13,9 @@ import 'package:material_ui/material_ui.dart';
 typedef _AppBuilder = Widget Function(WidgetBuilder body);
 
 void main() {
-  late Flut5UI ui;
-  setUp(() => ui = Flut5UI());
-  tearDown(() => ui.dispose());
+  late Flut5Widgets widgets;
+  setUp(() => widgets = Flut5Widgets());
+  tearDown(() => widgets.dispose());
 
   final apps = <String, _AppBuilder>{
     'a material_ui app': (body) => MaterialApp(
@@ -44,7 +44,7 @@ void main() {
   for (final MapEntry(key: appName, value: app) in apps.entries) {
     group('in $appName', () {
       testWidgets('slider renders and follows a drag', (tester) async {
-        final slider = ui.createSlider(0, 10, 4);
+        final slider = widgets.createSlider(0, 10, 4);
         double? reported;
         slider.changed((value) => reported = value);
         await tester.pumpWidget(app(slider.buildInteractiveListenable));
@@ -59,14 +59,14 @@ void main() {
       });
 
       testWidgets('checkbox shows its check only when checked', (tester) async {
-        final checkbox = ui.createCheckbox(true);
+        final checkbox = widgets.createCheckbox(true);
         await tester.pumpWidget(app(checkbox.buildInteractiveListenable));
         expect(tester.takeException(), isNull);
         expect(find.byIcon(Icons.check), findsOneWidget);
       });
 
       testWidgets('toggle flips when tapped', (tester) async {
-        final toggle = ui.createToggle(false);
+        final toggle = widgets.createToggle(false);
         bool? reported;
         toggle.changed((value) => reported = value);
         await tester.pumpWidget(app(toggle.buildInteractiveListenable));

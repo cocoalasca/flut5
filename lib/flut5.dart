@@ -7,6 +7,7 @@ import 'core/flut5_container.dart';
 import 'core/flut5_cursor.dart';
 import 'core/flut5_engine.dart';
 import 'core/flut5_event.dart';
+import 'core/flut5_palette_color.dart';
 import 'core/flut5_touch.dart';
 import 'core/flut5_wheel.dart';
 import 'core/sketch_environment.dart';
@@ -21,11 +22,12 @@ import 'shape/flut5_vertex.dart';
 import 'text/flut5_font.dart';
 import 'text/flut5_text.dart';
 import 'text/flut5_text_grid.dart';
-import 'ui/flut5_ui.dart';
+import 'widgets/flut5_widgets.dart';
 import 'steering/flut5_steering.dart';
 import 'physics/engine/flut5_physics_engine.dart';
 
 export 'core/flut5_color.dart';
+export 'core/flut5_palette_color.dart';
 export 'core/flut5_container.dart';
 export 'core/quadtree/flut5_quadtree.dart';
 export 'core/quadtree/flut5_quadtree_point.dart';
@@ -64,14 +66,14 @@ export 'core/flut5_console.dart';
 export 'core/flut5_update_tree.dart';
 export 'image/flut5_image.dart';
 export 'image/flut5_image_mixin.dart';
-export 'ui/flut5_ui_element.dart';
-export 'ui/flut5_button.dart';
-export 'ui/flut5_label.dart';
-export 'ui/flut5_container.dart';
-export 'ui/flut5_slider.dart';
-export 'ui/flut5_toggle.dart';
-export 'ui/flut5_checkbox.dart';
-export 'ui/flut5_ui.dart';
+export 'widgets/flut5_ui_element.dart';
+export 'widgets/flut5_button.dart';
+export 'widgets/flut5_label.dart';
+export 'widgets/flut5_container.dart';
+export 'widgets/flut5_slider.dart';
+export 'widgets/flut5_toggle.dart';
+export 'widgets/flut5_checkbox.dart';
+export 'widgets/flut5_widgets.dart';
 export 'shape/flut5_vertex.dart';
 export 'steering/flut5_steering.dart';
 export 'text/flut5_text.dart';
@@ -205,8 +207,8 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
     disposeEvents();
     if (_ownsEngine) {
       if (identical(Flut5Engine.current, flut5)) Flut5Engine.current = null;
-      flut5.ui.clear();
-      flut5.ui.dispose();
+      flut5.flut5Widgets.clear();
+      flut5.flut5Widgets.dispose();
       flut5.events.dispose();
       flut5.clearFrameSnapshot();
       flut5.disposeCursor();
@@ -364,7 +366,7 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
 
   // ── Subsystems ───────────────────────────────────────────────────────────
   Flut5Event get events => flut5.events;
-  Flut5UI get ui => flut5.ui;
+  Flut5Widgets get flut5Widgets => flut5.flut5Widgets;
   Flut5PhysicsEngine get physicsEngine => flut5.physicsEngine;
   Flut5RenderQueue get renderQueue => flut5.renderQueue;
 
@@ -503,7 +505,7 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
   void endBlur() => flut5.endBlur();
 
   // ── Pixelate ─────────────────────────────────────────────────────────────
-  void beginPixelate(double blockSize, [List<Color>? palette]) =>
+  void beginPixelate(double blockSize, [List<PaletteColor>? palette]) =>
       flut5.beginPixelate(blockSize, palette);
   void endPixelate() => flut5.endPixelate();
 
@@ -654,6 +656,95 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
       flut5.particleRestitution(restitution);
   double polygonRestitution([double? restitution]) =>
       flut5.polygonRestitution(restitution);
+
+  // ── Steering ─────────────────────────────────────────────────────────────
+  Flut5Vector seek(
+    Flut5Vector position,
+    Flut5Vector velocity,
+    Flut5Vector target, {
+    double maxVelocity = 4.0,
+    double maxForce = 0.1,
+    bool? returnCopy,
+  }) => flut5.seek(
+    position,
+    velocity,
+    target,
+    maxVelocity: maxVelocity,
+    maxForce: maxForce,
+    returnCopy: returnCopy,
+  );
+  Flut5Vector arrive(
+    Flut5Vector position,
+    Flut5Vector velocity,
+    Flut5Vector target, {
+    double slowingRadius = 100.0,
+    double maxVelocity = 4.0,
+    double maxForce = 0.1,
+    bool? returnCopy,
+  }) => flut5.arrive(
+    position,
+    velocity,
+    target,
+    slowingRadius: slowingRadius,
+    maxVelocity: maxVelocity,
+    maxForce: maxForce,
+    returnCopy: returnCopy,
+  );
+  Flut5Vector flee(
+    Flut5Vector position,
+    Flut5Vector velocity,
+    Flut5Vector target, {
+    double? fleeRadius,
+    double maxVelocity = 4.0,
+    double maxForce = 0.1,
+    bool? returnCopy,
+  }) => flut5.flee(
+    position,
+    velocity,
+    target,
+    fleeRadius: fleeRadius,
+    maxVelocity: maxVelocity,
+    maxForce: maxForce,
+    returnCopy: returnCopy,
+  );
+  Flut5Vector separation(
+    Flut5Vector position,
+    Flut5Vector velocity,
+    Iterable<Flut5Vector> neighbors, {
+    double? separationRadius,
+    double maxVelocity = 4.0,
+    double maxForce = 0.1,
+    bool? returnCopy,
+  }) => flut5.separation(
+    position,
+    velocity,
+    neighbors,
+    separationRadius: separationRadius,
+    maxVelocity: maxVelocity,
+    maxForce: maxForce,
+    returnCopy: returnCopy,
+  );
+  Flut5Vector cohesion(
+    Flut5Vector position,
+    Flut5Vector velocity,
+    Iterable<Flut5Vector> neighbors, {
+    double? cohesionRadius,
+    double maxVelocity = 4.0,
+    double maxForce = 0.1,
+    bool? returnCopy,
+  }) => flut5.cohesion(
+    position,
+    velocity,
+    neighbors,
+    cohesionRadius: cohesionRadius,
+    maxVelocity: maxVelocity,
+    maxForce: maxForce,
+    returnCopy: returnCopy,
+  );
+  void steeringReturnMode(SteeringReturnMode mode) =>
+      flut5.steeringReturnMode(mode);
+  void steeringTurboMode(bool turbo) => flut5.steeringTurboMode(turbo);
+  void resetSteeringMode() => flut5.resetSteeringMode();
 
   // ── Transform ────────────────────────────────────────────────────────────
   void push() => flut5.push();
@@ -874,12 +965,4 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
     double? sWidth,
     double? sHeight,
   ]) => flut5.image(img, x, y, width, height, sx, sy, sWidth, sHeight);
-
-  // ── Steering (global) ────────────────────────────────────────────────────
-  //  These forward to the process-wide statics on [Flut5Steering] (not the
-  //  engine), so sketches can flip the global steering return mode unprefixed.
-  void steeringTurboMode(bool turbo) => Flut5Steering.steeringTurboMode(turbo);
-  void steeringReturnMode(SteeringReturnMode mode) =>
-      Flut5Steering.steeringReturnMode(mode);
-  void resetSteeringMode() => Flut5Steering.resetSteeringMode();
 }
