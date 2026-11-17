@@ -32,14 +32,29 @@ mixin _PhysicsEdges {
   /// Makes particles bounce off the edges of the window. Off by default.
   ///
   /// Called with no arguments it enables all four edges; pass `false` for an
-  /// edge to leave it open, so particles fly out through it. [all] switches
-  /// every edge at once, and any edge you also name overrides it:
+  /// edge to leave it open, so particles fly out through it. The switches
+  /// follow Flutter's `EdgeInsets`:
+  ///
+  /// * [all] switches every edge at once, like `EdgeInsets.all`.
+  /// * [vertical] switches the top and bottom edges together and
+  ///   [horizontal] the left and right ones, like `EdgeInsets.symmetric`.
+  ///   As there, the name is the axis the edges sit on, not the direction
+  ///   the wall runs: `vertical` is the floor and ceiling.
+  /// * [left], [top], [right] and [bottom] switch one edge, like
+  ///   `EdgeInsets.only`.
+  ///
+  /// The most specific switch wins: a named edge overrides its axis, and an
+  /// axis overrides [all].
   ///
   /// ```dart
   /// physicsEngine.windowBoundsCollision();              // closed box
   /// physicsEngine.windowBoundsCollision(all: false);    // no walls
   /// physicsEngine.windowBoundsCollision(top: false);    // open-top box
   /// physicsEngine.windowBoundsCollision(all: false, bottom: true); // floor only
+  /// physicsEngine.windowBoundsCollision(horizontal: false); // floor + ceiling
+  /// physicsEngine.windowBoundsCollision(vertical: false);   // side walls
+  /// physicsEngine.windowBoundsCollision(vertical: false, bottom: true);
+  ///                                         // side walls + floor, open top
   /// ```
   ///
   /// Each call replaces the previous selection. A particle's edge — its
@@ -48,15 +63,17 @@ mixin _PhysicsEdges {
   /// off again with [noWindowBoundsCollision].
   void windowBoundsCollision({
     bool all = true,
+    bool? vertical,
+    bool? horizontal,
     bool? left,
     bool? top,
     bool? right,
     bool? bottom,
   }) {
-    _boundsLeft = left ?? all;
-    _boundsTop = top ?? all;
-    _boundsRight = right ?? all;
-    _boundsBottom = bottom ?? all;
+    _boundsLeft = left ?? horizontal ?? all;
+    _boundsTop = top ?? vertical ?? all;
+    _boundsRight = right ?? horizontal ?? all;
+    _boundsBottom = bottom ?? vertical ?? all;
   }
 
   /// Turns off every window edge, same as `windowBoundsCollision(all: false)`.

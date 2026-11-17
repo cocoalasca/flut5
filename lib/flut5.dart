@@ -635,12 +635,16 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
       flut5.springForce(position, rest);
   void windowBoundsCollision({
     bool all = true,
+    bool? vertical,
+    bool? horizontal,
     bool? left,
     bool? top,
     bool? right,
     bool? bottom,
   }) => flut5.windowBoundsCollision(
     all: all,
+    vertical: vertical,
+    horizontal: horizontal,
     left: left,
     top: top,
     right: right,

@@ -384,6 +384,38 @@ void main() {
       expect(down.y, 105.0); // floor gone too: falls through
     });
 
+    test('vertical and horizontal switch an edge pair, like EdgeInsets', () {
+      final e = windowed()..windowBoundsCollision(vertical: false);
+      final up = e.physicsEngine.createParticle(50, 5)..velocity.y = -10;
+      final down = e.physicsEngine.createParticle(50, 95)..velocity.y = 10;
+      final left = e.physicsEngine.createParticle(5, 50)..velocity.x = -10;
+      final right = e.physicsEngine.createParticle(195, 50)..velocity.x = 10;
+      e.physicsEngine.update();
+      expect(up.y, -5.0); // vertical = top + bottom: both open
+      expect(down.y, 105.0);
+      expect(left.x, 5.0); // left and right still walls
+      expect(right.x, 195.0);
+
+      e.windowBoundsCollision(horizontal: false);
+      final floor = e.physicsEngine.createParticle(50, 95)..velocity.y = 10;
+      final side = e.physicsEngine.createParticle(195, 30)..velocity.x = 10;
+      e.physicsEngine.update();
+      expect(floor.y, 95.0); // top + bottom back on
+      expect(side.x, 205.0); // left + right open
+    });
+
+    test('a named edge overrides its axis; an axis overrides all', () {
+      final e = windowed()
+        ..windowBoundsCollision(all: false, vertical: true, top: false);
+      final up = e.physicsEngine.createParticle(50, 5)..velocity.y = -10;
+      final down = e.physicsEngine.createParticle(50, 95)..velocity.y = 10;
+      final right = e.physicsEngine.createParticle(195, 50)..velocity.x = 10;
+      e.physicsEngine.update();
+      expect(up.y, -5.0); // top: false beats vertical: true
+      expect(down.y, 95.0); // vertical: true beats all: false
+      expect(right.x, 205.0); // horizontal not given: follows all
+    });
+
     test('noWindowBoundsCollision opens every edge again', () {
       final e = windowed()
         ..windowBoundsCollision()

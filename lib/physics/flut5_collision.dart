@@ -9,6 +9,7 @@ import 'engine/flut5_physics_engine.dart';
 /// windowBoundsCollision();            // all four edges
 /// windowBoundsCollision(top: false);  // open-top box
 /// windowBoundsCollision(all: false, bottom: true); // floor only
+/// windowBoundsCollision(vertical: false);  // side walls only
 /// windowBoundsRestitution(0.8);       // lose 20% of the speed per bounce
 ///
 /// particleCollision();                // particles bounce off each other
@@ -21,17 +22,23 @@ mixin Flut5Collision {
   Flut5PhysicsEngine get physicsEngine;
 
   /// Makes particles bounce off the window edges. With no arguments all four
-  /// edges collide; pass `false` for an edge to leave it open, or [all] to
-  /// switch every edge at once (named edges override it). Each call replaces
-  /// the previous selection. See [Flut5PhysicsEngine.windowBoundsCollision].
+  /// edges collide; pass `false` for an edge to leave it open. Like Flutter's
+  /// `EdgeInsets`: [all] switches every edge, [vertical] the top and bottom
+  /// ones and [horizontal] the left and right ones, and a named edge
+  /// overrides its axis, which overrides [all]. Each call replaces the
+  /// previous selection. See [Flut5PhysicsEngine.windowBoundsCollision].
   void windowBoundsCollision({
     bool all = true,
+    bool? vertical,
+    bool? horizontal,
     bool? left,
     bool? top,
     bool? right,
     bool? bottom,
   }) => physicsEngine.windowBoundsCollision(
     all: all,
+    vertical: vertical,
+    horizontal: horizontal,
     left: left,
     top: top,
     right: right,
