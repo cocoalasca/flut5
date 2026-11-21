@@ -39,16 +39,11 @@
 * Add `softmaxWeightedSelection(values, [temperature])`, which runs
   `softmax` then `randomWeightedIndex` in one call to pick an index by
   score. The temperature defaults to 1, like `softmax`.
-* **Breaking:** `beginPixelate`'s palette is now a list of `PaletteColor`s.
-  Wrap each colour as `PaletteColor(c)`. Every block now comes out solid in
-  an exact palette colour, or empty: a block is drawn when what's drawn in
-  it covers at least half of it, so edges stay sharp even with no
-  background inside the scope. Give a colour a `stroke` to outline it:
-  `PaletteColor(orange, stroke: purple)` draws its blocks that touch another
-  colour, or an empty block, on one of their four sides in the stroke
-  colour. Where two stroked colours meet, the later one in the palette draws
-  the edge, so outlines stay one block thick. A palette without strokes
-  costs what it did; one with strokes adds a second pass over the blocks.
+* With a `beginPixelate` palette, every block now comes out solid in an
+  exact palette colour, or empty: a block is drawn when what's drawn in it
+  covers at least half of it, so edges stay sharp even with no background
+  inside the scope. A shape under half opacity with nothing behind it inside
+  the scope is left out.
 * Release removed container children and transfer ownership when moving them
   between containers. Clear child references during UI teardown.
 * Cancel previous event subscriptions when calling `listenEvents()` again.

@@ -5,7 +5,6 @@ import 'dart:ui' as ui;
 import 'package:flutter/widgets.dart';
 
 import '../flut5_console.dart';
-import '../flut5_palette_color.dart';
 import '../../image/flut5_image_handles.dart';
 import '../../text/flut5_font.dart';
 import '../flut5_shadow.dart';
@@ -762,18 +761,17 @@ class Flut5RenderQueue() {
   /// [width]×[height]. Pending batches flush first, so nothing drawn before
   /// the scope joins a batch inside it.
   ///
-  /// A non-empty [palette] snaps every block to its nearest fill and
-  /// outlines the colours that have a stroke. It is copied, so changing the
-  /// list afterwards leaves this frame alone.
+  /// A non-empty [palette] snaps every block to its nearest colour. It is
+  /// copied, so changing the list afterwards leaves this frame alone.
   void beginPixelate(
     double blockSize,
     double width,
     double height, {
-    List<PaletteColor>? palette,
+    List<Color>? palette,
   }) {
     final colors = palette == null || palette.isEmpty
         ? null
-        : List<PaletteColor>.unmodifiable(palette);
+        : List<Color>.unmodifiable(palette);
     // Flut5Canvas starts this; it covers queues replayed elsewhere.
     if (colors != null) Flut5Shaders.load();
     _beginScope(
@@ -3184,7 +3182,7 @@ class _PixelatePass(
   Canvas canvas;
 
   ui.PictureRecorder? _recorder;
-  final List<PaletteColor>? _palette;
+  final List<Color>? _palette;
   late final Matrix4 _back;
   late final int _cols;
   late final int _rows;
@@ -3232,15 +3230,14 @@ class _PixelatePass(
   }
 
   static bool _warnedNoShader = false;
-  static bool _warnedNoStrokeShader = false;
 
-  /// [blocks] with every pixel — every block — snapped to the nearest fill
-  /// of [palette] and outlined where its colour has a stroke, or `null` when
-  /// the palette shader failed to load. Runs at one pixel per block, so it
-  /// costs a few thousand shader runs, not a screenful.
-  ui.Image? _snap(ui.Image blocks, List<PaletteColor> palette) {
-    final matcher = Flut5Shaders.palette;
-    if (matcher == null) {
+  /// [blocks] with every pixel — every block — snapped to the nearest
+  /// colour of [palette], or `null` when the palette shader failed to load.
+  /// Runs at one pixel per block, so it costs a few thousand shader runs,
+  /// not a screenful.
+  ui.Image? _snap(ui.Image blocks, List<Color> palette) {
+    final program = Flut5Shaders.palette;
+    if (program == null) {
       if (!_warnedNoShader) {
         _warnedNoShader = true;
         Flut5Console.printLater(
@@ -3250,104 +3247,37 @@ class _PixelatePass(
       }
       return null;
     }
-    final paletteImage = _palettes.lookup(palette);
-    final hasStrokes = palette.any((colour) => colour.stroke != null);
-    final stroker = Flut5Shaders.paletteStroke;
-    if (hasStrokes && stroker == null && !_warnedNoStrokeShader) {
-      _warnedNoStrokeShader = true;
-      Flut5Console.printLater(
-        'beginPixelate(): the palette stroke shader is unavailable, so the '
-        'scope was drawn without its strokes.',
-      );
-    }
-    if (!hasStrokes || stroker == null) {
-      return _shade(
-        _matchShader(
-          matcher,
-          blocks,
-          paletteImage,
-          palette.length,
-          writeIndices: false,
-        ),
-      );
-    }
-    final indices = _shade(
-      _matchShader(
-        matcher,
-        blocks,
-        paletteImage,
-        palette.length,
-        writeIndices: true,
-      ),
-    );
-    final stroked = _shade(
-      stroker.fragmentShader()
-        ..setFloat(0, _cols.toDouble())
-        ..setFloat(1, _rows.toDouble())
-        ..setFloat(2, palette.length.toDouble())
-        ..setImageSampler(0, indices)
-        ..setImageSampler(1, paletteImage),
-    );
-    // The recorded pass keeps its own reference to the indices.
-    indices.dispose();
-    return stroked;
-  }
-
-  /// `flut5_palette.frag` over [blocks]: each block's nearest palette
-  /// colour, or with [writeIndices] which palette colour that is, for the
-  /// stroke pass.
-  ui.FragmentShader _matchShader(
-    ui.FragmentProgram matcher,
-    ui.Image blocks,
-    ui.Image paletteImage,
-    int paletteLength, {
-    required bool writeIndices,
-  }) => matcher.fragmentShader()
-    ..setFloat(0, _cols.toDouble())
-    ..setFloat(1, _rows.toDouble())
-    ..setFloat(2, paletteLength.toDouble())
-    ..setFloat(3, writeIndices ? 1 : 0)
-    ..setImageSampler(0, blocks)
-    ..setImageSampler(1, paletteImage);
-
-  /// Runs [shader] once per block into a new image, and disposes it.
-  ui.Image _shade(ui.FragmentShader shader) {
+    final shader = program.fragmentShader()
+      ..setFloat(0, _cols.toDouble())
+      ..setFloat(1, _rows.toDouble())
+      ..setFloat(2, palette.length.toDouble())
+      ..setImageSampler(0, blocks)
+      ..setImageSampler(1, _palettes.lookup(palette));
     final recorder = ui.PictureRecorder();
     Canvas(recorder).drawRect(
       Rect.fromLTWH(0, 0, _cols.toDouble(), _rows.toDouble()),
       Paint()..shader = shader,
     );
     final picture = recorder.endRecording();
-    final image = picture.toImageSync(_cols, _rows);
+    final snapped = picture.toImageSync(_cols, _rows);
     picture.dispose();
     shader.dispose();
-    return image;
+    return snapped;
   }
 }
 
-/// Palette textures for [_PixelatePass._snap], keyed by the colours
-/// themselves — a sketch passing a fresh list literal every frame still
-/// reuses one texture.
-///
-/// One column per palette colour, in three rows the shaders read by number:
-/// [_fillRow], [_strokeRow] (the fill again for a colour without a stroke)
-/// and [_hasStrokeRow] (opaque where the colour has a stroke, clear where it
-/// has none).
+/// Palette textures for [_PixelatePass._snap], one pixel per colour, keyed
+/// by the colours themselves — a sketch passing a fresh list literal every
+/// frame still reuses one texture.
 ///
 /// Kept for the frames that use them: [endFrame] drops every palette the
 /// frame just ended did not draw with, so the cache grows to what a frame
 /// needs and an animated palette never piles up textures.
 class _PaletteImages() {
-  static const _fillRow = 0;
-  static const _strokeRow = 1;
-  static const _hasStrokeRow = 2;
-  static const _rows = 3;
-  static const _hasStrokeMark = Color(0xFFFFFFFF);
-
   Map<_PaletteKey, ui.Image> _current = {};
   Map<_PaletteKey, ui.Image> _previous = {};
 
-  ui.Image lookup(List<PaletteColor> palette) {
+  ui.Image lookup(List<Color> palette) {
     final key = _PaletteKey(palette);
     final hit = _current[key] ?? _previous.remove(key);
     if (hit != null) return _current[key] = hit;
@@ -3355,19 +3285,14 @@ class _PaletteImages() {
     final canvas = Canvas(recorder);
     // `src` stores each colour exactly, alpha included.
     final paint = Paint()..blendMode = BlendMode.src;
-    void setTexel(int column, int row, Color colour) => canvas.drawRect(
-      Rect.fromLTWH(column.toDouble(), row.toDouble(), 1, 1),
-      paint..color = colour,
-    );
     for (var i = 0; i < palette.length; i++) {
-      final colour = palette[i];
-      final stroke = colour.stroke;
-      setTexel(i, _fillRow, colour.fill);
-      setTexel(i, _strokeRow, stroke ?? colour.fill);
-      if (stroke != null) setTexel(i, _hasStrokeRow, _hasStrokeMark);
+      canvas.drawRect(
+        Rect.fromLTWH(i.toDouble(), 0, 1, 1),
+        paint..color = palette[i],
+      );
     }
     final picture = recorder.endRecording();
-    final image = picture.toImageSync(palette.length, _rows);
+    final image = picture.toImageSync(palette.length, 1);
     picture.dispose();
     return _current[key] = image;
   }
@@ -3382,7 +3307,7 @@ class _PaletteImages() {
   }
 }
 
-class _PaletteKey(final List<PaletteColor> colors) {
+class _PaletteKey(final List<Color> colors) {
   this : hashCode = Object.hashAll(colors);
 
   @override

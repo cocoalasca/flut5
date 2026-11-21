@@ -1,6 +1,5 @@
 import 'package:flutter/widgets.dart';
 
-import '../../flut5_palette_color.dart';
 import '../flut5_render_item.dart';
 
 /// Opens a `beginPixelate()` scope in the render queue.
@@ -16,14 +15,13 @@ import '../flut5_render_item.dart';
 /// opened; the snapshot covers the whole canvas.
 ///
 /// With a [palette], every block's average colour is snapped to the nearest
-/// palette fill before it is drawn back, and blocks along the edges of a
-/// colour with a stroke take that stroke. The list is the queue's own
+/// palette colour before it is drawn back. The list is the queue's own
 /// unmodifiable copy, never empty.
 class PixelateBeginRenderItem(
   final double blockSize,
   final double width,
   final double height, {
-  final List<PaletteColor>? palette,
+  final List<Color>? palette,
 }) extends Flut5RenderItem {
   @override
   void execute(Canvas canvas) {}

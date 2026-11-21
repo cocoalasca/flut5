@@ -7,7 +7,6 @@ import 'core/flut5_container.dart';
 import 'core/flut5_cursor.dart';
 import 'core/flut5_engine.dart';
 import 'core/flut5_event.dart';
-import 'core/flut5_palette_color.dart';
 import 'core/flut5_touch.dart';
 import 'core/flut5_wheel.dart';
 import 'core/sketch_environment.dart';
@@ -27,7 +26,6 @@ import 'steering/flut5_steering.dart';
 import 'physics/engine/flut5_physics_engine.dart';
 
 export 'core/flut5_color.dart';
-export 'core/flut5_palette_color.dart';
 export 'core/flut5_container.dart';
 export 'core/quadtree/flut5_quadtree.dart';
 export 'core/quadtree/flut5_quadtree_point.dart';
@@ -505,7 +503,7 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
   void endBlur() => flut5.endBlur();
 
   // ── Pixelate ─────────────────────────────────────────────────────────────
-  void beginPixelate(double blockSize, [List<PaletteColor>? palette]) =>
+  void beginPixelate(double blockSize, [List<Color>? palette]) =>
       flut5.beginPixelate(blockSize, palette);
   void endPixelate() => flut5.endPixelate();
 

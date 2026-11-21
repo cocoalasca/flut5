@@ -1,6 +1,5 @@
 import 'package:flutter/widgets.dart';
 
-import 'flut5_palette_color.dart';
 import 'render/flut5_render_queue.dart';
 
 /// Pixelation scopes: everything drawn between [beginPixelate] and
@@ -26,8 +25,8 @@ mixin Flut5Pixelate {
   /// one grid. A [blockSize] below `1` draws the scope unpixelated.
   ///
   /// Pass a [palette] to limit the blocks to its colours: each block takes
-  /// the [PaletteColor.fill] nearest its average, judged by eye (in the
-  /// OKLab colour space) rather than by raw RGB distance. Every block comes
+  /// the palette colour nearest its average, judged by eye (in the OKLab
+  /// colour space) rather than by raw RGB distance. Every block comes
   /// out solid in an exact palette colour, or empty: a block counts as drawn
   /// when what's drawn in it covers at least half of it, so shapes keep
   /// their size and their edges stay sharp wherever the background is drawn.
@@ -36,12 +35,6 @@ mixin Flut5Pixelate {
   /// thins the blocks that take it. Without a palette, or with an empty one,
   /// blocks keep their average colour and coverage. Matching runs once per
   /// block, so a long palette costs little.
-  ///
-  /// A palette colour with a [PaletteColor.stroke] is outlined: its blocks
-  /// that touch another colour, or an empty block, on one of their four
-  /// sides take the stroke instead. Where two stroked colours meet, the
-  /// later one in the palette draws the edge. The outline costs one more
-  /// pass over the blocks; a palette without strokes skips it.
   ///
   /// Like [push]/[pop], the scope keeps its transforms to itself:
   /// [endPixelate] restores the transform that was active here. Scopes nest.
@@ -55,23 +48,14 @@ mixin Flut5Pixelate {
   ///
   /// // Four-shade handheld look.
   /// beginPixelate(4, [
-  ///   PaletteColor(Color(0xFF0F380F)), PaletteColor(Color(0xFF306230)),
-  ///   PaletteColor(Color(0xFF8BAC0F)), PaletteColor(Color(0xFF9BBC0F)),
+  ///   Color(0xFF0F380F), Color(0xFF306230),
+  ///   Color(0xFF8BAC0F), Color(0xFF9BBC0F),
   /// ]);
   /// background(Colors.white);
   /// circle(100, 100, 80);
   /// endPixelate();
-  ///
-  /// // Orange sprites with a dark purple outline.
-  /// beginPixelate(6, [
-  ///   PaletteColor(Color(0xFF1A1C2C)),
-  ///   PaletteColor(Color(0xFFEF7D57), stroke: Color(0xFF5D275D)),
-  /// ]);
-  /// background(Color(0xFF1A1C2C));
-  /// circle(100, 100, 80);
-  /// endPixelate();
   /// ```
-  void beginPixelate(double blockSize, [List<PaletteColor>? palette]) {
+  void beginPixelate(double blockSize, [List<Color>? palette]) {
     if (batchPath != null) {
       throw FlutterError(
         'beginPixelate() cannot be called inside beginBatch/endBatch',
