@@ -28,6 +28,12 @@ class ImageRenderItem({
 
   /// Drop shadow cast beneath the image, or `null` for none.
   final Flut5ShadowSpec? shadow,
+
+  /// Optional multiplicative tint colour (mirrors p5's `tint()`).
+  final Color? tint,
+
+  /// Sampling quality for this bitmap blit.
+  final FilterQuality filterQuality = FilterQuality.medium,
 }) extends Flut5RenderItem {
   /// Shared blit paint, reconfigured in place each draw — the same pattern as
   /// `TextRenderItem`'s tint paint, so a frame full of images allocates no
@@ -36,6 +42,15 @@ class ImageRenderItem({
   /// [FilterQuality.medium] matches Flutter's own `paintImage` default: it
   /// keeps a downscaled photo from aliasing, and costs nothing extra at 1:1.
   static final Paint _blitPaint = Paint()..filterQuality = FilterQuality.medium;
+  static Color? _cachedTintColor;
+  static ColorFilter? _cachedTintFilter;
+
+  static ColorFilter? _tintFilterFor(Color? color) {
+    if (color == null) return null;
+    if (_cachedTintColor == color) return _cachedTintFilter;
+    _cachedTintColor = color;
+    return _cachedTintFilter = ColorFilter.mode(color, BlendMode.modulate);
+  }
 
   @override
   Rect? get bounds => dst;
@@ -50,7 +65,10 @@ class ImageRenderItem({
       // rectangular blob.
       canvas.drawImageRect(image, src, dst.shift(s.offset), s.imageTintPaint);
     }
-    _blitPaint.blendMode = blendMode;
+    _blitPaint
+      ..blendMode = blendMode
+      ..filterQuality = filterQuality
+      ..colorFilter = _tintFilterFor(tint);
     canvas.drawImageRect(image, src, dst, _blitPaint);
   }
 }

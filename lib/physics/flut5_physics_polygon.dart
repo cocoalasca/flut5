@@ -73,19 +73,43 @@ final class Flut5PhysicsPolygon._(
 
   /// `0` for a static body, which nothing can push.
   @override
-  double get inverseMass => isStatic ? 0 : 1 / mass;
+  double get inverseMass => isStatic ? 0.0 : super.inverseMass;
+
+  List<Flut5Vector>? _cachedCorners;
+  double _cachedCornersX = double.nan;
+  double _cachedCornersY = double.nan;
+  double _cachedCornersAngle = double.nan;
 
   /// The corners where they are now — [localCorners] turned by [angle] and
-  /// moved to [position]. A new list each call, ready for `vertex()`.
+  /// moved to [position], ready for `vertex()`. Cached while [position] and
+  /// [angle] are unchanged so static and resting polygons allocate nothing on
+  /// repeated draws.
   List<Flut5Vector> get corners {
-    final cos = math.cos(angle), sin = math.sin(angle);
-    return [
+    final px = position.x, py = position.y, a = angle;
+    final cached = _cachedCorners;
+    if (cached != null &&
+        px == _cachedCornersX &&
+        py == _cachedCornersY &&
+        a == _cachedCornersAngle) {
+      return cached;
+    }
+    _cachedCornersX = px;
+    _cachedCornersY = py;
+    _cachedCornersAngle = a;
+    if (a == 0.0) {
+      return _cachedCorners = List<Flut5Vector>.unmodifiable([
+        for (final corner in localCorners)
+          Flut5Vector(px + corner.x, py + corner.y),
+      ]);
+    }
+    final cos = math.cos(a), sin = math.sin(a);
+    return _cachedCorners = List<Flut5Vector>.unmodifiable([
       for (final corner in localCorners)
         Flut5Vector(
-          position.x + corner.x * cos - corner.y * sin,
-          position.y + corner.x * sin + corner.y * cos,
+          px + corner.x * cos - corner.y * sin,
+          py + corner.x * sin + corner.y * cos,
         ),
-    ];
+    ]);
   }
 
   /// Integration pass. A static body just moves by its own [velocity] and
@@ -94,14 +118,30 @@ final class Flut5PhysicsPolygon._(
   /// [PhysicsRotationMode.physical] change (and slow by [damping]).
   @override
   void updatePhysics(Flut5PhysicsEngine physics) {
+    if (isSleeping) {
+      acceleration.setZero();
+      return;
+    }
+    final dt = physics.stepScale;
     if (isStatic) {
       acceleration.setZero();
-      position.add(velocity);
-    } else {
-      euler(physics.gravity);
-      if (physics.rotationMode == .physical) angularVelocity *= damping;
+      if (dt == 1.0) {
+        position.add(velocity);
+        angle += angularVelocity;
+      } else {
+        position
+          ..x += velocity.x * dt
+          ..y += velocity.y * dt
+          ..z += velocity.z * dt;
+        angle += angularVelocity * dt;
+      }
+      return;
     }
-    angle += angularVelocity;
+    euler(physics.gravity, dt);
+    if (physics.rotationMode == .physical && damping != 1.0) {
+      angularVelocity *= dt == 1.0 ? damping : math.pow(damping, dt).toDouble();
+    }
+    angle += angularVelocity * dt;
   }
 }
 

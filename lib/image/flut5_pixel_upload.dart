@@ -42,6 +42,15 @@ class Flut5PixelUploader() {
   /// Premultiplied copy of the last upload, reused while the size holds.
   Uint8List? _premultiplied;
 
+  /// Cached atlas-upload buffers for Skia / Web so repeated `updatePixels()`
+  /// calls at the same dimensions reuse transforms, rects, and colors without
+  /// reallocating or rebuilding coordinates every frame.
+  Float32List? _atlasTransforms;
+  Float32List? _atlasRects;
+  Int32List? _atlasColors;
+  int _atlasWidth = 0;
+  int _atlasHeight = 0;
+
   /// Forces the atlas route regardless of backend, or restores detection
   /// with `null`. Test-only seam: `flutter test` runs Skia unless
   /// `--enable-impeller` is passed, so each route is reachable either way.
@@ -68,8 +77,15 @@ class Flut5PixelUploader() {
     return _uploadThroughAtlas(straightRgba, width, height);
   }
 
-  /// Frees the scratch buffer. The uploader stays usable.
-  void releaseScratch() => _premultiplied = null;
+  /// Frees the scratch buffers. The uploader stays usable.
+  void releaseScratch() {
+    _premultiplied = null;
+    _atlasTransforms = null;
+    _atlasRects = null;
+    _atlasColors = null;
+    _atlasWidth = 0;
+    _atlasHeight = 0;
+  }
 
   static bool _probeSyncDecode() {
     // The web build throws UnimplementedError; skip the throw.
@@ -94,6 +110,34 @@ class Flut5PixelUploader() {
   /// its pixel's alpha with round-half-up — the same rounding the GPU
   /// applies, so both upload routes produce identical bitmaps.
   static void _premultiply(Uint8ClampedList straight, Uint8List premultiplied) {
+    if (Endian.host == Endian.little &&
+        (straight.offsetInBytes & 3) == 0 &&
+        (premultiplied.offsetInBytes & 3) == 0 &&
+        (straight.length & 3) == 0) {
+      final src32 = straight.buffer.asUint32List(
+        straight.offsetInBytes,
+        straight.length >> 2,
+      );
+      final dst32 = premultiplied.buffer.asUint32List(
+        premultiplied.offsetInBytes,
+        premultiplied.length >> 2,
+      );
+      for (var i = 0; i < src32.length; i++) {
+        final px = src32[i];
+        final alpha = px >>> 24;
+        if (alpha == 255) {
+          dst32[i] = px;
+        } else if (alpha == 0) {
+          dst32[i] = 0;
+        } else {
+          final r = _scaleByAlpha(px & 0xFF, alpha);
+          final g = _scaleByAlpha((px >>> 8) & 0xFF, alpha);
+          final b = _scaleByAlpha((px >>> 16) & 0xFF, alpha);
+          dst32[i] = (alpha << 24) | (b << 16) | (g << 8) | r;
+        }
+      }
+      return;
+    }
     for (var offset = 0; offset < straight.length; offset += 4) {
       final alpha = straight[offset + 3];
       premultiplied[offset + 3] = alpha;
@@ -120,37 +164,56 @@ class Flut5PixelUploader() {
     return (product + (product >> 8)) >> 8;
   }
 
-  static ui.Image _uploadThroughAtlas(
+  ui.Image _uploadThroughAtlas(
     Uint8ClampedList straightRgba,
     int width,
     int height,
   ) {
     final texel = _whiteTexel ??= _buildWhiteTexel();
     final spriteCount = width * height;
-    // RSTransform [scos, ssin, tx, ty] and source rect [l, t, r, b] per
-    // sprite; the zero entries stay as allocated.
-    final transforms = Float32List(spriteCount * 4);
-    final sourceRects = Float32List(spriteCount * 4);
-    final colors = Int32List(spriteCount);
-    var sprite = 0;
-    for (var y = 0; y < height; y++) {
-      final top = y.toDouble();
-      for (var x = 0; x < width; x++) {
-        final offset = sprite * 4;
-        transforms[offset] = 1;
-        transforms[offset + 2] = x.toDouble();
-        transforms[offset + 3] = top;
-        sourceRects[offset + 2] = 1;
-        sourceRects[offset + 3] = 1;
-        // Straight ARGB; the GPU premultiplies it. Int32List keeps the low
-        // 32 bits, so an alpha above 127 wrapping negative is intended.
-        colors[sprite] =
-            straightRgba[offset + 3] << 24 |
-            straightRgba[offset] << 16 |
-            straightRgba[offset + 1] << 8 |
-            straightRgba[offset + 2];
-        sprite++;
+
+    Float32List transforms;
+    Float32List sourceRects;
+    Int32List colors;
+    if (_atlasWidth == width &&
+        _atlasHeight == height &&
+        _atlasTransforms != null &&
+        _atlasRects != null &&
+        _atlasColors != null) {
+      transforms = _atlasTransforms!;
+      sourceRects = _atlasRects!;
+      colors = _atlasColors!;
+    } else {
+      // RSTransform [scos, ssin, tx, ty] and source rect [l, t, r, b] per
+      // sprite; invariant for a given (width, height), so build once and reuse.
+      transforms = _atlasTransforms = Float32List(spriteCount * 4);
+      sourceRects = _atlasRects = Float32List(spriteCount * 4);
+      colors = _atlasColors = Int32List(spriteCount);
+      _atlasWidth = width;
+      _atlasHeight = height;
+      var sprite = 0;
+      for (var y = 0; y < height; y++) {
+        final top = y.toDouble();
+        for (var x = 0; x < width; x++) {
+          final offset = sprite * 4;
+          transforms[offset] = 1;
+          transforms[offset + 2] = x.toDouble();
+          transforms[offset + 3] = top;
+          sourceRects[offset + 2] = 1;
+          sourceRects[offset + 3] = 1;
+          sprite++;
+        }
       }
+    }
+
+    for (var sprite = 0, offset = 0; sprite < spriteCount; sprite++, offset += 4) {
+      // Straight ARGB; the GPU premultiplies it. Int32List keeps the low
+      // 32 bits, so an alpha above 127 wrapping negative is intended.
+      colors[sprite] =
+          straightRgba[offset + 3] << 24 |
+          straightRgba[offset] << 16 |
+          straightRgba[offset + 1] << 8 |
+          straightRgba[offset + 2];
     }
     final recorder = ui.PictureRecorder();
     // BlendMode.dst keeps the colour and discards the texel — `colors` are the

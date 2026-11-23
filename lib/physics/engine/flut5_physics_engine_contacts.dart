@@ -205,21 +205,28 @@ final class _ContactManifold() {
     double? friction,
   ) {
     final rows = pointCount + (friction != null ? 1 : 0);
+    final invMassSum = inverseMassA + inverseMassB;
     for (var i = 0; i < rows; i++) {
       final slotI = _slotOf(i);
       final dirIX = _directionX(i), dirIY = _directionY(i);
       final turnAI = _armAX[slotI] * dirIY - _armAY[slotI] * dirIX;
       final turnBI = _armBX[slotI] * dirIY - _armBY[slotI] * dirIX;
-      for (var j = 0; j < rows; j++) {
+      // Symmetric system: compute upper triangle and mirror across diagonal.
+      _matrix[i * 3 + i] =
+          invMassSum +
+          inverseInertiaA * turnAI * turnAI +
+          inverseInertiaB * turnBI * turnBI;
+      for (var j = i + 1; j < rows; j++) {
         final slotJ = _slotOf(j);
         final dirJX = _directionX(j), dirJY = _directionY(j);
         final turnAJ = _armAX[slotJ] * dirJY - _armAY[slotJ] * dirJX;
         final turnBJ = _armBX[slotJ] * dirJY - _armBY[slotJ] * dirJX;
-        // How much an impulse in row j changes the speed row i measures.
-        _matrix[i * 3 + j] =
-            (inverseMassA + inverseMassB) * (dirIX * dirJX + dirIY * dirJY) +
+        final val =
+            invMassSum * (dirIX * dirJX + dirIY * dirJY) +
             inverseInertiaA * turnAI * turnAJ +
             inverseInertiaB * turnBI * turnBJ;
+        _matrix[i * 3 + j] = val;
+        _matrix[j * 3 + i] = val;
       }
       final speed = _relativeSpeed(slotI, a, b, dirIX, dirIY);
       _rightSide[i] = i < pointCount ? _bounceSpeed[i] - speed : -speed;
@@ -259,45 +266,43 @@ final class _ContactManifold() {
   double _directionX(int row) => row < pointCount ? normalX : -normalY;
   double _directionY(int row) => row < pointCount ? normalY : normalX;
 
-  /// Solves `_matrix · _solution = _rightSide` for the first [size] rows by
-  /// Gaussian elimination. Returns `false` if the rows don't pin down one
-  /// answer — two points that push exactly alike, as when nothing turns.
+  /// Solves symmetric `_matrix · _solution = _rightSide` for [size] in {1, 2, 3}
+  /// using closed-form unrolled formulas. Returns `false` if singular or
+  /// nearly singular so the caller falls back to iterative sweeps.
   bool _solveSystem(int size) {
-    final matrix = _matrix, right = _rightSide;
-    for (var column = 0; column < size; column++) {
-      // Swap up the row with the largest entry in this column, for accuracy.
-      var pivot = column;
-      for (var row = column + 1; row < size; row++) {
-        if (matrix[row * 3 + column].abs() > matrix[pivot * 3 + column].abs()) {
-          pivot = row;
-        }
-      }
-      if (matrix[pivot * 3 + column].abs() < 1e-9) return false;
-      if (pivot != column) {
-        for (var j = 0; j < size; j++) {
-          final swap = matrix[column * 3 + j];
-          matrix[column * 3 + j] = matrix[pivot * 3 + j];
-          matrix[pivot * 3 + j] = swap;
-        }
-        final swap = right[column];
-        right[column] = right[pivot];
-        right[pivot] = swap;
-      }
-      for (var row = column + 1; row < size; row++) {
-        final factor = matrix[row * 3 + column] / matrix[column * 3 + column];
-        for (var j = column; j < size; j++) {
-          matrix[row * 3 + j] -= factor * matrix[column * 3 + j];
-        }
-        right[row] -= factor * right[column];
-      }
+    final m = _matrix, r = _rightSide;
+    if (size == 1) {
+      final m00 = m[0];
+      if (m00.abs() < 1e-9) return false;
+      _solution[0] = r[0] / m00;
+      return true;
     }
-    for (var row = size - 1; row >= 0; row--) {
-      var sum = right[row];
-      for (var j = row + 1; j < size; j++) {
-        sum -= matrix[row * 3 + j] * _solution[j];
-      }
-      _solution[row] = sum / matrix[row * 3 + row];
+    if (size == 2) {
+      final m00 = m[0], m01 = m[1], m11 = m[4];
+      final det = m00 * m11 - m01 * m01;
+      if (det.abs() < 1e-12) return false;
+      final invDet = 1.0 / det;
+      final r0 = r[0], r1 = r[1];
+      _solution[0] = (m11 * r0 - m01 * r1) * invDet;
+      _solution[1] = (m00 * r1 - m01 * r0) * invDet;
+      return true;
     }
+    // Symmetric 3×3 closed-form cofactor solve.
+    final m00 = m[0], m01 = m[1], m02 = m[2];
+    final m11 = m[4], m12 = m[5], m22 = m[8];
+    final c00 = m11 * m22 - m12 * m12;
+    final c01 = m02 * m12 - m01 * m22;
+    final c02 = m01 * m12 - m02 * m11;
+    final det = m00 * c00 + m01 * c01 + m02 * c02;
+    if (det.abs() < 1e-15) return false;
+    final c11 = m00 * m22 - m02 * m02;
+    final c12 = m02 * m01 - m00 * m12;
+    final c22 = m00 * m11 - m01 * m01;
+    final invDet = 1.0 / det;
+    final r0 = r[0], r1 = r[1], r2 = r[2];
+    _solution[0] = (c00 * r0 + c01 * r1 + c02 * r2) * invDet;
+    _solution[1] = (c01 * r0 + c11 * r1 + c12 * r2) * invDet;
+    _solution[2] = (c02 * r0 + c12 * r1 + c22 * r2) * invDet;
     return true;
   }
 
@@ -579,8 +584,9 @@ final class _ContactManifold() {
 double _inverseInertia(Flut5PhysicsRigidBody body, PhysicsRotationMode mode) {
   if (mode != .physical) return 0;
   if (body is Flut5PhysicsParticle) {
+    if (body.isStatic) return 0;
     final radius = body.radius;
-    return radius > 0 ? 2 / (body.mass * radius * radius) : 0;
+    return radius > 0 ? 2 * body.inverseMass / (radius * radius) : 0;
   }
   if (body is Flut5PhysicsPolygon) {
     return body.isStatic ? 0 : 1 / body.momentOfInertia;

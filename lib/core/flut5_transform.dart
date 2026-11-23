@@ -30,14 +30,17 @@ mixin Flut5Transform on Flut5Trigonometry {
   // Push / Pop
   // ---------------------------------------------------------------------------
 
-  /// Saves the current drawing style settings and transformations.
+  /// Saves the current transformation state.
   ///
+  /// Unlike p5.js `push()`, only coordinate transforms are saved and restored
+  /// by [push] / [pop] — fill, stroke, and text style state remain unchanged.
   /// Translation, rotation and uniform-scale scopes fold into compatible
   /// geometry, allowing automatic batches to coalesce across push/pop pairs.
   /// Canvas saves are emitted when an operation needs a real transform.
   void push() => renderQueue.pushTransform();
 
-  /// Restores the drawing state to what it was before the last [push] call.
+  /// Restores the transformation state to what it was before the last [push]
+  /// call.
   void pop() => renderQueue.popTransform();
 
   // ---------------------------------------------------------------------------
@@ -70,7 +73,7 @@ mixin Flut5Transform on Flut5Trigonometry {
   /// The [angle] respects the current [AngleMode] set by the engine.
   /// Automatic geometry batches bake the rotation into compatible shapes.
   void rotate(double angle) {
-    renderQueue.applyTransform(TransformRenderItem.rotate(toRadians(angle)));
+    renderQueue.rotateTransform(toRadians(angle));
   }
 
   /// Rotates the coordinate system about the x-axis.
@@ -102,7 +105,7 @@ mixin Flut5Transform on Flut5Trigonometry {
   /// widths scale too, so different resulting widths split batches.
   /// Nonuniform scales retain canvas transforms and break automatic batches.
   void scale(double x, [double? y]) =>
-      renderQueue.applyTransform(TransformRenderItem.scale(x, y ?? x));
+      renderQueue.scaleTransform(x, y ?? x);
 
   // ---------------------------------------------------------------------------
   // Shear

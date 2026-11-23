@@ -6,7 +6,6 @@ import 'package:flutter/widgets.dart';
 
 import '../core/flut5_console.dart';
 import '../core/flut5_engine_colors.dart';
-import '../core/render/flut5_render_queue.dart';
 import '../core/sketch_environment.dart';
 import '../math/flut5_vector.dart';
 import '../shape/flut5_fill.dart';
@@ -178,16 +177,70 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
   FontStyle _fontStyle = FontStyle.normal;
 
   /// Discrete `FontWeight` derived from [_fontWeightValue], used by Flutter's
-  /// rasterized text pipeline (which doesn't accept fractional values
-  /// directly without `FontVariation`).
+  /// rasterized text pipeline alongside [_rasterFontVariations] for variable
+  /// fonts.
   FontWeight get _fontWeight {
     final clamped = _fontWeightValue.clamp(100.0, 900.0);
     final idx = ((clamped / 100).round() - 1).clamp(0, 8);
     return FontWeight.values[idx];
   }
 
+  bool _variationsDirty = true;
+  List<FontVariation>? _cachedFontVariations;
+  String _cachedFontVariationKey = '';
+
+  void _invalidateFontVariations() {
+    _variationsDirty = true;
+  }
+
+  void _refreshFontVariations() {
+    if (!_variationsDirty) return;
+    _variationsDirty = false;
+
+    final axes = _loadedFont?.axisValues;
+    final hasAxes = axes != null && axes.isNotEmpty;
+    final clampedW = _fontWeightValue.clamp(100.0, 900.0);
+    final fractionalWeight = (clampedW % 100.0) != 0.0;
+    if (!hasAxes && !fractionalWeight) {
+      _cachedFontVariations = null;
+      _cachedFontVariationKey = '';
+      return;
+    }
+
+    final merged = <String, double>{if (hasAxes) ...axes};
+    if (fractionalWeight && !merged.containsKey('wght')) {
+      merged['wght'] = clampedW;
+    }
+    final tags = merged.keys.toList()..sort();
+    final variations = List<FontVariation>.unmodifiable([
+      for (final tag in tags) FontVariation(tag, merged[tag]!),
+    ]);
+    final buf = StringBuffer();
+    for (var i = 0; i < tags.length; i++) {
+      if (i > 0) buf.write(',');
+      buf
+        ..write(tags[i])
+        ..write(':')
+        ..write(merged[tags[i]]);
+    }
+    _cachedFontVariations = variations;
+    _cachedFontVariationKey = buf.toString();
+  }
+
+  List<FontVariation>? get _rasterFontVariations {
+    _refreshFontVariations();
+    return _cachedFontVariations;
+  }
+
+  String get _rasterFontVariationKey {
+    _refreshFontVariations();
+    return _cachedFontVariationKey;
+  }
+
   TextAlign _textAlign = TextAlign.left;
-  double? _textLeading;
+  double? _textLeadingPx;
+  double? get _textLeading =>
+      _textLeadingPx == null || _fontSize <= 0 ? null : _textLeadingPx! / _fontSize;
   double? _letterSpacing;
   TextCacheMode _textCacheMode = .dynamic;
 
@@ -210,9 +263,11 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
   void textFont(Object font) {
     if (font is String) {
       _fontFamily = font;
-      _loadedFont = environment.fonts[font]?.font;
+      _loadedFont = fonts[font]?.font;
+      _invalidateFontVariations();
     } else if (font is Flut5Font) {
       _loadedFont = font;
+      _invalidateFontVariations();
     } else {
       throw ArgumentError(
         'textFont expects a String (font family) or a Flut5Font.',
@@ -258,6 +313,7 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
         // so subsequent reads of textWeight() report what's actually applied.
         _fontWeightValue = font.axisValues['wght']!;
       }
+      _invalidateFontVariations();
     }
     return _fontWeightValue;
   }
@@ -284,6 +340,7 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
     font.setAxisValue(tag, value);
     // Keep textWeight() in sync when the engine writes 'wght' directly.
     if (tag == 'wght') _fontWeightValue = font.axisValues['wght']!;
+    _invalidateFontVariations();
   }
 
   /// Applies a font-declared named instance — a preset combination of axis
@@ -299,6 +356,7 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
         font.setAxisValues(inst.coordinates);
         final w = font.axisValues['wght'];
         if (w != null) _fontWeightValue = w;
+        _invalidateFontVariations();
         return;
       }
     }
@@ -311,6 +369,7 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
     font.resetAxisValues();
     final w = font.axisValues['wght'];
     if (w != null) _fontWeightValue = w;
+    _invalidateFontVariations();
   }
 
   /// Current user-space axis values on the active outline font as an
@@ -334,9 +393,10 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
     _textAlign = align;
   }
 
-  /// Sets the line height in pixels.
+  /// Sets the line height in pixels. Stored in absolute pixels so calling
+  /// [textLeading] before [textSize] preserves the requested pixel leading.
   void textLeading(double leading) {
-    _textLeading = leading / _fontSize;
+    _textLeadingPx = leading;
   }
 
   /// Sets additional letter spacing in pixels. Pass `null` to reset to font default.
@@ -502,9 +562,9 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
   /// Called by [Flut5Canvas] before user [setup]. The resulting map is stored
   /// in [SketchEnvironment.fonts], keyed by pubspec/manifest family name.
   Future<void> preloadRegisteredFonts() async {
-    final fonts = _registeredFonts ??= await _loadRegisteredFonts();
-    environment = environment.withFonts(fonts);
-    _loadedFont = environment.fonts[_fontFamily]?.font;
+    final loadedFonts = _registeredFonts ??= await _loadRegisteredFonts();
+    environment = environment.withFonts(loadedFonts);
+    _loadedFont = fonts[_fontFamily]?.font;
   }
 
   static Future<Map<String, Flut5FontData>> _loadRegisteredFonts() async {
@@ -644,26 +704,25 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
         ? snapshotStrokePaintNoShader()
         : snapshotStrokePaint();
 
-    renderQueue.enqueue(
-      TextDynamicRenderItem(
-        text: content,
-        x: x,
-        y: y,
-        maxWidth: maxWidth,
-        maxHeight: maxHeight,
-        fontFamily: _fontFamily,
-        fontSize: _fontSize,
-        fontWeight: _fontWeight,
-        fontStyle: _fontStyle,
-        textAlign: _textAlign,
-        textLeading: _textLeading,
-        letterSpacing: _letterSpacing,
-        fillPaint: queuedFill,
-        strokePaint: queuedStroke,
-        fillGradient: autoFillGrad,
-        strokeGradient: autoStrokeGrad,
-        shadow: renderQueue.activeShadow,
-      ),
+    renderQueue.appendTextDynamic(
+      text: content,
+      x: x,
+      y: y,
+      maxWidth: maxWidth,
+      maxHeight: maxHeight,
+      fontFamily: _fontFamily,
+      fontSize: _fontSize,
+      fontWeight: _fontWeight,
+      fontStyle: _fontStyle,
+      textAlign: _textAlign,
+      textLeading: _textLeading,
+      letterSpacing: _letterSpacing,
+      fillPaint: queuedFill,
+      strokePaint: queuedStroke,
+      fillGradient: autoFillGrad,
+      strokeGradient: autoStrokeGrad,
+      fontVariations: _rasterFontVariations,
+      fontVariationKey: _rasterFontVariationKey,
     );
   }
 
@@ -712,26 +771,25 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
         ? snapshotStrokePaintNoShader()
         : snapshotStrokePaint();
 
-    renderQueue.enqueue(
-      TextRenderItem(
-        text: content,
-        x: x,
-        y: y,
-        maxWidth: maxWidth,
-        maxHeight: maxHeight,
-        fontFamily: _fontFamily,
-        fontSize: _fontSize,
-        fontWeight: _fontWeight,
-        fontStyle: _fontStyle,
-        textAlign: _textAlign,
-        textLeading: _textLeading,
-        letterSpacing: _letterSpacing,
-        fillPaint: queuedFill,
-        strokePaint: queuedStroke,
-        fillGradient: autoFillGrad,
-        strokeGradient: autoStrokeGrad,
-        shadow: renderQueue.activeShadow,
-      ),
+    renderQueue.appendTextStatic(
+      text: content,
+      x: x,
+      y: y,
+      maxWidth: maxWidth,
+      maxHeight: maxHeight,
+      fontFamily: _fontFamily,
+      fontSize: _fontSize,
+      fontWeight: _fontWeight,
+      fontStyle: _fontStyle,
+      textAlign: _textAlign,
+      textLeading: _textLeading,
+      letterSpacing: _letterSpacing,
+      fillPaint: queuedFill,
+      strokePaint: queuedStroke,
+      fillGradient: autoFillGrad,
+      strokeGradient: autoStrokeGrad,
+      fontVariations: _rasterFontVariations,
+      fontVariationKey: _rasterFontVariationKey,
     );
   }
 
@@ -790,7 +848,7 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
     } else if (source is String) {
       // A pubspec family name wins over an asset path — family names never
       // contain '/', so a string that is both is not a case that arises.
-      final registered = environment.fonts[source];
+      final registered = fonts[source];
       if (registered != null) {
         _fontFamily = source;
         _loadedFont = registered.font;
@@ -1149,7 +1207,7 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
     final override = _argDouble(args, Flut5TextArg.lineHeight, method);
     if (override != null) return override;
     final size = _argDouble(args, Flut5TextArg.fontSize, method) ?? _fontSize;
-    if (_textLeading != null) return size * _textLeading!;
+    if (_textLeadingPx != null) return _textLeadingPx!;
     if (!content.contains('\n') && !content.contains('\r')) return null;
     // An explicit outline font may have no registered Flutter family.
     if (_argFont(args, method) != null) return size;
@@ -1158,6 +1216,8 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
       fontSize: size,
       fontWeight: _fontWeight,
       fontStyle: _fontStyle,
+      fontVariations: _rasterFontVariations,
+      fontVariationKey: _rasterFontVariationKey,
     );
   }
 
@@ -1176,6 +1236,25 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
   double textWidth(String content) {
     if (content.isEmpty) return 0;
     final double spacing = _letterSpacing ?? 0.0;
+    final variations = _rasterFontVariations;
+    final variationKey = _rasterFontVariationKey;
+
+    if (!content.contains('\n')) {
+      double w = _textCache.measureWidth(
+        text: content,
+        fontFamily: _fontFamily,
+        fontSize: _fontSize,
+        fontWeight: _fontWeight,
+        fontStyle: _fontStyle,
+        fontVariations: variations,
+        fontVariationKey: variationKey,
+      );
+      if (spacing != 0.0) {
+        final n = content.runes.length;
+        if (n > 1) w += spacing * (n - 1);
+      }
+      return w;
+    }
 
     double maxWidth = 0;
     for (final line in content.split('\n')) {
@@ -1186,9 +1265,13 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
         fontSize: _fontSize,
         fontWeight: _fontWeight,
         fontStyle: _fontStyle,
+        fontVariations: variations,
+        fontVariationKey: variationKey,
       );
-      final n = line.runes.length;
-      if (n > 1) w += spacing * (n - 1);
+      if (spacing != 0.0) {
+        final n = line.runes.length;
+        if (n > 1) w += spacing * (n - 1);
+      }
       if (w > maxWidth) maxWidth = w;
     }
     return maxWidth;
@@ -1214,6 +1297,8 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
         fontSize: _fontSize,
         fontWeight: _fontWeight,
         fontStyle: _fontStyle,
+        fontVariations: _rasterFontVariations,
+        fontVariationKey: _rasterFontVariationKey,
       )
       .$1;
 
@@ -1228,6 +1313,8 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
         fontSize: _fontSize,
         fontWeight: _fontWeight,
         fontStyle: _fontStyle,
+        fontVariations: _rasterFontVariations,
+        fontVariationKey: _rasterFontVariationKey,
       )
       .$2;
 }

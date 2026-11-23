@@ -83,7 +83,7 @@ class Flut5TextLayout(final List<Flut5TextLine> lines) {
 }
 
 /// Composite key for cached layouts:
-/// (text, fontFamily, fontSize, fontWeight, fontStyle, letterSpacing, maxWidth).
+/// (text, fontFamily, fontSize, fontWeight, fontStyle, letterSpacing, maxWidth, fontVariationKey).
 typedef _LayoutKey = (
   String,
   String,
@@ -92,6 +92,7 @@ typedef _LayoutKey = (
   FontStyle,
   double,
   double?,
+  String,
 );
 
 class Flut5CachedText(
@@ -138,12 +139,20 @@ class Flut5CachedText(
   /// [Flut5TextCache.bakedShadow]. They live and die with the entry.
   Map<Object, Flut5ShadowRaster>? _shadows;
 
+  /// Shelf-packed glyph atlas slot for batched [Canvas.drawRawAtlas] blits,
+  /// or `null` until packed (or if oversized). Managed by [Flut5TextCache].
+  Flut5GlyphAtlasSlot? _atlasSlot;
+
   /// LRU bookkeeping — last [Flut5TextCache._accessTick] this entry was used.
   int _lastUsedTick = 0;
 
   this : _imageBytes = image.width * image.height * 4;
 
+  /// Active shelf-packed atlas slot for this glyph, or `null` if not packed.
+  Flut5GlyphAtlasSlot? get atlasSlot => _atlasSlot;
+
   void dispose() {
+    _atlasSlot = null;
     image.dispose();
     final shadows = _shadows;
     if (shadows == null) return;
@@ -152,6 +161,65 @@ class Flut5CachedText(
     }
   }
 }
+
+/// One shelf-packed page of the dynamic glyph atlas.
+///
+/// Packs single-glyph white rasters with a transparent [gutter] between slots
+/// so bilinear sampling never bleeds across neighbours. Owned and disposed by
+/// [Flut5TextCache].
+class Flut5GlyphAtlasPage(final int generation) {
+  static const int maxExtent = 1024;
+  static const int maxGlyphExtent = 256;
+  static const int gutter = 2;
+
+  ui.Image? image;
+  int width = 0;
+  int height = 0;
+  int _cursorX = gutter;
+  int _cursorY = gutter;
+  int _shelfHeight = 0;
+  int _maxUsedX = gutter;
+  int _maxUsedY = gutter;
+  int _usedPixels = 0;
+  int _deadPixels = 0;
+  final List<ui.Image> _pendingImages = [];
+  final List<Flut5GlyphAtlasSlot> _pendingSlots = [];
+}
+
+/// Placement of a [Flut5CachedText] inside a [Flut5GlyphAtlasPage].
+class Flut5GlyphAtlasSlot(
+  final Flut5GlyphAtlasPage page,
+  final double left,
+  final double top,
+  final double right,
+  final double bottom,
+  final int generation,
+) {
+  bool get isValid => page.generation == generation && page.image != null;
+}
+
+/// Pre-tokenized word-run representation of a string at a fixed font style,
+/// independent of `letterSpacing` and `maxWidth`. Lets wrapped-text
+/// `letterSpacing` / `maxWidth` animations re-wrap with pure float arithmetic
+/// instead of re-splitting strings, decoding runes, and hashing glyph metrics.
+class _MeasuredToken(
+  final bool isWhitespace,
+  final List<String> chars,
+  final Float64List advances,
+  final Float64List internalKerns,
+  final double baseWidth,
+) {
+  String get firstChar => chars.first;
+  String get lastChar => chars.last;
+  int get length => chars.length;
+}
+
+class _TokenizedSegment(
+  final List<_MeasuredToken> tokens,
+  final Float64List joinKerns,
+);
+
+class _TokenizedText(final List<_TokenizedSegment> segments);
 
 /// A text raster's shadow silhouette, baked once — see
 /// [Flut5TextCache.bakedShadow].
@@ -172,6 +240,12 @@ class Flut5ShadowRaster(
     image.height.toDouble(),
   );
 
+  Flut5GlyphAtlasSlot? _atlasSlot;
+
+  /// Atlas slot holding this baked shadow silhouette, or `null` if not packed
+  /// (e.g. oversized blur/spread shadow drawn directly via `drawImageRect`).
+  Flut5GlyphAtlasSlot? get atlasSlot => _atlasSlot;
+
   int get bytes => image.width * image.height * 4;
 }
 
@@ -189,6 +263,7 @@ class _TextCacheKey(
   var int alignIndex,
   var int paintingStyle,
   var double strokeWidth,
+  var String fontVariationKey,
 ) {
   // 0 = fill, 1 = stroke
   /// Creates a mutable instance for reuse as a lookup key.
@@ -206,6 +281,7 @@ class _TextCacheKey(
         0,
         0,
         0,
+        '',
       );
 
   /// Sets all fields in place — avoids allocating a new key for lookups.
@@ -222,6 +298,7 @@ class _TextCacheKey(
     int alignIndex,
     int paintingStyle,
     double strokeWidth,
+    String fontVariationKey,
   ) {
     this.text = text;
     this.maxWidth = maxWidth;
@@ -235,6 +312,7 @@ class _TextCacheKey(
     this.alignIndex = alignIndex;
     this.paintingStyle = paintingStyle;
     this.strokeWidth = strokeWidth;
+    this.fontVariationKey = fontVariationKey;
   }
 
   /// Creates an immutable copy for map storage.
@@ -252,6 +330,7 @@ class _TextCacheKey(
         other.alignIndex,
         other.paintingStyle,
         other.strokeWidth,
+        other.fontVariationKey,
       );
 
   @override
@@ -269,7 +348,8 @@ class _TextCacheKey(
           letterSpacing == other.letterSpacing &&
           alignIndex == other.alignIndex &&
           paintingStyle == other.paintingStyle &&
-          strokeWidth == other.strokeWidth;
+          strokeWidth == other.strokeWidth &&
+          fontVariationKey == other.fontVariationKey;
 
   @override
   int get hashCode => Object.hash(
@@ -285,6 +365,7 @@ class _TextCacheKey(
     alignIndex,
     paintingStyle,
     strokeWidth,
+    fontVariationKey,
   );
 }
 
@@ -335,11 +416,19 @@ class Flut5TextCache._() {
     _cache.expire(_timeoutFrames);
     _dropLayoutsNeverUsedAgain();
     _layoutCache.expire(_timeoutFrames);
+    _tokenCache.expire(_timeoutFrames);
     _kernCache.expire(_timeoutFrames);
     _widthCache.expire(_timeoutFrames);
     _lineHeightCache.expire(_timeoutFrames);
     _ascentDescentCache.expire(_timeoutFrames);
     _charStrings.expire(_timeoutFrames);
+    _disposeRetiredAtlasImages();
+    if (_cache.isEmpty && _atlasPages.isNotEmpty) {
+      _clearAtlas(immediate: true);
+    } else if (_atlasNeedsCompaction) {
+      _atlasNeedsCompaction = false;
+      _clearAtlas(immediate: false);
+    }
     // The mutable lookup key is scratch space, not a cache entry. Do not let
     // it retain the last measured string after all actual entries expire.
     _lookupKey.text = '';
@@ -460,11 +549,299 @@ class Flut5TextCache._() {
   int get textureGeneration => _textureGeneration;
   int _textureGeneration = 0;
 
+  void _markDeadSlot(Flut5GlyphAtlasSlot? slot, ui.Image image) {
+    if (slot != null && slot.generation == _atlasGeneration) {
+      final page = slot.page;
+      page._deadPixels += image.width * image.height;
+      if (page._usedPixels > 0 && page._deadPixels * 2 > page._usedPixels) {
+        _atlasNeedsCompaction = true;
+      }
+    }
+  }
+
   /// Frees a texture already taken out of [_cache].
   void _releaseTexture(Flut5CachedText removed) {
+    _markDeadSlot(removed._atlasSlot, removed.image);
+    final shadows = removed._shadows;
+    if (shadows != null) {
+      for (final s in shadows.values) {
+        _markDeadSlot(s._atlasSlot, s.image);
+      }
+    }
     _cacheBytes -= removed.bytes;
     removed.dispose();
     _textureGeneration++;
+  }
+
+  // ── Shelf-packed dynamic glyph atlas ──────────────────────────────────
+  //
+  // Layers GPU batching under the existing per-glyph texture cache so
+  // `textDynamic` can blit hundreds of glyphs in a single `Canvas.drawRawAtlas`
+  // call while keeping `cacheLength`, `cacheBytes`, `resolvedGlyphs`, and
+  // timeout expiration unchanged.
+  static const int _maxAtlasPages = 8;
+  static const int _maxRetiredAtlasImages = 16;
+  static final Paint _atlasCopyPaint = Paint()
+    ..blendMode = BlendMode.src
+    ..filterQuality = FilterQuality.none;
+
+  final List<Flut5GlyphAtlasPage> _atlasPages = [];
+  final List<ui.Image> _retiredAtlasImages = [];
+  int _atlasGeneration = 0;
+  bool _atlasNeedsCompaction = false;
+
+  /// The device pixel ratio the currently cached glyph rasters and atlas pages
+  /// were rasterized at.
+  double get pixelRatio => _cachedPixelRatio ?? 1.0;
+
+  void _disposeRetiredAtlasImages() {
+    if (_retiredAtlasImages.isEmpty) return;
+    for (final img in _retiredAtlasImages) {
+      img.dispose();
+    }
+    _retiredAtlasImages.clear();
+  }
+
+  void _retireAtlasImage(ui.Image? img, {required bool immediate}) {
+    if (img == null) return;
+    if (immediate) {
+      img.dispose();
+      return;
+    }
+    _retiredAtlasImages.add(img);
+    if (_retiredAtlasImages.length > _maxRetiredAtlasImages) {
+      _retiredAtlasImages.removeAt(0).dispose();
+    }
+  }
+
+  void _clearAtlas({required bool immediate}) {
+    for (final page in _atlasPages) {
+      _retireAtlasImage(page.image, immediate: immediate);
+      page.image = null;
+      page._pendingImages.clear();
+      page._pendingSlots.clear();
+    }
+    _atlasPages.clear();
+    _atlasNeedsCompaction = false;
+    if (immediate) _disposeRetiredAtlasImages();
+    _atlasGeneration++;
+  }
+
+  /// Packs a single [glyph] into the active atlas page if packable and not
+  /// already packed. Used only on the rare mid-line eviction fallback path.
+  void ensureGlyphPacked(Flut5CachedText glyph) {
+    final slot = glyph._atlasSlot;
+    if (slot != null && slot.isValid && slot.generation == _atlasGeneration) {
+      return;
+    }
+    final w = glyph.image.width;
+    final h = glyph.image.height;
+    if (w <= 0 ||
+        h <= 0 ||
+        w > Flut5GlyphAtlasPage.maxGlyphExtent ||
+        h > Flut5GlyphAtlasPage.maxGlyphExtent) {
+      glyph._atlasSlot = null;
+      return;
+    }
+    glyph._atlasSlot = _reserveAtlasSlot(glyph.image, w, h);
+    final page = glyph._atlasSlot!.page;
+    if (page._pendingImages.isNotEmpty) _commitAtlasPage(page);
+  }
+
+  /// Ensures every packable [Flut5ShadowRaster] in [shadows] has a valid
+  /// [Flut5GlyphAtlasSlot] on a committed [Flut5GlyphAtlasPage], batching all
+  /// newly packed shadow silhouettes into a single page commit.
+  void ensureShadowsAtlasPacked(List<Flut5ShadowRaster> shadows) {
+    if (shadows.isEmpty) return;
+    var hasUnpacked = false;
+    for (var i = 0; i < shadows.length; i++) {
+      final s = shadows[i];
+      final slot = s._atlasSlot;
+      if (slot != null && slot.isValid && slot.generation == _atlasGeneration) {
+        continue;
+      }
+      if (s.image.width <= Flut5GlyphAtlasPage.maxGlyphExtent &&
+          s.image.height <= Flut5GlyphAtlasPage.maxGlyphExtent) {
+        hasUnpacked = true;
+        break;
+      }
+    }
+    if (!hasUnpacked) return;
+
+    for (var i = 0; i < shadows.length; i++) {
+      final s = shadows[i];
+      final existing = s._atlasSlot;
+      if (existing != null &&
+          existing.generation == _atlasGeneration &&
+          (existing.page.image != null ||
+              existing.page._pendingImages.isNotEmpty)) {
+        continue;
+      }
+      final w = s.image.width;
+      final h = s.image.height;
+      if (w <= 0 ||
+          h <= 0 ||
+          w > Flut5GlyphAtlasPage.maxGlyphExtent ||
+          h > Flut5GlyphAtlasPage.maxGlyphExtent) {
+        s._atlasSlot = null;
+        continue;
+      }
+      s._atlasSlot = _reserveAtlasSlot(s.image, w, h);
+    }
+
+    for (var i = 0; i < _atlasPages.length; i++) {
+      final page = _atlasPages[i];
+      if (page._pendingImages.isNotEmpty) _commitAtlasPage(page);
+    }
+  }
+
+  static int _nextAtlasExtent(int minSize) {
+    int size = 256;
+    while (size < minSize && size < Flut5GlyphAtlasPage.maxExtent) {
+      size <<= 1;
+    }
+    return size > Flut5GlyphAtlasPage.maxExtent
+        ? Flut5GlyphAtlasPage.maxExtent
+        : size;
+  }
+
+  /// Ensures every packable glyph in [glyphs] has a valid [Flut5GlyphAtlasSlot]
+  /// on a committed [Flut5GlyphAtlasPage]. Batches all newly packed glyphs per
+  /// page into a single `PictureRecorder` → `toImageSync` commit.
+  ///
+  /// Oversized glyphs (wider or taller than [Flut5GlyphAtlasPage.maxGlyphExtent])
+  /// are skipped (`glyph.atlasSlot == null`) so callers fall back to
+  /// `Canvas.drawImageRect`.
+  void ensureAtlasPacked(List<Flut5CachedText> glyphs) {
+    if (glyphs.isEmpty) return;
+    // Quick check: warm frames already have every glyph packed.
+    var hasUnpacked = false;
+    for (var i = 0; i < glyphs.length; i++) {
+      final g = glyphs[i];
+      final slot = g._atlasSlot;
+      if (slot != null && slot.isValid && slot.generation == _atlasGeneration) {
+        continue;
+      }
+      if (g.image.width <= Flut5GlyphAtlasPage.maxGlyphExtent &&
+          g.image.height <= Flut5GlyphAtlasPage.maxGlyphExtent) {
+        hasUnpacked = true;
+        break;
+      }
+    }
+    if (!hasUnpacked) return;
+
+    for (var i = 0; i < glyphs.length; i++) {
+      final g = glyphs[i];
+      final existing = g._atlasSlot;
+      if (existing != null &&
+          existing.generation == _atlasGeneration &&
+          (existing.page.image != null ||
+              existing.page._pendingImages.isNotEmpty)) {
+        continue;
+      }
+      final w = g.image.width;
+      final h = g.image.height;
+      if (w <= 0 ||
+          h <= 0 ||
+          w > Flut5GlyphAtlasPage.maxGlyphExtent ||
+          h > Flut5GlyphAtlasPage.maxGlyphExtent) {
+        g._atlasSlot = null;
+        continue;
+      }
+      g._atlasSlot = _reserveAtlasSlot(g.image, w, h);
+    }
+
+    for (var i = 0; i < _atlasPages.length; i++) {
+      final page = _atlasPages[i];
+      if (page._pendingImages.isNotEmpty) _commitAtlasPage(page);
+    }
+  }
+
+  Flut5GlyphAtlasSlot _reserveAtlasSlot(ui.Image image, int w, int h) {
+    const gutter = Flut5GlyphAtlasPage.gutter;
+    const maxExtent = Flut5GlyphAtlasPage.maxExtent;
+
+    Flut5GlyphAtlasPage page;
+    if (_atlasPages.isEmpty) {
+      page = Flut5GlyphAtlasPage(_atlasGeneration);
+      _atlasPages.add(page);
+    } else {
+      page = _atlasPages.last;
+    }
+
+    if (page._cursorX + w + gutter > maxExtent) {
+      page._cursorX = gutter;
+      page._cursorY += page._shelfHeight + gutter;
+      page._shelfHeight = 0;
+    }
+    if (page._cursorY + h + gutter > maxExtent) {
+      if (page._pendingImages.isNotEmpty) _commitAtlasPage(page);
+      if (_atlasPages.length >= _maxAtlasPages) {
+        _clearAtlas(immediate: false);
+      }
+      page = Flut5GlyphAtlasPage(_atlasGeneration);
+      _atlasPages.add(page);
+    }
+
+    final left = page._cursorX;
+    final top = page._cursorY;
+    final right = left + w;
+    final bottom = top + h;
+    page._cursorX = right + gutter;
+    if (h > page._shelfHeight) page._shelfHeight = h;
+    if (right + gutter > page._maxUsedX) page._maxUsedX = right + gutter;
+    if (bottom + gutter > page._maxUsedY) page._maxUsedY = bottom + gutter;
+    page._usedPixels += w * h;
+
+    final slot = Flut5GlyphAtlasSlot(
+      page,
+      left.toDouble(),
+      top.toDouble(),
+      right.toDouble(),
+      bottom.toDouble(),
+      _atlasGeneration,
+    );
+    page._pendingImages.add(image);
+    page._pendingSlots.add(slot);
+    return slot;
+  }
+
+  void _commitAtlasPage(Flut5GlyphAtlasPage page) {
+    final targetW = _nextAtlasExtent(
+      page._maxUsedX > page.width ? page._maxUsedX : page.width,
+    );
+    final targetH = _nextAtlasExtent(
+      page._maxUsedY > page.height ? page._maxUsedY : page.height,
+    );
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(
+      recorder,
+      Rect.fromLTWH(0, 0, targetW.toDouble(), targetH.toDouble()),
+    );
+    final prev = page.image;
+    if (prev != null) {
+      canvas.drawImage(prev, Offset.zero, _atlasCopyPaint);
+    }
+    final pendingImages = page._pendingImages;
+    final pendingSlots = page._pendingSlots;
+    for (var i = 0; i < pendingImages.length; i++) {
+      final slot = pendingSlots[i];
+      if (!identical(slot.page, page)) continue;
+      canvas.drawImage(
+        pendingImages[i],
+        Offset(slot.left, slot.top),
+        _atlasCopyPaint,
+      );
+    }
+    final picture = recorder.endRecording();
+    final next = picture.toImageSync(targetW, targetH);
+    picture.dispose();
+    _retireAtlasImage(prev, immediate: false);
+    page.image = next;
+    page.width = targetW;
+    page.height = targetH;
+    pendingImages.clear();
+    pendingSlots.clear();
   }
 
   /// The rasters of [line]'s glyphs for the fill pass ([paintingStyle] `0`)
@@ -560,6 +937,7 @@ class Flut5TextCache._() {
   }
 
   void _dropTextures() {
+    _clearAtlas(immediate: true);
     for (final texture in _cache.values) {
       texture.dispose();
     }
@@ -573,7 +951,7 @@ class Flut5TextCache._() {
   /// wrong pair's kerning. No textLeading or letterSpacing — those are
   /// composition-time values.
   late final Flut5ExpiringCache<
-    (String, String, String, double, FontWeight, FontStyle),
+    (String, String, String, double, FontWeight, FontStyle, String),
     double
   >
   _kernCache = Flut5ExpiringCache(() => _frame);
@@ -582,7 +960,7 @@ class Flut5TextCache._() {
   /// Used by [measureWidth] to avoid rasterizing a GPU texture just to read a
   /// width. Record-keyed for collision-proof lookups.
   late final Flut5ExpiringCache<
-    (String, String, double, FontWeight, FontStyle),
+    (String, String, double, FontWeight, FontStyle, String),
     double
   >
   _widthCache = Flut5ExpiringCache(() => _frame);
@@ -590,14 +968,17 @@ class Flut5TextCache._() {
   /// Lightweight line-height cache — one `double` per font style tuple.
   /// Used by [measureLineHeight] so the dynamic text pipeline never
   /// rasterizes a reference-glyph texture just to read a line height.
-  late final Flut5ExpiringCache<(String, double, FontWeight, FontStyle), double>
+  late final Flut5ExpiringCache<
+    (String, double, FontWeight, FontStyle, String),
+    double
+  >
   _lineHeightCache = Flut5ExpiringCache(() => _frame);
 
   /// Lightweight ascent/descent cache — one record per font style tuple.
   /// Used by [measureAscentDescent] so [Flut5Text.textAscent] and
   /// [Flut5Text.textDescent] never rasterize a texture just to read metrics.
   late final Flut5ExpiringCache<
-    (String, double, FontWeight, FontStyle),
+    (String, double, FontWeight, FontStyle, String),
     (double, double)
   >
   _ascentDescentCache = Flut5ExpiringCache(() => _frame);
@@ -607,6 +988,15 @@ class Flut5TextCache._() {
   /// re-measuring every glyph.
   late final Flut5ExpiringCache<_LayoutKey, Flut5TextLayout> _layoutCache =
       Flut5ExpiringCache(() => _frame);
+
+  /// Pre-tokenized and pre-measured word runs keyed by `(text, fontFamily,
+  /// fontSize, fontWeight, fontStyle, fontVariationKey)`. Speeds up
+  /// wrapped-text re-layout when `letterSpacing` or `maxWidth` animates.
+  late final Flut5ExpiringCache<
+    (String, String, double, FontWeight, FontStyle, String),
+    _TokenizedText
+  >
+  _tokenCache = Flut5ExpiringCache(() => _frame);
 
   // A string that changes every frame — a counter, a timer, a paragraph
   // whose width or wrapped spacing is animated — makes a new layout each
@@ -670,6 +1060,8 @@ class Flut5TextCache._() {
     required TextAlign align,
     required int paintingStyle,
     required double strokeWidth,
+    List<FontVariation>? fontVariations,
+    String fontVariationKey = '',
   }) {
     _lookupKey._set(
       text,
@@ -684,6 +1076,7 @@ class Flut5TextCache._() {
       align.index,
       paintingStyle,
       strokeWidth,
+      fontVariationKey,
     );
 
     final existing = _cache[_lookupKey];
@@ -708,6 +1101,7 @@ class Flut5TextCache._() {
           fontSize: fontSize,
           fontWeight: fontWeight,
           fontStyle: fontStyle,
+          fontVariations: fontVariations,
           foreground: paint,
           height: textLeading,
           letterSpacing: letterSpacing,
@@ -853,6 +1247,7 @@ class Flut5TextCache._() {
 
     if (shadows.length >= _shadowsPerText) {
       final oldest = shadows.remove(shadows.keys.first)!;
+      _markDeadSlot(oldest._atlasSlot, oldest.image);
       text._shadowBytes -= oldest.bytes;
       _cacheBytes -= oldest.bytes;
       oldest.image.dispose();
@@ -977,6 +1372,8 @@ class Flut5TextCache._() {
     required double fontSize,
     required FontWeight fontWeight,
     required FontStyle fontStyle,
+    List<FontVariation>? fontVariations,
+    String fontVariationKey = '',
   }) {
     // Reuse an existing rasterized entry's width if one exists — free win.
     _lookupKey._set(
@@ -992,6 +1389,7 @@ class Flut5TextCache._() {
       TextAlign.left.index,
       0,
       0.0,
+      fontVariationKey,
     );
     final existing = _cache[_lookupKey];
     if (existing != null) {
@@ -999,7 +1397,14 @@ class Flut5TextCache._() {
       return existing.width;
     }
 
-    final key = (text, fontFamily, fontSize, fontWeight, fontStyle);
+    final key = (
+      text,
+      fontFamily,
+      fontSize,
+      fontWeight,
+      fontStyle,
+      fontVariationKey,
+    );
     final cached = _widthCache[key];
     if (cached != null) return cached;
 
@@ -1011,6 +1416,7 @@ class Flut5TextCache._() {
           fontSize: fontSize,
           fontWeight: fontWeight,
           fontStyle: fontStyle,
+          fontVariations: fontVariations,
         ),
       ),
       textDirection: TextDirection.ltr,
@@ -1035,8 +1441,16 @@ class Flut5TextCache._() {
     required double fontSize,
     required FontWeight fontWeight,
     required FontStyle fontStyle,
+    List<FontVariation>? fontVariations,
+    String fontVariationKey = '',
   }) {
-    final key = (fontFamily, fontSize, fontWeight, fontStyle);
+    final key = (
+      fontFamily,
+      fontSize,
+      fontWeight,
+      fontStyle,
+      fontVariationKey,
+    );
     final cached = _lineHeightCache[key];
     if (cached != null) return cached;
 
@@ -1048,6 +1462,7 @@ class Flut5TextCache._() {
           fontSize: fontSize,
           fontWeight: fontWeight,
           fontStyle: fontStyle,
+          fontVariations: fontVariations,
         ),
       ),
       textDirection: TextDirection.ltr,
@@ -1070,8 +1485,16 @@ class Flut5TextCache._() {
     required double fontSize,
     required FontWeight fontWeight,
     required FontStyle fontStyle,
+    List<FontVariation>? fontVariations,
+    String fontVariationKey = '',
   }) {
-    final key = (fontFamily, fontSize, fontWeight, fontStyle);
+    final key = (
+      fontFamily,
+      fontSize,
+      fontWeight,
+      fontStyle,
+      fontVariationKey,
+    );
     final cached = _ascentDescentCache[key];
     if (cached != null) return cached;
 
@@ -1083,6 +1506,7 @@ class Flut5TextCache._() {
           fontSize: fontSize,
           fontWeight: fontWeight,
           fontStyle: fontStyle,
+          fontVariations: fontVariations,
         ),
       ),
       textDirection: TextDirection.ltr,
@@ -1110,6 +1534,8 @@ class Flut5TextCache._() {
     required FontStyle fontStyle,
     required double letterSpacing,
     double? maxWidth,
+    List<FontVariation>? fontVariations,
+    String fontVariationKey = '',
   }) {
     final key = (
       text,
@@ -1119,6 +1545,7 @@ class Flut5TextCache._() {
       fontStyle,
       letterSpacing,
       maxWidth,
+      fontVariationKey,
     );
     final existing = _layoutCache[key];
     if (existing != null) {
@@ -1135,6 +1562,8 @@ class Flut5TextCache._() {
       fontStyle,
       letterSpacing,
       maxWidth,
+      fontVariations,
+      fontVariationKey,
     );
     layout._lastUsedTick = ++_accessTick;
     layout._createdFrame = _frame;
@@ -1197,7 +1626,106 @@ class Flut5TextCache._() {
     );
   }
 
-  /// Word-wrap layout over code points. Runs only on layout-cache misses.
+  _TokenizedText _getOrCreateTokenized(
+    String text,
+    String fontFamily,
+    double fontSize,
+    FontWeight fontWeight,
+    FontStyle fontStyle,
+    List<FontVariation>? fontVariations,
+    String fontVariationKey,
+  ) {
+    final key = (
+      text,
+      fontFamily,
+      fontSize,
+      fontWeight,
+      fontStyle,
+      fontVariationKey,
+    );
+    final cached = _tokenCache[key];
+    if (cached != null) return cached;
+
+    double advance(String ch) => measureWidth(
+      text: ch,
+      fontFamily: fontFamily,
+      fontSize: fontSize,
+      fontWeight: fontWeight,
+      fontStyle: fontStyle,
+      fontVariations: fontVariations,
+      fontVariationKey: fontVariationKey,
+    );
+
+    double kern(String a, String b) => getKernOffset(
+      a: a,
+      b: b,
+      fontFamily: fontFamily,
+      fontSize: fontSize,
+      fontWeight: fontWeight,
+      fontStyle: fontStyle,
+      fontVariations: fontVariations,
+      fontVariationKey: fontVariationKey,
+    );
+
+    final rawSegments = text.split('\n');
+    final segments = <_TokenizedSegment>[];
+    for (int s = 0; s < rawSegments.length; s++) {
+      final segment = rawSegments[s];
+      final tokens = <_MeasuredToken>[];
+      if (segment.isNotEmpty) {
+        final codePoints = segment.runes.toList(growable: false);
+        int i = 0;
+        while (i < codePoints.length) {
+          final tokenIsWhitespace = _isWhitespaceCodePoint(codePoints[i]);
+          final chars = <String>[];
+          while (i < codePoints.length &&
+              _isWhitespaceCodePoint(codePoints[i]) == tokenIsWhitespace) {
+            chars.add(_charString(codePoints[i]));
+            i++;
+          }
+          final count = chars.length;
+          final advances = Float64List(count);
+          final internalKerns = count > 1
+              ? Float64List(count - 1)
+              : Float64List(0);
+          double baseWidth = 0.0;
+          for (int t = 0; t < count; t++) {
+            final adv = advance(chars[t]);
+            advances[t] = adv;
+            baseWidth += adv;
+            if (t < count - 1) {
+              final k = kern(chars[t], chars[t + 1]);
+              internalKerns[t] = k;
+              baseWidth += k;
+            }
+          }
+          tokens.add(
+            _MeasuredToken(
+              tokenIsWhitespace,
+              chars,
+              advances,
+              internalKerns,
+              baseWidth,
+            ),
+          );
+        }
+      }
+      final joinKerns = tokens.length > 1
+          ? Float64List(tokens.length - 1)
+          : Float64List(0);
+      for (int t = 0; t < tokens.length - 1; t++) {
+        joinKerns[t] = kern(tokens[t].lastChar, tokens[t + 1].firstChar);
+      }
+      segments.add(_TokenizedSegment(tokens, joinKerns));
+    }
+
+    final tokenized = _TokenizedText(segments);
+    _tokenCache[key] = tokenized;
+    return tokenized;
+  }
+
+  /// Word-wrap layout over pre-tokenized word runs. Runs only on layout-cache
+  /// misses.
   ///
   /// Wrap semantics match the previous per-item implementation: lines break
   /// on whitespace/non-whitespace token boundaries when a non-whitespace
@@ -1211,37 +1739,17 @@ class Flut5TextCache._() {
     FontStyle fontStyle,
     double spacing,
     double? maxWidth,
+    List<FontVariation>? fontVariations,
+    String fontVariationKey,
   ) {
-    double advance(String ch) => getOrCreate(
-      text: ch,
-      fontFamily: fontFamily,
-      fontSize: fontSize,
-      fontWeight: fontWeight,
-      fontStyle: fontStyle,
-      textLeading: null,
-      align: TextAlign.left,
-      paintingStyle: 0,
-      strokeWidth: 0.0,
-    ).width;
-
-    // Whitespace is measured but never blitted, so its advance comes from the
-    // width-only cache — rasterizing a blank texture would waste a cache slot
-    // per whitespace character per font size.
-    double whitespaceAdvance(String ch) => measureWidth(
-      text: ch,
-      fontFamily: fontFamily,
-      fontSize: fontSize,
-      fontWeight: fontWeight,
-      fontStyle: fontStyle,
-    );
-
-    double kern(String a, String b) => getKernOffset(
-      a: a,
-      b: b,
-      fontFamily: fontFamily,
-      fontSize: fontSize,
-      fontWeight: fontWeight,
-      fontStyle: fontStyle,
+    final tokenized = _getOrCreateTokenized(
+      text,
+      fontFamily,
+      fontSize,
+      fontWeight,
+      fontStyle,
+      fontVariations,
+      fontVariationKey,
     );
 
     final lines = <Flut5TextLine>[];
@@ -1250,7 +1758,6 @@ class Flut5TextCache._() {
     var spacingIndices = maxWidth == null ? <int>[] : null;
     double penX = 0.0;
     int lineCharCount = 0;
-    String? lastChar;
 
     void flush() {
       lines.add(
@@ -1268,70 +1775,44 @@ class Flut5TextCache._() {
       spacingIndices = maxWidth == null ? <int>[] : null;
       penX = 0.0;
       lineCharCount = 0;
-      lastChar = null;
     }
 
-    // Per-token scratch buffers, reused across tokens to avoid churn.
-    final tokenChars = <String>[];
-    final tokenAdvances = <double>[];
-    final tokenGaps = <double>[]; // spacing + kern after each char except last
-
-    final segments = text.split('\n');
+    final segments = tokenized.segments;
     for (int s = 0; s < segments.length; s++) {
-      final segment = segments[s];
-      if (segment.isNotEmpty) {
-        final codePoints = segment.runes.toList(growable: false);
-        int i = 0;
-        while (i < codePoints.length) {
-          // One token: a maximal run of whitespace or non-whitespace.
-          final tokenIsWhitespace = _isWhitespaceCodePoint(codePoints[i]);
-          tokenChars.clear();
-          tokenAdvances.clear();
-          tokenGaps.clear();
-          while (i < codePoints.length &&
-              _isWhitespaceCodePoint(codePoints[i]) == tokenIsWhitespace) {
-            tokenChars.add(_charString(codePoints[i]));
-            i++;
-          }
+      final seg = segments[s];
+      final tokens = seg.tokens;
+      final joinKerns = seg.joinKerns;
+      for (int ti = 0; ti < tokens.length; ti++) {
+        final token = tokens[ti];
+        final tokenLen = token.length;
+        final tokenWidth = spacing == 0.0 || tokenLen <= 1
+            ? token.baseWidth
+            : token.baseWidth + (tokenLen - 1) * spacing;
 
-          // Measure once into the scratch buffers; appending reuses them.
-          double tokenWidth = 0.0;
-          for (int t = 0; t < tokenChars.length; t++) {
-            final adv = tokenIsWhitespace
-                ? whitespaceAdvance(tokenChars[t])
-                : advance(tokenChars[t]);
-            tokenAdvances.add(adv);
-            tokenWidth += adv;
-            if (t < tokenChars.length - 1) {
-              final gap = spacing + kern(tokenChars[t], tokenChars[t + 1]);
-              tokenGaps.add(gap);
-              tokenWidth += gap;
-            }
-          }
-
-          if (maxWidth != null && lineCharCount > 0 && !tokenIsWhitespace) {
-            final joinGap = spacing + kern(lastChar!, tokenChars.first);
-            if (penX + joinGap + tokenWidth > maxWidth) flush();
-          }
-          if (maxWidth != null && tokenIsWhitespace && lineCharCount == 0) {
-            continue;
-          }
-
-          if (lineCharCount > 0) {
-            penX += spacing + kern(lastChar!, tokenChars.first);
-          }
-          for (int t = 0; t < tokenChars.length; t++) {
-            if (!tokenIsWhitespace) {
-              glyphs.add(tokenChars[t]);
-              offsets.add(penX);
-              spacingIndices?.add(lineCharCount + t);
-            }
-            penX += tokenAdvances[t];
-            if (t < tokenChars.length - 1) penX += tokenGaps[t];
-          }
-          lineCharCount += tokenChars.length;
-          lastChar = tokenChars.last;
+        if (maxWidth != null && lineCharCount > 0 && !token.isWhitespace) {
+          final joinGap = spacing + joinKerns[ti - 1];
+          if (penX + joinGap + tokenWidth > maxWidth) flush();
         }
+        if (maxWidth != null && token.isWhitespace && lineCharCount == 0) {
+          continue;
+        }
+
+        if (lineCharCount > 0) {
+          penX += spacing + joinKerns[ti - 1];
+        }
+        final chars = token.chars;
+        final advances = token.advances;
+        final internalKerns = token.internalKerns;
+        for (int t = 0; t < tokenLen; t++) {
+          if (!token.isWhitespace) {
+            glyphs.add(chars[t]);
+            offsets.add(penX);
+            spacingIndices?.add(lineCharCount + t);
+          }
+          penX += advances[t];
+          if (t < tokenLen - 1) penX += spacing + internalKerns[t];
+        }
+        lineCharCount += tokenLen;
       }
       if (s < segments.length - 1) flush();
     }
@@ -1352,17 +1833,23 @@ class Flut5TextCache._() {
     required double fontSize,
     required FontWeight fontWeight,
     required FontStyle fontStyle,
+    List<FontVariation>? fontVariations,
+    String fontVariationKey = '',
   }) {
-    final key = (a, b, fontFamily, fontSize, fontWeight, fontStyle);
+    final key = (
+      a,
+      b,
+      fontFamily,
+      fontSize,
+      fontWeight,
+      fontStyle,
+      fontVariationKey,
+    );
 
     final cached = _kernCache[key];
     if (cached != null) return cached;
 
     // Measure the pair as a single string
-    final paint = Paint()
-      ..color = const Color(0xFFFFFFFF)
-      ..style = PaintingStyle.fill;
-
     final painter = TextPainter(
       text: TextSpan(
         text: '$a$b',
@@ -1371,7 +1858,7 @@ class Flut5TextCache._() {
           fontSize: fontSize,
           fontWeight: fontWeight,
           fontStyle: fontStyle,
-          foreground: paint,
+          fontVariations: fontVariations,
         ),
       ),
       textDirection: TextDirection.ltr,
@@ -1380,30 +1867,28 @@ class Flut5TextCache._() {
     final pairWidth = painter.width;
     painter.dispose();
 
-    // Get individual widths from the character cache
-    final aWidth = getOrCreate(
+    // Measure individual widths without rasterizing GPU textures (avoids
+    // creating blank textures for whitespace or unused fill glyphs for
+    // stroke-only dynamic text).
+    final aWidth = measureWidth(
       text: a,
       fontFamily: fontFamily,
       fontSize: fontSize,
       fontWeight: fontWeight,
       fontStyle: fontStyle,
-      textLeading: null,
-      align: TextAlign.left,
-      paintingStyle: 0,
-      strokeWidth: 0.0,
-    ).width;
+      fontVariations: fontVariations,
+      fontVariationKey: fontVariationKey,
+    );
 
-    final bWidth = getOrCreate(
+    final bWidth = measureWidth(
       text: b,
       fontFamily: fontFamily,
       fontSize: fontSize,
       fontWeight: fontWeight,
       fontStyle: fontStyle,
-      textLeading: null,
-      align: TextAlign.left,
-      paintingStyle: 0,
-      strokeWidth: 0.0,
-    ).width;
+      fontVariations: fontVariations,
+      fontVariationKey: fontVariationKey,
+    );
 
     final offset = pairWidth - aWidth - bWidth;
     _kernCache[key] = offset;
@@ -1412,6 +1897,7 @@ class Flut5TextCache._() {
   }
 
   void clear() {
+    _clearAtlas(immediate: true);
     for (final ct in _cache.values) {
       ct.dispose();
     }
@@ -1421,6 +1907,7 @@ class Flut5TextCache._() {
     for (final made in _newLayouts) {
       made.clear();
     }
+    _tokenCache.clear();
     _kernCache.clear();
     _widthCache.clear();
     _lineHeightCache.clear();

@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/widgets.dart';
 
@@ -93,6 +95,40 @@ mixin Flut5Stroke {
   Paint? _snapshotPointClone;
   int _snapshotPointVersion = -1;
   int _snapshotPointBlendVersion = -1;
+
+  /// Snapshots of plain colour strokes, keyed by `(color, strokeWidth, cap,
+  /// join)`, mirroring `Flut5Fill._plainFillSnapshots`. Lets stroke-only and
+  /// point/line palette sketches return the identical [Paint] instance whenever
+  /// a style recurs, unlocking open multi-colour batching and avoiding a
+  /// `Paint` clone on every colour switch.
+  static const int _plainStrokeSnapshotSlots = 1024;
+  static const int _plainStrokeSnapshotProbes = 4;
+
+  final List<Color?> _plainStrokeColors = List.filled(
+    _plainStrokeSnapshotSlots,
+    null,
+  );
+  final Float64List _plainStrokeWidths = Float64List(_plainStrokeSnapshotSlots);
+  final Uint8List _plainStrokeStyleBits = Uint8List(_plainStrokeSnapshotSlots);
+  final List<Paint?> _plainStrokeSnapshots = List.filled(
+    _plainStrokeSnapshotSlots,
+    null,
+  );
+  int _plainStrokeBlendVersion = -1;
+  int _plainStrokeReplaced = 0;
+
+  final List<Color?> _plainPointColors = List.filled(
+    _plainStrokeSnapshotSlots,
+    null,
+  );
+  final Float64List _plainPointWidths = Float64List(_plainStrokeSnapshotSlots);
+  final Uint8List _plainPointJoins = Uint8List(_plainStrokeSnapshotSlots);
+  final List<Paint?> _plainPointSnapshots = List.filled(
+    _plainStrokeSnapshotSlots,
+    null,
+  );
+  int _plainPointBlendVersion = -1;
+  int _plainPointReplaced = 0;
 
   Paint? _snapshotStrokeNoShaderClone;
   int _snapshotStrokeNoShaderVersion = -1;
@@ -375,17 +411,59 @@ mixin Flut5Stroke {
 
   /// Returns an identity-stable clone of the active stroke paint, or `null`
   /// when stroke is transparent. Stable across calls until stroke state
-  /// changes, so the render queue can auto-batch by paint identity.
+  /// changes, so the render queue can auto-batch by paint identity. A plain
+  /// colour stroke gets the same instance back whenever its colour, weight,
+  /// cap, and join recur, so never mutate the returned [Paint].
   Paint? snapshotStrokePaint() {
     if (strokeColor == flut5Transparent) return null;
     final paint = getStrokePaint();
     if (_snapshotStrokeVersion != _strokeVersion ||
         _snapshotStrokeBlendVersion != blendVersion) {
-      _snapshotStrokeClone = paint.clone();
+      _snapshotStrokeClone = strokeGradient == null
+          ? _plainStrokeSnapshot(paint)
+          : paint.clone();
       _snapshotStrokeVersion = _strokeVersion;
       _snapshotStrokeBlendVersion = blendVersion;
     }
     return _snapshotStrokeClone;
+  }
+
+  Paint _plainStrokeSnapshot(Paint paint) {
+    final colors = _plainStrokeColors;
+    final widths = _plainStrokeWidths;
+    final styleBits = _plainStrokeStyleBits;
+    final snapshots = _plainStrokeSnapshots;
+    if (_plainStrokeBlendVersion != blendVersion) {
+      colors.fillRange(0, _plainStrokeSnapshotSlots, null);
+      snapshots.fillRange(0, _plainStrokeSnapshotSlots, null);
+      _plainStrokeBlendVersion = blendVersion;
+    }
+    final color = paint.color;
+    final width = paint.strokeWidth;
+    final bits = paint.strokeCap.index | (paint.strokeJoin.index << 2);
+    final rawHash =
+        color.toARGB32() ^ (width.hashCode * 0x517CC1B7) ^ (bits * 0x9E3779B1);
+    final home = (rawHash * 0x9E3779B1) >>> 12;
+    var slot = 0;
+    for (var probe = 0; probe < _plainStrokeSnapshotProbes; probe++) {
+      slot = (home + probe) & (_plainStrokeSnapshotSlots - 1);
+      final kept = colors[slot];
+      if (kept == null) break;
+      if (kept == color && widths[slot] == width && styleBits[slot] == bits) {
+        return snapshots[slot]!;
+      }
+      if (probe == _plainStrokeSnapshotProbes - 1) {
+        slot =
+            (home + _plainStrokeReplaced++ % _plainStrokeSnapshotProbes) &
+            (_plainStrokeSnapshotSlots - 1);
+      }
+    }
+    final snapshot = paint.clone();
+    colors[slot] = color;
+    widths[slot] = width;
+    styleBits[slot] = bits;
+    snapshots[slot] = snapshot;
+    return snapshot;
   }
 
   /// Returns an identity-stable stroke-style point paint (with
@@ -396,10 +474,50 @@ mixin Flut5Stroke {
     final paint = getStrokePaint();
     if (_snapshotPointVersion != _strokeVersion ||
         _snapshotPointBlendVersion != blendVersion) {
-      _snapshotPointClone = paint.clone()..strokeCap = StrokeCap.round;
+      _snapshotPointClone = strokeGradient == null
+          ? _plainPointSnapshot(paint)
+          : (paint.clone()..strokeCap = StrokeCap.round);
       _snapshotPointVersion = _strokeVersion;
       _snapshotPointBlendVersion = blendVersion;
     }
     return _snapshotPointClone;
+  }
+
+  Paint _plainPointSnapshot(Paint paint) {
+    final colors = _plainPointColors;
+    final widths = _plainPointWidths;
+    final joins = _plainPointJoins;
+    final snapshots = _plainPointSnapshots;
+    if (_plainPointBlendVersion != blendVersion) {
+      colors.fillRange(0, _plainStrokeSnapshotSlots, null);
+      snapshots.fillRange(0, _plainStrokeSnapshotSlots, null);
+      _plainPointBlendVersion = blendVersion;
+    }
+    final color = paint.color;
+    final width = paint.strokeWidth;
+    final join = paint.strokeJoin.index;
+    final rawHash =
+        color.toARGB32() ^ (width.hashCode * 0x517CC1B7) ^ (join * 0x9E3779B1);
+    final home = (rawHash * 0x9E3779B1) >>> 12;
+    var slot = 0;
+    for (var probe = 0; probe < _plainStrokeSnapshotProbes; probe++) {
+      slot = (home + probe) & (_plainStrokeSnapshotSlots - 1);
+      final kept = colors[slot];
+      if (kept == null) break;
+      if (kept == color && widths[slot] == width && joins[slot] == join) {
+        return snapshots[slot]!;
+      }
+      if (probe == _plainStrokeSnapshotProbes - 1) {
+        slot =
+            (home + _plainPointReplaced++ % _plainStrokeSnapshotProbes) &
+            (_plainStrokeSnapshotSlots - 1);
+      }
+    }
+    final snapshot = paint.clone()..strokeCap = StrokeCap.round;
+    colors[slot] = color;
+    widths[slot] = width;
+    joins[slot] = join;
+    snapshots[slot] = snapshot;
+    return snapshot;
   }
 }

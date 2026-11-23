@@ -145,9 +145,28 @@ mixin _PhysicsSoftBodies {
     ),
   );
 
-  /// What the solver keeps for each soft body, worked out once when it is
-  /// created.
-  final Expando<_SoftBodySolving> _solving = Expando('soft body solving');
+  /// Solver state aligned 1:1 with [_softBodies] — direct indexed lookup
+  /// instead of an Expando weak-table probe per body per pass.
+  final List<_SoftBodySolving> _softBodySolvings = [];
+
+  /// Compacts [_softBodies] and [_softBodySolvings] together in one pass.
+  void _compactSoftBodies() {
+    var write = 0;
+    for (var read = 0; read < _softBodies.length; read++) {
+      final body = _softBodies[read];
+      if (_registered.contains(body)) {
+        if (write != read) {
+          _softBodies[write] = body;
+          _softBodySolvings[write] = _softBodySolvings[read];
+        }
+        write++;
+      }
+    }
+    if (write < _softBodies.length) {
+      _softBodies.length = write;
+      _softBodySolvings.length = write;
+    }
+  }
 
   /// Registers [body] and its particles, and returns it.
   T _addSoftBody<T extends Flut5PhysicsSoftBody>(T body) {
@@ -156,7 +175,7 @@ mixin _PhysicsSoftBodies {
     for (final particle in body.particles) {
       _addParticle(particle);
     }
-    _solving[body] = _SoftBodySolving(body, pullsPerPass: _pullsFor(body));
+    _softBodySolvings.add(_SoftBodySolving(body, pullsPerPass: _pullsFor(body)));
     return body;
   }
 
@@ -189,20 +208,23 @@ mixin _PhysicsSoftBodies {
   /// One collision pass's worth of pulling every soft body back into shape.
   void _reshapeSoftBodies() {
     final tornBodies = _tornSoftBodies;
-    for (final body in _softBodies) {
+    final softBodies = _softBodies;
+    final solvings = _softBodySolvings;
+    for (var i = 0; i < softBodies.length; i++) {
+      final body = softBodies[i];
       final stiffness = body.stiffness;
       if (stiffness == 0) continue;
       // Only a torn body checks whether each spring still has both ends.
       final torn = tornBodies.isNotEmpty && tornBodies.contains(body);
-      final solving = _solving[body]!;
-      final spin = _measureSpin(body, torn);
+      final solving = solvings[i];
+      final spin = _measureSpin(body, solving, torn);
       for (var pull = 0; pull < solving.pullsPerPass; pull++) {
         _pullSprings(body, stiffness, torn);
         _keepAreas(body, stiffness, torn);
       }
       // Once per pass however fine the body: it moves every particle at
       // once, so it needs no time to spread.
-      if (body.keepShape) _keepRestShape(body, solving, stiffness, torn);
+      if (body.keepShape) _keepRestShape(body, solving, spin, stiffness, torn);
       _restoreSpin(body, spin, torn);
     }
   }
@@ -219,130 +241,161 @@ mixin _PhysicsSoftBodies {
   void _keepRestShape(
     Flut5PhysicsSoftBody body,
     _SoftBodySolving solving,
+    _Spin spin,
     double stiffness,
     bool torn,
   ) {
     final particles = body.particles;
-    final restX = solving.restX, restY = solving.restY;
-    var mass = 0.0;
-    var centerX = 0.0, centerY = 0.0;
-    var restCenterX = 0.0, restCenterY = 0.0;
-    for (var i = 0; i < particles.length; i++) {
-      final particle = particles[i];
-      if (torn && !_registered.contains(particle)) continue;
-      final particleMass = particle.mass;
-      mass += particleMass;
-      centerX += particleMass * particle.position.x;
-      centerY += particleMass * particle.position.y;
-      restCenterX += particleMass * restX[i];
-      restCenterY += particleMass * restY[i];
+    final count = particles.length;
+    final double centerX;
+    final double centerY;
+    final Float64List restOffX;
+    final Float64List restOffY;
+    var restCenterX = 0.0;
+    var restCenterY = 0.0;
+    final bool usePrecomputed = !torn && !spin.hasStatic;
+
+    if (usePrecomputed) {
+      if (spin.totalMass == 0) return;
+      // Internal spring/area pulls conserve center of mass when no particle is
+      // pinned, so we reuse the CoM already computed in [_measureSpin] and the
+      // precomputed centered rest offsets — skipping an entire pass over the
+      // body's particles.
+      centerX = spin.centerX;
+      centerY = spin.centerY;
+      restOffX = solving.restOffsetX;
+      restOffY = solving.restOffsetY;
+    } else {
+      final restX = solving.restX, restY = solving.restY;
+      var mass = 0.0;
+      var cx = 0.0, cy = 0.0;
+      for (var i = 0; i < count; i++) {
+        final particle = particles[i];
+        if (torn && !_registered.contains(particle)) continue;
+        final particleMass = particle.mass;
+        mass += particleMass;
+        cx += particleMass * particle.position.x;
+        cy += particleMass * particle.position.y;
+        restCenterX += particleMass * restX[i];
+        restCenterY += particleMass * restY[i];
+      }
+      if (mass == 0) return;
+      centerX = cx / mass;
+      centerY = cy / mass;
+      restCenterX /= mass;
+      restCenterY /= mass;
+      restOffX = restX;
+      restOffY = restY;
     }
-    if (mass == 0) return;
-    centerX /= mass;
-    centerY /= mass;
-    restCenterX /= mass;
-    restCenterY /= mass;
 
     // The turn that best lays the rest shape over the particles: summed
     // over every particle, how far its offset from the center now is
     // turned from its offset at rest, weighted by mass and distance.
     var turnedSine = 0.0, turnedCosine = 0.0;
-    for (var i = 0; i < particles.length; i++) {
-      final particle = particles[i];
-      if (torn && !_registered.contains(particle)) continue;
-      final restOffsetX = restX[i] - restCenterX;
-      final restOffsetY = restY[i] - restCenterY;
-      final offsetX = particle.position.x - centerX;
-      final offsetY = particle.position.y - centerY;
-      turnedSine +=
-          particle.mass * (restOffsetX * offsetY - restOffsetY * offsetX);
-      turnedCosine +=
-          particle.mass * (restOffsetX * offsetX + restOffsetY * offsetY);
+    if (usePrecomputed) {
+      for (var i = 0; i < count; i++) {
+        final particle = particles[i];
+        final rx = restOffX[i];
+        final ry = restOffY[i];
+        final ox = particle.position.x - centerX;
+        final oy = particle.position.y - centerY;
+        final m = particle.mass;
+        turnedSine += m * (rx * oy - ry * ox);
+        turnedCosine += m * (rx * ox + ry * oy);
+      }
+    } else {
+      for (var i = 0; i < count; i++) {
+        final particle = particles[i];
+        if (torn && !_registered.contains(particle)) continue;
+        final rx = restOffX[i] - restCenterX;
+        final ry = restOffY[i] - restCenterY;
+        final ox = particle.position.x - centerX;
+        final oy = particle.position.y - centerY;
+        final m = particle.mass;
+        turnedSine += m * (rx * oy - ry * ox);
+        turnedCosine += m * (rx * ox + ry * oy);
+      }
     }
     final turn = math.atan2(turnedSine, turnedCosine);
     final cosine = math.cos(turn), sine = math.sin(turn);
 
-    for (var i = 0; i < particles.length; i++) {
-      final particle = particles[i];
-      if (torn && !_registered.contains(particle)) continue;
-      final restOffsetX = restX[i] - restCenterX;
-      final restOffsetY = restY[i] - restCenterY;
-      final goalX = centerX + restOffsetX * cosine - restOffsetY * sine;
-      final goalY = centerY + restOffsetX * sine + restOffsetY * cosine;
-      _nudge(
-        particle,
-        goalX - particle.position.x,
-        goalY - particle.position.y,
-        0,
-        stiffness,
-      );
+    if (usePrecomputed) {
+      for (var i = 0; i < count; i++) {
+        final particle = particles[i];
+        final rx = restOffX[i];
+        final ry = restOffY[i];
+        final goalX = centerX + rx * cosine - ry * sine;
+        final goalY = centerY + rx * sine + ry * cosine;
+        _nudge(
+          particle,
+          goalX - particle.position.x,
+          goalY - particle.position.y,
+          0,
+          stiffness,
+        );
+      }
+    } else {
+      for (var i = 0; i < count; i++) {
+        final particle = particles[i];
+        if (particle.isStatic) continue;
+        if (torn && !_registered.contains(particle)) continue;
+        final rx = restOffX[i] - restCenterX;
+        final ry = restOffY[i] - restCenterY;
+        final goalX = centerX + rx * cosine - ry * sine;
+        final goalY = centerY + rx * sine + ry * cosine;
+        _nudge(
+          particle,
+          goalX - particle.position.x,
+          goalY - particle.position.y,
+          0,
+          stiffness,
+        );
+      }
     }
   }
 
   /// [body]'s center of mass and its angular momentum around it, in the
   /// screen plane, counting only particles still registered when [torn].
-  _Spin _measureSpin(Flut5PhysicsSoftBody body, bool torn) {
-    var mass = 0.0, centerX = 0.0, centerY = 0.0;
-    for (final particle in body.particles) {
-      if (torn && !_registered.contains(particle)) continue;
-      mass += particle.mass;
-      centerX += particle.mass * particle.position.x;
-      centerY += particle.mass * particle.position.y;
-    }
-    if (mass == 0) return (centerX: 0, centerY: 0, angularMomentum: 0);
-    centerX /= mass;
-    centerY /= mass;
-    return (
-      centerX: centerX,
-      centerY: centerY,
-      angularMomentum: _angularMomentum(body, centerX, centerY, torn),
-    );
-  }
-
-  /// Sets [body]'s angular momentum back to what [before] measured, by
-  /// spinning it as a whole around its center of mass.
-  ///
-  /// Pulls only push a body's particles against each other, so like any
-  /// internal force they shouldn't turn it. They come close: each pull's
-  /// push is exactly balanced, but adding it to the velocity of particles
-  /// already moving still nudges the total spin a little. Uncorrected, a
-  /// squashed body floating free would come back into shape slowly turning
-  /// and never stop.
-  void _restoreSpin(Flut5PhysicsSoftBody body, _Spin before, bool torn) {
-    final (:centerX, :centerY, :angularMomentum) = before;
-    // The pulls never move the center of mass, so it is still the center.
-    final gained =
-        _angularMomentum(body, centerX, centerY, torn) - angularMomentum;
-    var inertia = 0.0;
-    for (final particle in body.particles) {
-      if (torn && !_registered.contains(particle)) continue;
-      final offsetX = particle.position.x - centerX;
-      final offsetY = particle.position.y - centerY;
-      inertia += particle.mass * (offsetX * offsetX + offsetY * offsetY);
-    }
-    if (inertia == 0) return;
-
-    // Turning the body at this many radians per frame takes the gain back
-    // out, without moving its center of mass.
-    final correction = -gained / inertia;
-    for (final particle in body.particles) {
-      if (torn && !_registered.contains(particle)) continue;
-      particle.velocity
-        ..x -= correction * (particle.position.y - centerY)
-        ..y += correction * (particle.position.x - centerX);
-    }
-  }
-
-  /// [body]'s angular momentum around ([centerX], [centerY]), clockwise on
-  /// screen.
-  double _angularMomentum(
+  /// Also refreshes [solving]'s cached centered rest offsets whenever masses
+  /// change on an untorn body.
+  _Spin _measureSpin(
     Flut5PhysicsSoftBody body,
-    double centerX,
-    double centerY,
+    _SoftBodySolving solving,
     bool torn,
   ) {
+    final particles = body.particles;
+    final count = particles.length;
+    final cachedMass = solving.cachedMass;
+    var mass = 0.0, centerX = 0.0, centerY = 0.0;
+    var hasStatic = false;
+    var massesChanged = false;
+    for (var i = 0; i < count; i++) {
+      final particle = particles[i];
+      if (torn && !_registered.contains(particle)) continue;
+      if (particle.isStatic) hasStatic = true;
+      final m = particle.mass;
+      if (!torn && m != cachedMass[i]) massesChanged = true;
+      mass += m;
+      centerX += m * particle.position.x;
+      centerY += m * particle.position.y;
+    }
+    if (mass == 0) {
+      return (
+        centerX: 0,
+        centerY: 0,
+        angularMomentum: 0,
+        totalMass: 0,
+        hasStatic: hasStatic,
+      );
+    }
+    if (!torn && massesChanged) {
+      solving.recomputeRestOffsets(particles, mass);
+    }
+    centerX /= mass;
+    centerY /= mass;
     var angularMomentum = 0.0;
-    for (final particle in body.particles) {
+    for (var i = 0; i < count; i++) {
+      final particle = particles[i];
       if (torn && !_registered.contains(particle)) continue;
       final offsetX = particle.position.x - centerX;
       final offsetY = particle.position.y - centerY;
@@ -350,7 +403,51 @@ mixin _PhysicsSoftBodies {
           particle.mass *
           (offsetX * particle.velocity.y - offsetY * particle.velocity.x);
     }
-    return angularMomentum;
+    return (
+      centerX: centerX,
+      centerY: centerY,
+      angularMomentum: angularMomentum,
+      totalMass: mass,
+      hasStatic: hasStatic,
+    );
+  }
+
+  /// Sets [body]'s angular momentum back to what [before] measured, by
+  /// spinning it as a whole around its center of mass.
+  void _restoreSpin(Flut5PhysicsSoftBody body, _Spin before, bool torn) {
+    final centerX = before.centerX;
+    final centerY = before.centerY;
+    final angularMomentum = before.angularMomentum;
+    final particles = body.particles;
+    // Fused pass: measure current angular momentum and moment of inertia
+    // together instead of walking the particle list twice.
+    var currentMomentum = 0.0;
+    var inertia = 0.0;
+    for (var i = 0; i < particles.length; i++) {
+      final particle = particles[i];
+      if (torn && !_registered.contains(particle)) continue;
+      final offsetX = particle.position.x - centerX;
+      final offsetY = particle.position.y - centerY;
+      final m = particle.mass;
+      currentMomentum +=
+          m * (offsetX * particle.velocity.y - offsetY * particle.velocity.x);
+      if (!particle.isStatic) {
+        inertia += m * (offsetX * offsetX + offsetY * offsetY);
+      }
+    }
+    if (inertia == 0) return;
+
+    // Turning the body at this many radians per frame takes the gain back
+    // out, without moving its center of mass.
+    final correction = -(currentMomentum - angularMomentum) / inertia;
+    for (var i = 0; i < particles.length; i++) {
+      final particle = particles[i];
+      if (particle.isStatic) continue;
+      if (torn && !_registered.contains(particle)) continue;
+      particle.velocity
+        ..x -= correction * (particle.position.y - centerY)
+        ..y += correction * (particle.position.x - centerX);
+    }
   }
 
   /// Pulls each spring of [body] once, closing [stiffness] of the gap
@@ -382,14 +479,14 @@ mixin _PhysicsSoftBodies {
     if (length == 0) return; // no direction to pull along
 
     final inverseMassA = a.inverseMass, inverseMassB = b.inverseMass;
+    final inverseMassSum = inverseMassA + inverseMassB;
+    if (inverseMassSum == 0) return;
     // Per unit of the (unnormalized) a→b vector: positive pulls them
     // together, negative pushes them apart.
     final pull =
-        stiffness *
-        (length - restLength) /
-        (length * (inverseMassA + inverseMassB));
-    _nudge(a, dx, dy, dz, pull * inverseMassA);
-    _nudge(b, dx, dy, dz, -pull * inverseMassB);
+        stiffness * (length - restLength) / (length * inverseMassSum);
+    if (inverseMassA != 0) _nudge(a, dx, dy, dz, pull * inverseMassA);
+    if (inverseMassB != 0) _nudge(b, dx, dy, dz, -pull * inverseMassB);
   }
 
   /// Pulls each area of [body] once toward its starting area, closing
@@ -482,8 +579,14 @@ mixin _PhysicsSoftBodies {
 
 /// A soft body's center of mass and its angular momentum around it, taken
 /// before its pulls so [_PhysicsSoftBodies._restoreSpin] can undo any spin
-/// they add.
-typedef _Spin = ({double centerX, double centerY, double angularMomentum});
+/// they add and [_PhysicsSoftBodies._keepRestShape] can reuse the CoM.
+typedef _Spin = ({
+  double centerX,
+  double centerY,
+  double angularMomentum,
+  double totalMass,
+  bool hasStatic,
+});
 
 /// What [Flut5PhysicsEngine] keeps for each soft body it pulls into shape.
 final class _SoftBodySolving(
@@ -494,9 +597,44 @@ final class _SoftBodySolving(
 }) {
   this
     : restX = Float64List.fromList([for (final p in body.particles) p.x]),
-      restY = Float64List.fromList([for (final p in body.particles) p.y]);
+      restY = Float64List.fromList([for (final p in body.particles) p.y]),
+      restOffsetX = Float64List(body.particles.length),
+      restOffsetY = Float64List(body.particles.length),
+      cachedMass = Float64List(body.particles.length) {
+    var totalMass = 0.0;
+    for (final p in body.particles) {
+      totalMass += p.mass;
+    }
+    if (totalMass > 0) recomputeRestOffsets(body.particles, totalMass);
+  }
 
   /// Where each particle was when the body was made: its rest shape.
   final Float64List restX;
   final Float64List restY;
+
+  /// Precomputed centered rest offsets `rest[i] - restCenter` for untorn
+  /// bodies, recomputed only if a particle's mass changes.
+  final Float64List restOffsetX;
+  final Float64List restOffsetY;
+  final Float64List cachedMass;
+
+  void recomputeRestOffsets(
+    List<Flut5PhysicsParticle> particles,
+    double totalMass,
+  ) {
+    final count = particles.length;
+    var rcx = 0.0, rcy = 0.0;
+    for (var i = 0; i < count; i++) {
+      final m = particles[i].mass;
+      cachedMass[i] = m;
+      rcx += m * restX[i];
+      rcy += m * restY[i];
+    }
+    rcx /= totalMass;
+    rcy /= totalMass;
+    for (var i = 0; i < count; i++) {
+      restOffsetX[i] = restX[i] - rcx;
+      restOffsetY[i] = restY[i] - rcy;
+    }
+  }
 }

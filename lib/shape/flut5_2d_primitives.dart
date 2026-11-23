@@ -22,6 +22,16 @@ mixin Flut52DPrimitives on Flut5Stroke, Flut5Fill, Flut5Trigonometry {
   Paint? _linePaintForBounds(Rect bounds) =>
       snapshotStrokePaintForShape(bounds);
 
+  bool get _needsAutoFillBounds =>
+      fillColor != flut5Transparent &&
+      fillGradient != null &&
+      fillGradientRect == null;
+
+  bool get _needsAutoStrokeBounds =>
+      strokeColor != flut5Transparent &&
+      strokeGradient != null &&
+      strokeGradientRect == null;
+
   // Shape-bounds-aware variants: when a gradient with no explicit rect is
   // active the shader is built against the shape's own bounding box instead
   // of the full canvas.
@@ -68,13 +78,22 @@ mixin Flut52DPrimitives on Flut5Stroke, Flut5Fill, Flut5Trigonometry {
       return;
     }
     final radius = d / 2;
-    final bounds = Rect.fromCircle(center: Offset(x, y), radius: radius);
-    renderQueue.appendCircle(
-      Offset(x, y),
-      radius,
-      _queuedFillForBounds(bounds),
-      _queuedStrokeForBounds(bounds),
-    );
+    final Paint? fill;
+    final Paint? stroke;
+    if (_needsAutoFillBounds || _needsAutoStrokeBounds) {
+      final bounds = Rect.fromLTRB(
+        x - radius,
+        y - radius,
+        x + radius,
+        y + radius,
+      );
+      fill = _queuedFillForBounds(bounds);
+      stroke = _queuedStrokeForBounds(bounds);
+    } else {
+      fill = snapshotFillPaint();
+      stroke = snapshotStrokePaint();
+    }
+    renderQueue.appendCircleCoords(x, y, radius, fill, stroke);
   }
 
   // ---------------------------------------------------------------------------
@@ -115,12 +134,17 @@ mixin Flut52DPrimitives on Flut5Stroke, Flut5Fill, Flut5Trigonometry {
       return;
     }
     if (strokeColor == flut5Transparent) return;
-    final minX = x1 < x2 ? x1 : x2;
-    final maxX = x1 > x2 ? x1 : x2;
-    final minY = y1 < y2 ? y1 : y2;
-    final maxY = y1 > y2 ? y1 : y2;
-    final bounds = Rect.fromLTRB(minX, minY, maxX, maxY);
-    renderQueue.appendLine(x1, y1, x2, y2, _linePaintForBounds(bounds)!);
+    final Paint paint;
+    if (strokeGradient != null && strokeGradientRect == null) {
+      final minX = x1 < x2 ? x1 : x2;
+      final maxX = x1 > x2 ? x1 : x2;
+      final minY = y1 < y2 ? y1 : y2;
+      final maxY = y1 > y2 ? y1 : y2;
+      paint = _linePaintForBounds(Rect.fromLTRB(minX, minY, maxX, maxY))!;
+    } else {
+      paint = snapshotStrokePaint()!;
+    }
+    renderQueue.appendLine(x1, y1, x2, y2, paint);
   }
 
   // ---------------------------------------------------------------------------
@@ -228,27 +252,27 @@ mixin Flut52DPrimitives on Flut5Stroke, Flut5Fill, Flut5Trigonometry {
       markBatchDirty();
       return;
     }
-    double minX = x1, maxX = x1;
-    if (x2 < minX) minX = x2;
-    if (x2 > maxX) maxX = x2;
-    if (x3 < minX) minX = x3;
-    if (x3 > maxX) maxX = x3;
-    double minY = y1, maxY = y1;
-    if (y2 < minY) minY = y2;
-    if (y2 > maxY) maxY = y2;
-    if (y3 < minY) minY = y3;
-    if (y3 > maxY) maxY = y3;
-    final bounds = Rect.fromLTRB(minX, minY, maxX, maxY);
-    renderQueue.appendTriangle(
-      x1,
-      y1,
-      x2,
-      y2,
-      x3,
-      y3,
-      _queuedFillForBounds(bounds),
-      _queuedStrokeForBounds(bounds),
-    );
+    final Paint? fill;
+    final Paint? stroke;
+    if (_needsAutoFillBounds || _needsAutoStrokeBounds) {
+      double minX = x1, maxX = x1;
+      if (x2 < minX) minX = x2;
+      if (x2 > maxX) maxX = x2;
+      if (x3 < minX) minX = x3;
+      if (x3 > maxX) maxX = x3;
+      double minY = y1, maxY = y1;
+      if (y2 < minY) minY = y2;
+      if (y2 > maxY) maxY = y2;
+      if (y3 < minY) minY = y3;
+      if (y3 > maxY) maxY = y3;
+      final bounds = Rect.fromLTRB(minX, minY, maxX, maxY);
+      fill = _queuedFillForBounds(bounds);
+      stroke = _queuedStrokeForBounds(bounds);
+    } else {
+      fill = snapshotFillPaint();
+      stroke = snapshotStrokePaint();
+    }
+    renderQueue.appendTriangle(x1, y1, x2, y2, x3, y3, fill, stroke);
   }
 
   // ---------------------------------------------------------------------------
@@ -278,33 +302,31 @@ mixin Flut52DPrimitives on Flut5Stroke, Flut5Fill, Flut5Trigonometry {
       markBatchDirty();
       return;
     }
-    double minX = x1, maxX = x1;
-    if (x2 < minX) minX = x2;
-    if (x2 > maxX) maxX = x2;
-    if (x3 < minX) minX = x3;
-    if (x3 > maxX) maxX = x3;
-    if (x4 < minX) minX = x4;
-    if (x4 > maxX) maxX = x4;
-    double minY = y1, maxY = y1;
-    if (y2 < minY) minY = y2;
-    if (y2 > maxY) maxY = y2;
-    if (y3 < minY) minY = y3;
-    if (y3 > maxY) maxY = y3;
-    if (y4 < minY) minY = y4;
-    if (y4 > maxY) maxY = y4;
-    final bounds = Rect.fromLTRB(minX, minY, maxX, maxY);
-    renderQueue.appendQuad(
-      x1,
-      y1,
-      x2,
-      y2,
-      x3,
-      y3,
-      x4,
-      y4,
-      _queuedFillForBounds(bounds),
-      _queuedStrokeForBounds(bounds),
-    );
+    final Paint? fill;
+    final Paint? stroke;
+    if (_needsAutoFillBounds || _needsAutoStrokeBounds) {
+      double minX = x1, maxX = x1;
+      if (x2 < minX) minX = x2;
+      if (x2 > maxX) maxX = x2;
+      if (x3 < minX) minX = x3;
+      if (x3 > maxX) maxX = x3;
+      if (x4 < minX) minX = x4;
+      if (x4 > maxX) maxX = x4;
+      double minY = y1, maxY = y1;
+      if (y2 < minY) minY = y2;
+      if (y2 > maxY) maxY = y2;
+      if (y3 < minY) minY = y3;
+      if (y3 > maxY) maxY = y3;
+      if (y4 < minY) minY = y4;
+      if (y4 > maxY) maxY = y4;
+      final bounds = Rect.fromLTRB(minX, minY, maxX, maxY);
+      fill = _queuedFillForBounds(bounds);
+      stroke = _queuedStrokeForBounds(bounds);
+    } else {
+      fill = snapshotFillPaint();
+      stroke = snapshotStrokePaint();
+    }
+    renderQueue.appendQuad(x1, y1, x2, y2, x3, y3, x4, y4, fill, stroke);
   }
 
   // ---------------------------------------------------------------------------
@@ -337,15 +359,22 @@ mixin Flut52DPrimitives on Flut5Stroke, Flut5Fill, Flut5Trigonometry {
     }
     // Gradient bounds use the circumscribed circle, like arc() does with its
     // full oval rect, rather than the exact vertex extents.
-    final bounds = Rect.fromCircle(center: Offset(x, y), radius: radius);
-    renderQueue.appendRegularPolygon(
-      x,
-      y,
-      radius,
-      sides,
-      _queuedFillForBounds(bounds),
-      _queuedStrokeForBounds(bounds),
-    );
+    final Paint? fill;
+    final Paint? stroke;
+    if (_needsAutoFillBounds || _needsAutoStrokeBounds) {
+      final bounds = Rect.fromLTRB(
+        x - radius,
+        y - radius,
+        x + radius,
+        y + radius,
+      );
+      fill = _queuedFillForBounds(bounds);
+      stroke = _queuedStrokeForBounds(bounds);
+    } else {
+      fill = snapshotFillPaint();
+      stroke = snapshotStrokePaint();
+    }
+    renderQueue.appendRegularPolygon(x, y, radius, sides, fill, stroke);
   }
 
   // ---------------------------------------------------------------------------
@@ -387,15 +416,29 @@ mixin Flut52DPrimitives on Flut5Stroke, Flut5Fill, Flut5Trigonometry {
       return;
     }
     // Gradient bounds use the outer circumscribed circle, like polygon().
-    final bounds = Rect.fromCircle(center: Offset(x, y), radius: outerRadius);
+    final Paint? fill;
+    final Paint? stroke;
+    if (_needsAutoFillBounds || _needsAutoStrokeBounds) {
+      final bounds = Rect.fromLTRB(
+        x - outerRadius,
+        y - outerRadius,
+        x + outerRadius,
+        y + outerRadius,
+      );
+      fill = _queuedFillForBounds(bounds);
+      stroke = _queuedStrokeForBounds(bounds);
+    } else {
+      fill = snapshotFillPaint();
+      stroke = snapshotStrokePaint();
+    }
     renderQueue.appendStar(
       x,
       y,
       innerRadius,
       outerRadius,
       points,
-      _queuedFillForBounds(bounds),
-      _queuedStrokeForBounds(bounds),
+      fill,
+      stroke,
     );
   }
 

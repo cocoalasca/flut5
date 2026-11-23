@@ -13,6 +13,7 @@ import 'core/sketch_environment.dart';
 import 'image/flut5_image.dart';
 import 'shape/flut5_2d_primitives.dart';
 import 'math/flut5_line_segment.dart';
+import 'math/flut5_ray_scene.dart';
 import 'math/flut5_vector.dart';
 import 'math/flut5_trigonometry.dart';
 import 'math/flut5_noise.dart';
@@ -34,7 +35,7 @@ export 'core/flut5_engine.dart';
 export 'core/flut5_event.dart';
 export 'core/flut5_touch.dart';
 export 'core/flut5_wheel.dart';
-export 'core/sketch_environment.dart';
+export 'core/sketch_environment.dart' show SketchEnvironment;
 export 'core/sketch_keyboard_event.dart';
 export 'core/sketch_pointer_event.dart';
 export 'core/sketch_scroll_event.dart';
@@ -45,10 +46,12 @@ export 'math/flut5_vector.dart';
 export 'math/flut5_math.dart';
 export 'math/flut5_intersection.dart';
 export 'math/flut5_line_segment.dart';
+export 'math/flut5_ray_scene.dart';
 export 'math/flut5_trigonometry.dart';
 export 'math/flut5_noise.dart';
 export 'physics/engine/flut5_physics_engine.dart';
 export 'physics/flut5_physics_body.dart';
+export 'physics/flut5_physics_collision_event.dart';
 export 'physics/flut5_physics_particle.dart';
 export 'physics/flut5_physics_polygon.dart';
 export 'physics/flut5_physics_rigid_body.dart';
@@ -244,6 +247,7 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
   int get keyCode => flut5.keyCode;
   List<Flut5Touch> get touches => flut5.touches;
   bool get pointerIsDown => flut5.pointerIsDown;
+  bool get mouseIsPressed => flut5.mouseIsPressed;
   Flut5WheelSample? get wheel => flut5.wheel;
   List<Flut5FramePointerEvent> get pendingPointerEvents =>
       flut5.pendingPointerEvents;
@@ -252,6 +256,10 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
   double frameRate([double? fps]) => flut5.frameRate(fps);
   double? get frameRateCap => flut5.frameRateCap;
   set frameRateCap(double? v) => flut5.frameRateCap = v;
+  bool get isLooping => flut5.isLooping;
+  void noLoop() => flut5.noLoop();
+  void loop() => flut5.loop();
+  void redraw() => flut5.redraw();
   dart_ui.Image? get frameSnapshot => flut5.frameSnapshot;
   Size? get frameSnapshotLogicalSize => flut5.frameSnapshotLogicalSize;
   void clearFrameSnapshot() => flut5.clearFrameSnapshot();
@@ -626,6 +634,16 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
     Flut5Vector rayDirection,
     Iterable<Flut5LineSegment> walls,
   ) => flut5.castRayClosest(rayX, rayY, rayDirection, walls);
+  Flut5Vector? rayCircleIntersection(
+    double cx,
+    double cy,
+    double radius,
+    double rayX,
+    double rayY,
+    Flut5Vector rayDirection,
+  ) => flut5.rayCircleIntersection(cx, cy, radius, rayX, rayY, rayDirection);
+  Flut5RayScene createRayScene(Iterable<Flut5LineSegment> walls) =>
+      flut5.createRayScene(walls);
 
   // ── Physics ──────────────────────────────────────────────────────────────
   double springConstant([double? k]) => flut5.springConstant(k);
@@ -739,6 +757,25 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
     velocity,
     neighbors,
     cohesionRadius: cohesionRadius,
+    maxVelocity: maxVelocity,
+    maxForce: maxForce,
+    returnCopy: returnCopy,
+  );
+  Flut5Vector alignment(
+    Flut5Vector position,
+    Flut5Vector velocity,
+    Iterable<Flut5Vector> neighborPositions,
+    Iterable<Flut5Vector> neighborVelocities, {
+    double? alignmentRadius,
+    double maxVelocity = 4.0,
+    double maxForce = 0.1,
+    bool? returnCopy,
+  }) => flut5.alignment(
+    position,
+    velocity,
+    neighborPositions,
+    neighborVelocities,
+    alignmentRadius: alignmentRadius,
     maxVelocity: maxVelocity,
     maxForce: maxForce,
     returnCopy: returnCopy,
@@ -953,6 +990,10 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
   double textDescent() => flut5.textDescent();
 
   // ── Image ────────────────────────────────────────────────────────────────
+  void tint(Color color) => flut5.tint(color);
+  void noTint() => flut5.noTint();
+  FilterQuality imageFilterQuality([FilterQuality? quality]) =>
+      flut5.imageFilterQuality(quality);
   Future<Flut5Image> loadImage(dynamic source) => flut5.loadImage(source);
   Flut5Image createImage(int width, int height) =>
       flut5.createImage(width, height);

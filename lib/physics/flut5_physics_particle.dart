@@ -35,6 +35,17 @@ final class Flut5PhysicsParticle(super.x, super.y)
   /// `p.mass = p.radius * p.radius`.
   double radius = 0.0;
 
+  /// Whether physics leaves this particle pinned in place: no gravity, no
+  /// forces, and collisions or springs never push it (matching
+  /// `Flut5PhysicsPolygon.isStatic`). Useful for pinned rope/cloth anchors or
+  /// circular bumpers. Still moves by any explicit [velocity] /
+  /// [angularVelocity] you set. Defaults to `false`.
+  bool isStatic = false;
+
+  /// `0` for a static (pinned) particle, which nothing can push.
+  @override
+  double get inverseMass => isStatic ? 0.0 : super.inverseMass;
+
   Flut5PhysicsSoftBody? _softBody;
 
   /// The soft body this particle is part of, or `null` for a particle on its
@@ -42,12 +53,32 @@ final class Flut5PhysicsParticle(super.x, super.y)
   /// its springs keep them apart.
   Flut5PhysicsSoftBody? get softBody => _softBody;
 
-  /// Integration pass: runs [euler] with the world's
-  /// [Flut5PhysicsEngine.gravity], then turns the particle per the world's
+  /// Integration pass: a static particle only moves by its own [velocity] and
+  /// [angularVelocity]; any other runs [euler] with the world's
+  /// [Flut5PhysicsEngine.gravity], then turns per the world's
   /// [Flut5PhysicsEngine.rotationMode].
   @override
   void updatePhysics(Flut5PhysicsEngine physics) {
-    euler(physics.gravity);
+    if (isSleeping) {
+      acceleration.setZero();
+      return;
+    }
+    final dt = physics.stepScale;
+    if (isStatic) {
+      acceleration.setZero();
+      if (dt == 1.0) {
+        position.add(velocity);
+        angle += angularVelocity;
+      } else {
+        position
+          ..x += velocity.x * dt
+          ..y += velocity.y * dt
+          ..z += velocity.z * dt;
+        angle += angularVelocity * dt;
+      }
+      return;
+    }
+    euler(physics.gravity, dt);
     switch (physics.rotationMode) {
       case .none:
         return;
@@ -59,11 +90,17 @@ final class Flut5PhysicsParticle(super.x, super.y)
         final rollingSpin = radius > 0
             ? velocity.x / radius * physics.cosmeticSpinScale
             : 0.0;
-        final decay = physics.cosmeticSpinDecay;
+        final decay = dt == 1.0
+            ? physics.cosmeticSpinDecay
+            : math.pow(physics.cosmeticSpinDecay, dt).toDouble();
         angularVelocity = angularVelocity * decay + rollingSpin * (1 - decay);
       case .physical:
-        angularVelocity *= damping;
+        if (damping != 1.0) {
+          angularVelocity *= dt == 1.0
+              ? damping
+              : math.pow(damping, dt).toDouble();
+        }
     }
-    angle += angularVelocity;
+    angle += angularVelocity * dt;
   }
 }

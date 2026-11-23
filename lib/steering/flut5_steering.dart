@@ -11,8 +11,8 @@ enum SteeringReturnMode() {
   ref,
 }
 
-/// Steering behaviors (seek, arrive, flee, separation, cohesion) for the
-/// Flut5 Engine.
+/// Steering behaviors (seek, arrive, flee, separation, cohesion, alignment)
+/// for the Flut5 Engine.
 ///
 /// The behaviors are stateless: the body being steered passes in its own
 /// [Flut5Vector] position and velocity, and gets back the steering force to
@@ -215,7 +215,10 @@ mixin Flut5Steering {
         ..setValues(position.x, position.y, position.z)
         ..sub(neighbor);
       final double distanceSquared = _awayFromNeighbor.length2;
-      if (!_isNeighborInRange(distanceSquared, separationRadius)) continue;
+      if (distanceSquared <= _minSeparationDistanceSquared ||
+          !_isNeighborInRange(distanceSquared, separationRadius)) {
+        continue;
+      }
 
       // (position - neighbor) / distance² has length 1 / distance: a unit
       // push away, weighted so the closer neighbor pushes harder.
@@ -294,7 +297,66 @@ mixin Flut5Steering {
     );
   }
 
+  /// The force that steers a body at [position], moving at [velocity], to match
+  /// the average heading of its nearby neighbors — the alignment rule of a
+  /// flock (completing Reynolds' separation / cohesion / alignment triad).
+  ///
+  /// [neighborPositions] and [neighborVelocities] are walked in lockstep, so
+  /// each position pairs with the corresponding velocity. Neighbors at
+  /// distance zero (including the body itself) are skipped, as are neighbors
+  /// beyond [alignmentRadius] when given.
+  ///
+  /// ```dart
+  /// final positions = boids.map((b) => b.position);
+  /// final velocities = boids.map((b) => b.velocity);
+  /// for (final boid in boids) {
+  ///   boid.applyForce(
+  ///     alignment(boid.position, boid.velocity, positions, velocities,
+  ///         alignmentRadius: 50),
+  ///   );
+  /// }
+  /// ```
+  ///
+  /// When no neighbor is in range, returns a zero vector. If the neighbor
+  /// velocities cancel out to zero, the desired velocity is zero, so the force
+  /// brakes the body.
+  ///
+  /// [returnCopy] overrides the [steeringReturnMode] for this call. None of
+  /// the vectors passed in are modified.
+  Flut5Vector alignment(
+    Flut5Vector position,
+    Flut5Vector velocity,
+    Iterable<Flut5Vector> neighborPositions,
+    Iterable<Flut5Vector> neighborVelocities, {
+    double? alignmentRadius,
+    double maxVelocity = 4.0,
+    double maxForce = 0.1,
+    bool? returnCopy,
+  }) {
+    var neighborsInRange = 0;
+    _desiredVelocity.setValues(0.0, 0.0, 0.0);
+
+    final posIt = neighborPositions.iterator;
+    final velIt = neighborVelocities.iterator;
+    while (posIt.moveNext() && velIt.moveNext()) {
+      final double distanceSquared = position.distanceToSquared(posIt.current);
+      if (!_isNeighborInRange(distanceSquared, alignmentRadius)) continue;
+      _desiredVelocity.add(velIt.current);
+      neighborsInRange++;
+    }
+
+    if (neighborsInRange == 0) return _noForce(returnCopy);
+
+    // No need to divide by neighborsInRange first: setMag keeps only direction.
+    _desiredVelocity.setMag(maxVelocity);
+    return _steeringForceToward(velocity, maxForce, returnCopy);
+  }
+
   // ── Internals ─────────────────────────────────────────────────────────
+
+  /// Minimum squared distance below which [separation] skips a neighbor to
+  /// avoid `1 / distance²` overflowing into `Infinity` / `NaN`.
+  static const double _minSeparationDistanceSquared = 1e-12;
 
   /// Whether a neighbor [distanceSquared] away counts for [separation] and
   /// [cohesion]: it is not the body itself (distance zero) and, when a

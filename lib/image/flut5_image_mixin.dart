@@ -14,6 +14,33 @@ import 'flut5_image.dart';
 /// they do respect `blendMode()`, `shadow()`, and every transform, clip and
 /// container the surrounding drawing code sets up.
 mixin Flut5ImageMixin on Flut5Fill {
+  Color? _imageTint;
+  FilterQuality _imageFilterQuality = FilterQuality.medium;
+
+  /// Sets a multiplicative tint colour for subsequent [image] draws, matching
+  /// Processing / p5.js `tint()`. Each pixel's RGBA is multiplied by [color],
+  /// so `tint(Color(0x80FFFFFF))` draws images at 50% opacity and
+  /// `tint(Colors.red)` keeps only the red channel. Differently-tinted sprites
+  /// of the same image still coalesce into a single GPU `drawRawAtlas` call.
+  void tint(Color color) {
+    _imageTint = color;
+  }
+
+  /// Clears any active [tint] so subsequent [image] draws render with their
+  /// original colours.
+  void noTint() {
+    _imageTint = null;
+  }
+
+  /// Gets or sets the sampling quality used when drawing bitmaps with [image].
+  ///
+  /// Defaults to [FilterQuality.medium] (smooth downscaling). Set to
+  /// [FilterQuality.none] for crisp nearest-neighbour pixel art.
+  FilterQuality imageFilterQuality([FilterQuality? quality]) {
+    if (quality != null) _imageFilterQuality = quality;
+    return _imageFilterQuality;
+  }
+
   /// Loads an image and returns it once decoded.
   ///
   /// Accepts an asset **name** (`'logo'`, `'logo.png'`), an asset **path**
@@ -127,42 +154,45 @@ mixin Flut5ImageMixin on Flut5Fill {
     final imageHeight = img.height.toDouble();
     if (imageWidth <= 0 || imageHeight <= 0) return;
 
-    final double sourceX = sx ?? 0;
-    final double sourceY = sy ?? 0;
-    var source = Rect.fromLTWH(
-      sourceX,
-      sourceY,
-      sWidth ?? (imageWidth - sourceX),
-      sHeight ?? (imageHeight - sourceY),
-    );
-    if (source.width <= 0 || source.height <= 0) return;
+    Rect source;
+    if (sx == null && sy == null && sWidth == null && sHeight == null) {
+      source = img.fullSourceRect;
+    } else {
+      final double sourceX = sx ?? 0;
+      final double sourceY = sy ?? 0;
+      source = Rect.fromLTWH(
+        sourceX,
+        sourceY,
+        sWidth ?? (imageWidth - sourceX),
+        sHeight ?? (imageHeight - sourceY),
+      );
+      if (source.width <= 0 || source.height <= 0) return;
 
-    if (source.left < 0 ||
-        source.top < 0 ||
-        source.right > imageWidth ||
-        source.bottom > imageHeight) {
-      final clamped = source.intersect(
-        Rect.fromLTWH(0, 0, imageWidth, imageHeight),
-      );
-      if (clamped.width <= 0 || clamped.height <= 0) {
+      if (source.left < 0 ||
+          source.top < 0 ||
+          source.right > imageWidth ||
+          source.bottom > imageHeight) {
+        final clamped = source.intersect(img.fullSourceRect);
+        if (clamped.width <= 0 || clamped.height <= 0) {
+          Flut5Console.printLater(
+            'image() skipped: the source rectangle '
+            '(${source.left}, ${source.top}, ${source.width}, ${source.height}) '
+            'lies entirely outside the ${img.width}×${img.height} image '
+            '"${img.source}".',
+          );
+          return;
+        }
         Flut5Console.printLater(
-          'image() skipped: the source rectangle '
+          'image(): the source rectangle '
           '(${source.left}, ${source.top}, ${source.width}, ${source.height}) '
-          'lies entirely outside the ${img.width}×${img.height} image '
-          '"${img.source}".',
+          'runs past the ${img.width}×${img.height} image "${img.source}" and '
+          'was clamped to '
+          '(${clamped.left}, ${clamped.top}, ${clamped.width}, ${clamped.height}). '
+          'The drawn size is unchanged, so the result is stretched — pass a '
+          'source rectangle inside the image to avoid it.',
         );
-        return;
+        source = clamped;
       }
-      Flut5Console.printLater(
-        'image(): the source rectangle '
-        '(${source.left}, ${source.top}, ${source.width}, ${source.height}) '
-        'runs past the ${img.width}×${img.height} image "${img.source}" and '
-        'was clamped to '
-        '(${clamped.left}, ${clamped.top}, ${clamped.width}, ${clamped.height}). '
-        'The drawn size is unchanged, so the result is stretched — pass a '
-        'source rectangle inside the image to avoid it.',
-      );
-      source = clamped;
     }
 
     final drawWidth = width ?? source.width;
@@ -174,6 +204,10 @@ mixin Flut5ImageMixin on Flut5Fill {
       source,
       Rect.fromLTWH(x, y, drawWidth, drawHeight),
       currentBlendMode,
+      tint: _imageTint,
+      filterQuality: _imageFilterQuality,
+      transparentBorder:
+          img.hasTransparentBorder && source == img.fullSourceRect,
     );
   }
 }

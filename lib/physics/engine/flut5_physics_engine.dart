@@ -5,6 +5,7 @@ import 'dart:ui' show Size;
 
 import '../../math/flut5_vector.dart';
 import '../flut5_physics_body.dart';
+import '../flut5_physics_collision_event.dart';
 import '../flut5_physics_particle.dart';
 import '../flut5_physics_polygon.dart';
 import '../flut5_physics_rigid_body.dart';
@@ -166,6 +167,79 @@ final class Flut5PhysicsEngine({Size Function()? windowSize})
     _collisionIterations = iterations;
   }
 
+  int _substeps = 1;
+
+  /// Number of physics integration + collision substeps executed per [update]
+  /// call. Defaults to `1`. Increasing to `2`–`4` scales per-substep gravity,
+  /// acceleration, and displacement by `1 / substeps` to cut high-speed
+  /// tunneling and stabilize stiff springs without changing overall motion
+  /// speed.
+  int get substeps => _substeps;
+  set substeps(int value) {
+    if (value < 1) {
+      throw ArgumentError.value(value, 'substeps', 'Must be >= 1');
+    }
+    _substeps = value;
+  }
+
+  double _stepScale = 1.0;
+
+  /// Current substep fraction (`1 / substeps`) read by rigid-body integration.
+  double get stepScale => _stepScale;
+
+  /// Enables automatic sleeping for settled rigid bodies. Off (`false`) by
+  /// default so existing simulations remain bit-identical. When enabled, calm
+  /// bodies below [sleepSpeedThreshold] and [sleepAngularThreshold] for
+  /// [sleepFrames] consecutive updates stop integrating and skip
+  /// sleeping-vs-sleeping/static collisions until woken.
+  bool sleeping = false;
+
+  /// Linear speed (pixels / frame) below which a body counts as calm when
+  /// [sleeping] is enabled.
+  double sleepSpeedThreshold = 0.08;
+
+  /// Angular speed (radians / frame) below which a body counts as calm when
+  /// [sleeping] is enabled.
+  double sleepAngularThreshold = 0.005;
+
+  /// Consecutive calm frames required before a body transitions to sleep.
+  int sleepFrames = 30;
+
+  /// Optional callback fired once per colliding body pair per [update] step.
+  /// Zero overhead when `null`.
+  void Function(Flut5PhysicsCollisionEvent event)? onCollision;
+
+  /// Per-update deduplication set for [onCollision] so a pair touching across
+  /// multiple [collisionIterations] or [substeps] triggers the callback once.
+  final Set<int> _notifiedPairs = HashSet<int>();
+
+  @override
+  void _notifyCollision(
+    Flut5PhysicsRigidBody a,
+    Flut5PhysicsRigidBody b,
+    double normalX,
+    double normalY,
+    double normalZ,
+    double overlap,
+  ) {
+    final cb = onCollision;
+    if (cb == null) return;
+    final ha = identityHashCode(a);
+    final hb = identityHashCode(b);
+    final key = ha < hb
+        ? Object.hash(ha, hb)
+        : Object.hash(hb, ha);
+    if (!_notifiedPairs.add(key)) return;
+    cb(
+      Flut5PhysicsCollisionEvent(
+        bodyA: a,
+        bodyB: b,
+        normal: Flut5Vector(normalX, normalY, normalZ),
+        overlap: overlap,
+      ),
+    );
+  }
+
   /// Adds [body] to the registry and the list of every body. The `create…`
   /// methods call this, then add the body to its own kind's list.
   @override
@@ -219,7 +293,7 @@ final class Flut5PhysicsEngine({Size Function()? windowSize})
     _particles.removeWhere((p) => !_registered.contains(p));
     _springs.removeWhere((s) => !_registered.contains(s));
     _polygons.removeWhere((p) => !_registered.contains(p));
-    _softBodies.removeWhere((s) => !_registered.contains(s));
+    _compactSoftBodies();
     _tornSoftBodies.removeWhere((s) => !_registered.contains(s));
   }
 
@@ -231,6 +305,7 @@ final class Flut5PhysicsEngine({Size Function()? windowSize})
     _springs.clear();
     _polygons.clear();
     _softBodies.clear();
+    _softBodySolvings.clear();
     _tornSoftBodies.clear();
     _registered.clear();
     _removedParticles.clear();
@@ -250,14 +325,35 @@ final class Flut5PhysicsEngine({Size Function()? windowSize})
   /// yourself when that is [PhysicsUpdateTiming.manual].
   void update() {
     _compact();
-    for (final body in _bodies) {
-      body.accumulateForces(this);
+    if (onCollision != null) _notifiedPairs.clear();
+    final steps = _substeps;
+    _stepScale = steps == 1 ? 1.0 : 1.0 / steps;
+    if (sleeping) _wakeManuallyMovedBodies();
+    for (var s = 0; s < steps; s++) {
+      _stepOnce();
     }
-    for (final body in _bodies) {
-      body.updatePhysics(this);
+    _stepScale = 1.0;
+    if (sleeping) _updateSleepingBodies();
+  }
+
+  void _stepOnce() {
+    // Monomorphic loops: only springs accumulate forces, and only particles
+    // and polygons integrate motion — skips empty virtual calls and keeps
+    // call sites monomorphic.
+    final springs = _springs;
+    for (var i = 0; i < springs.length; i++) {
+      springs[i].accumulateForces(this);
+    }
+    final particles = _particles;
+    for (var i = 0; i < particles.length; i++) {
+      particles[i].updatePhysics(this);
+    }
+    final polygons = _polygons;
+    for (var i = 0; i < polygons.length; i++) {
+      polygons[i].updatePhysics(this);
     }
     final windowEdges = _hasWindowEdges;
-    final hasPolygons = _polygons.isNotEmpty;
+    final hasPolygons = polygons.isNotEmpty;
     final hasSoftBodies = _softBodies.isNotEmpty;
     if (_particleCollision || hasPolygons || hasSoftBodies) {
       // Walls run inside every pass, not once after them all: a body a
@@ -265,8 +361,13 @@ final class Flut5PhysicsEngine({Size Function()? windowSize})
       // pass, so a pile resting on the floor is held up by it.
       for (var pass = 0; pass < _collisionIterations; pass++) {
         if (hasSoftBodies) _reshapeSoftBodies();
-        if (_particleCollision) _collideParticles();
-        if (hasPolygons) _collidePolygons();
+        var gridFresh = false;
+        if (_particleCollision) {
+          gridFresh = _collideParticles();
+        }
+        if (hasPolygons) {
+          _collidePolygons(reuseParticleGrid: gridFresh);
+        }
         if (windowEdges) {
           _collideWindowBounds();
           if (hasPolygons) _collidePolygonsWithWindow();
@@ -275,6 +376,373 @@ final class Flut5PhysicsEngine({Size Function()? windowSize})
     } else if (windowEdges) {
       _collideWindowBounds();
     }
+  }
+
+  void _wakeManuallyMovedBodies() {
+    final speedSq = sleepSpeedThreshold * sleepSpeedThreshold;
+    final angThresh = sleepAngularThreshold;
+    for (var i = 0; i < _particles.length; i++) {
+      final p = _particles[i];
+      if (!p.isSleeping) continue;
+      if (p.velocity.length2 > speedSq ||
+          p.angularVelocity.abs() > angThresh ||
+          p.acceleration.length2 > 0) {
+        p.wake();
+      }
+    }
+    for (var i = 0; i < _polygons.length; i++) {
+      final p = _polygons[i];
+      if (!p.isSleeping) continue;
+      if (p.velocity.length2 > speedSq ||
+          p.angularVelocity.abs() > angThresh ||
+          p.acceleration.length2 > 0) {
+        p.wake();
+      }
+    }
+  }
+
+  void _updateSleepingBodies() {
+    final speedSq = sleepSpeedThreshold * sleepSpeedThreshold;
+    final angThresh = sleepAngularThreshold;
+    final frames = sleepFrames < 1 ? 1 : sleepFrames;
+    for (var i = 0; i < _particles.length; i++) {
+      final p = _particles[i];
+      if (p.isStatic || p.softBody != null) continue;
+      final calm =
+          p.velocity.length2 <= speedSq && p.angularVelocity.abs() <= angThresh;
+      p.updateSleepCounter(calm, frames);
+    }
+    for (var i = 0; i < _polygons.length; i++) {
+      final p = _polygons[i];
+      if (p.isStatic) continue;
+      final calm =
+          p.velocity.length2 <= speedSq && p.angularVelocity.abs() <= angThresh;
+      p.updateSleepCounter(calm, frames);
+    }
+  }
+
+  /// Casts a 2-D ray from ([rayX], [rayY]) along ([dirX], [dirY]) against live
+  /// bodies in this physics world, returning the closest [Flut5PhysicsRayHit]
+  /// within [maxDistance], or `null` if nothing is struck.
+  ///
+  /// Direction does not need to be normalized. Set [includePolygons] or
+  /// [includeParticles] to filter body types.
+  Flut5PhysicsRayHit? castRayClosest(
+    double rayX,
+    double rayY,
+    double dirX,
+    double dirY, {
+    double maxDistance = double.infinity,
+    bool includePolygons = true,
+    bool includeParticles = true,
+  }) {
+    _compact();
+    if (maxDistance < 0.0) return null;
+    final lenSq = dirX * dirX + dirY * dirY;
+    if (lenSq == 0.0 || !lenSq.isFinite) return null;
+    final invLen = 1.0 / math.sqrt(lenSq);
+    final ndx = dirX * invLen;
+    final ndy = dirY * invLen;
+
+    Flut5PhysicsRigidBody? bestBody;
+    var bestT = maxDistance;
+    var bestNx = 0.0;
+    var bestNy = 0.0;
+
+    if (includePolygons && _polygons.isNotEmpty) {
+      _refreshPolygonShapes();
+      final invDx = ndx == 0.0 ? double.infinity : 1.0 / ndx;
+      final invDy = ndy == 0.0 ? double.infinity : 1.0 / ndy;
+      for (var i = 0; i < _polygonShapes.length; i++) {
+        final shape = _polygonShapes[i];
+        if (!_rayHitsAabb(
+          rayX,
+          rayY,
+          invDx,
+          invDy,
+          shape.minX - 1e-7,
+          shape.minY - 1e-7,
+          shape.maxX + 1e-7,
+          shape.maxY + 1e-7,
+          bestT,
+        )) {
+          continue;
+        }
+        final count = shape.count;
+        final cx = shape.cornerX;
+        final cy = shape.cornerY;
+        for (var e = 0; e < count; e++) {
+          final next = e + 1 == count ? 0 : e + 1;
+          final ex = cx[next] - cx[e];
+          final ey = cy[next] - cy[e];
+          final den = ndx * ey - ndy * ex;
+          if (den == 0.0) continue;
+          final gx = cx[e] - rayX;
+          final gy = cy[e] - rayY;
+          final double t;
+          if (den > 0.0) {
+            final tol = 1e-9 * den;
+            final uNum = gx * ndy - gy * ndx;
+            if (uNum < -tol || uNum > den + tol) continue;
+            final tNum = gx * ey - gy * ex;
+            if (tNum < -tol) continue;
+            if (bestT.isFinite && tNum >= bestT * den) continue;
+            t = tNum / den;
+          } else {
+            final negDen = -den;
+            final tol = 1e-9 * negDen;
+            final uNum = -(gx * ndy - gy * ndx);
+            if (uNum < -tol || uNum > negDen + tol) continue;
+            final tNum = -(gx * ey - gy * ex);
+            if (tNum < -tol) continue;
+            if (bestT.isFinite && tNum >= bestT * negDen) continue;
+            t = tNum / negDen;
+          }
+          if (t < bestT) {
+            bestT = t;
+            bestBody = shape.polygon;
+            var nx = shape.normalX[e];
+            var ny = shape.normalY[e];
+            if (nx * ndx + ny * ndy > 0.0) {
+              nx = -nx;
+              ny = -ny;
+            }
+            bestNx = nx;
+            bestNy = ny;
+          }
+        }
+      }
+    }
+
+    if (includeParticles) {
+      for (var i = 0; i < _particles.length; i++) {
+        final p = _particles[i];
+        final r = p.radius;
+        if (r <= 0.0) continue;
+        final ocx = rayX - p.position.x;
+        final ocy = rayY - p.position.y;
+        final hb = ocx * ndx + ocy * ndy;
+        final c = ocx * ocx + ocy * ocy - r * r;
+        final disc = hb * hb - c;
+        if (disc < 0.0) continue;
+        final sqrtDisc = math.sqrt(disc);
+        var t = -hb - sqrtDisc;
+        if (t < -1e-9) {
+          t = -hb + sqrtDisc;
+          if (t < -1e-9) continue;
+        }
+        if (t < 0.0) t = 0.0;
+        if (t < bestT) {
+          bestT = t;
+          bestBody = p;
+          final hx = rayX + t * ndx;
+          final hy = rayY + t * ndy;
+          var nx = (hx - p.position.x) / r;
+          var ny = (hy - p.position.y) / r;
+          if (nx * ndx + ny * ndy > 0.0) {
+            nx = -nx;
+            ny = -ny;
+          }
+          bestNx = nx;
+          bestNy = ny;
+        }
+      }
+    }
+
+    if (bestBody == null) return null;
+    final dist = bestT < 0.0 ? 0.0 : bestT;
+    return Flut5PhysicsRayHit(
+      body: bestBody,
+      point: Flut5Vector(rayX + dist * ndx, rayY + dist * ndy),
+      distance: dist,
+      normal: Flut5Vector(bestNx, bestNy),
+    );
+  }
+
+  /// Casts a 2-D ray from ([rayX], [rayY]) along ([dirX], [dirY]) against live
+  /// bodies in this physics world, returning every [Flut5PhysicsRayHit] within
+  /// [maxDistance], sorted closest-first (at most one closest entry hit per
+  /// body).
+  List<Flut5PhysicsRayHit> castRay(
+    double rayX,
+    double rayY,
+    double dirX,
+    double dirY, {
+    double maxDistance = double.infinity,
+    bool includePolygons = true,
+    bool includeParticles = true,
+  }) {
+    _compact();
+    if (maxDistance < 0.0) return const [];
+    final lenSq = dirX * dirX + dirY * dirY;
+    if (lenSq == 0.0 || !lenSq.isFinite) return const [];
+    final invLen = 1.0 / math.sqrt(lenSq);
+    final ndx = dirX * invLen;
+    final ndy = dirY * invLen;
+
+    final hits = <Flut5PhysicsRayHit>[];
+
+    if (includePolygons && _polygons.isNotEmpty) {
+      _refreshPolygonShapes();
+      final invDx = ndx == 0.0 ? double.infinity : 1.0 / ndx;
+      final invDy = ndy == 0.0 ? double.infinity : 1.0 / ndy;
+      for (var i = 0; i < _polygonShapes.length; i++) {
+        final shape = _polygonShapes[i];
+        if (!_rayHitsAabb(
+          rayX,
+          rayY,
+          invDx,
+          invDy,
+          shape.minX - 1e-7,
+          shape.minY - 1e-7,
+          shape.maxX + 1e-7,
+          shape.maxY + 1e-7,
+          maxDistance,
+        )) {
+          continue;
+        }
+        var polyBestT = maxDistance;
+        var polyNx = 0.0;
+        var polyNy = 0.0;
+        var hitPoly = false;
+        final count = shape.count;
+        final cx = shape.cornerX;
+        final cy = shape.cornerY;
+        for (var e = 0; e < count; e++) {
+          final next = e + 1 == count ? 0 : e + 1;
+          final ex = cx[next] - cx[e];
+          final ey = cy[next] - cy[e];
+          final den = ndx * ey - ndy * ex;
+          if (den == 0.0) continue;
+          final gx = cx[e] - rayX;
+          final gy = cy[e] - rayY;
+          final double t;
+          if (den > 0.0) {
+            final tol = 1e-9 * den;
+            final uNum = gx * ndy - gy * ndx;
+            if (uNum < -tol || uNum > den + tol) continue;
+            final tNum = gx * ey - gy * ex;
+            if (tNum < -tol) continue;
+            if (polyBestT.isFinite && tNum > polyBestT * den) continue;
+            t = tNum / den;
+          } else {
+            final negDen = -den;
+            final tol = 1e-9 * negDen;
+            final uNum = -(gx * ndy - gy * ndx);
+            if (uNum < -tol || uNum > negDen + tol) continue;
+            final tNum = -(gx * ey - gy * ex);
+            if (tNum < -tol) continue;
+            if (polyBestT.isFinite && tNum > polyBestT * negDen) continue;
+            t = tNum / negDen;
+          }
+          if (t <= polyBestT) {
+            polyBestT = t;
+            hitPoly = true;
+            var nx = shape.normalX[e];
+            var ny = shape.normalY[e];
+            if (nx * ndx + ny * ndy > 0.0) {
+              nx = -nx;
+              ny = -ny;
+            }
+            polyNx = nx;
+            polyNy = ny;
+          }
+        }
+        if (hitPoly) {
+          final dist = polyBestT < 0.0 ? 0.0 : polyBestT;
+          hits.add(
+            Flut5PhysicsRayHit(
+              body: shape.polygon,
+              point: Flut5Vector(rayX + dist * ndx, rayY + dist * ndy),
+              distance: dist,
+              normal: Flut5Vector(polyNx, polyNy),
+            ),
+          );
+        }
+      }
+    }
+
+    if (includeParticles) {
+      for (var i = 0; i < _particles.length; i++) {
+        final p = _particles[i];
+        final r = p.radius;
+        if (r <= 0.0) continue;
+        final ocx = rayX - p.position.x;
+        final ocy = rayY - p.position.y;
+        final hb = ocx * ndx + ocy * ndy;
+        final c = ocx * ocx + ocy * ocy - r * r;
+        final disc = hb * hb - c;
+        if (disc < 0.0) continue;
+        final sqrtDisc = math.sqrt(disc);
+        var t = -hb - sqrtDisc;
+        if (t < -1e-9) {
+          t = -hb + sqrtDisc;
+          if (t < -1e-9) continue;
+        }
+        if (t < 0.0) t = 0.0;
+        if (t <= maxDistance) {
+          final hx = rayX + t * ndx;
+          final hy = rayY + t * ndy;
+          var nx = (hx - p.position.x) / r;
+          var ny = (hy - p.position.y) / r;
+          if (nx * ndx + ny * ndy > 0.0) {
+            nx = -nx;
+            ny = -ny;
+          }
+          hits.add(
+            Flut5PhysicsRayHit(
+              body: p,
+              point: Flut5Vector(hx, hy),
+              distance: t,
+              normal: Flut5Vector(nx, ny),
+            ),
+          );
+        }
+      }
+    }
+
+    if (hits.length > 1) {
+      hits.sort((a, b) => a.distance.compareTo(b.distance));
+    }
+    return hits;
+  }
+
+  static bool _rayHitsAabb(
+    double rayX,
+    double rayY,
+    double invDx,
+    double invDy,
+    double minX,
+    double minY,
+    double maxX,
+    double maxY,
+    double maxDist,
+  ) {
+    var tMin = 0.0;
+    var tMax = maxDist;
+    if (invDx.isFinite) {
+      final t1 = (minX - rayX) * invDx;
+      final t2 = (maxX - rayX) * invDx;
+      final lo = t1 < t2 ? t1 : t2;
+      final hi = t1 < t2 ? t2 : t1;
+      if (lo > tMin) tMin = lo;
+      if (hi < tMax) tMax = hi;
+      if (tMax < tMin) return false;
+    } else if (rayX < minX || rayX > maxX) {
+      return false;
+    }
+    if (invDy.isFinite) {
+      final t1 = (minY - rayY) * invDy;
+      final t2 = (maxY - rayY) * invDy;
+      final lo = t1 < t2 ? t1 : t2;
+      final hi = t1 < t2 ? t2 : t1;
+      if (lo > tMin) tMin = lo;
+      if (hi < tMax) tMax = hi;
+      if (tMax < tMin) return false;
+    } else if (rayY < minY || rayY > maxY) {
+      return false;
+    }
+    return true;
   }
 }
 

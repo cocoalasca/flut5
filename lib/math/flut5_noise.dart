@@ -77,6 +77,7 @@ base mixin Flut5Noise {
       case .simplex:
         if (lod > 0) _simplexOctaves = lod;
         if (falloff != null && falloff > 0) _simplexAmpFalloff = falloff;
+        _updateSimplexMaxAmp();
       case .perlin:
         if (lod > 0) _perlinOctaves = lod;
         if (falloff != null && falloff > 0) _perlinAmpFalloff = falloff;
@@ -103,6 +104,7 @@ base mixin Flut5Noise {
     switch (_currentNoiseMode) {
       case .simplex:
         _simplexPerm = null;
+        _simplexPermMod12 = null;
       case .perlin:
         _perlin = null;
     }
@@ -545,14 +547,30 @@ base mixin Flut5Noise {
 
   int _simplexOctaves = 4;
   double _simplexAmpFalloff = 0.5;
-  Int32List? _simplexPerm;
+  double _simplexMaxAmp = 1.875; // 1 + 0.5 + 0.25 + 0.125
+  Uint8List? _simplexPerm;
+  Uint8List? _simplexPermMod12;
 
-  static Int32List _buildPerm(List<int> source) {
-    final perm = Int32List(512);
-    for (int i = 0; i < 512; i++) {
-      perm[i] = source[i & 255];
+  void _updateSimplexMaxAmp() {
+    var amp = 1.0;
+    var maxAmp = 0.0;
+    for (int o = 0; o < _simplexOctaves; o++) {
+      maxAmp += amp;
+      amp *= _simplexAmpFalloff;
     }
-    return perm;
+    _simplexMaxAmp = maxAmp;
+  }
+
+  void _setSimplexPerm(List<int> source) {
+    final perm = Uint8List(512);
+    final mod12 = Uint8List(512);
+    for (int i = 0; i < 512; i++) {
+      final p = source[i & 255];
+      perm[i] = p;
+      mod12[i] = (p % 12) * 3;
+    }
+    _simplexPerm = perm;
+    _simplexPermMod12 = mod12;
   }
 
   void _seedSimplex(int seed) {
@@ -564,34 +582,46 @@ base mixin Flut5Noise {
       source[i] = source[j];
       source[j] = tmp;
     }
-    _simplexPerm = _buildPerm(source);
+    _setSimplexPerm(source);
   }
 
   /// Returns `[-1, 1]` simplex noise with fBm octaves.
   double _simplexNoise(double x, double y, double z) {
-    _simplexPerm ??= _buildPerm(_defaultPerm);
-    final perm = _simplexPerm!;
+    var perm = _simplexPerm;
+    if (perm == null) {
+      _setSimplexPerm(_defaultPerm);
+      perm = _simplexPerm!;
+    }
+    final mod12 = _simplexPermMod12!;
+
+    if (_simplexOctaves == 1) {
+      return _rawSimplex3(x, y, z, perm, mod12);
+    }
 
     double r = 0.0;
     double amp = 1.0;
     double freq = 1.0;
-    double maxAmp = 0.0;
 
     for (int o = 0; o < _simplexOctaves; o++) {
-      final raw = _rawSimplex3(x * freq, y * freq, z * freq, perm);
+      final raw = _rawSimplex3(x * freq, y * freq, z * freq, perm, mod12);
       r += raw * amp;
-      maxAmp += amp;
       amp *= _simplexAmpFalloff;
       freq *= 2.0;
     }
 
     // Normalize to [-1, 1].
-    r /= maxAmp;
-    return r;
+    return r / _simplexMaxAmp;
   }
 
   // ── Raw 3-D simplex noise (returns ≈ [-1, 1]) ────────────────────────
-  static double _rawSimplex3(double x, double y, double z, Int32List perm) {
+  @pragma('vm:prefer-inline')
+  static double _rawSimplex3(
+    double x,
+    double y,
+    double z,
+    Uint8List perm,
+    Uint8List permMod12,
+  ) {
     final s = (x + y + z) * _f3;
     final i = (x + s).floor();
     final j = (y + s).floor();
@@ -674,7 +704,7 @@ base mixin Flut5Noise {
       n0 = 0.0;
     } else {
       t0 *= t0;
-      final gi0 = (perm[ii + perm[jj + perm[kk]]] % 12) * 3;
+      final gi0 = permMod12[ii + perm[jj + perm[kk]]];
       n0 = t0 * t0 * _dot3(gi0, x0, y0, z0);
     }
 
@@ -683,7 +713,7 @@ base mixin Flut5Noise {
       n1 = 0.0;
     } else {
       t1 *= t1;
-      final gi1 = (perm[ii + i1 + perm[jj + j1 + perm[kk + k1]]] % 12) * 3;
+      final gi1 = permMod12[ii + i1 + perm[jj + j1 + perm[kk + k1]]];
       n1 = t1 * t1 * _dot3(gi1, x1, y1, z1);
     }
 
@@ -692,7 +722,7 @@ base mixin Flut5Noise {
       n2 = 0.0;
     } else {
       t2 *= t2;
-      final gi2 = (perm[ii + i2 + perm[jj + j2 + perm[kk + k2]]] % 12) * 3;
+      final gi2 = permMod12[ii + i2 + perm[jj + j2 + perm[kk + k2]]];
       n2 = t2 * t2 * _dot3(gi2, x2, y2, z2);
     }
 
@@ -701,13 +731,14 @@ base mixin Flut5Noise {
       n3 = 0.0;
     } else {
       t3 *= t3;
-      final gi3 = (perm[ii + 1 + perm[jj + 1 + perm[kk + 1]]] % 12) * 3;
+      final gi3 = permMod12[ii + 1 + perm[jj + 1 + perm[kk + 1]]];
       n3 = t3 * t3 * _dot3(gi3, x3, y3, z3);
     }
 
     return 32.0 * (n0 + n1 + n2 + n3);
   }
 
+  @pragma('vm:prefer-inline')
   static double _dot3(int gi, double x, double y, double z) =>
       _grad3[gi] * x + _grad3[gi + 1] * y + _grad3[gi + 2] * z;
 }

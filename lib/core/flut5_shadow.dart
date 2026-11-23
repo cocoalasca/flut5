@@ -92,6 +92,18 @@ class Flut5ShadowSpec(
   /// with the same numbers reuses the bakes of the last.
   late final Object _textBakeKey = (blur, spread, _textQuality);
 
+  /// Returns the baked shadow silhouette for [text], or `null` when this shadow
+  /// has neither blur nor spread (a hard shadow blits [text] directly).
+  Flut5ShadowRaster? resolveBakedShadow(Flut5CachedText text) {
+    if (blur <= 0 && spread <= 0) return null;
+    return Flut5TextCache.instance.bakedShadow(
+      text,
+      _textBakeKey,
+      _textBakePaint,
+      spread + (blur > 0 ? 3 * _blurSigma : 0),
+    );
+  }
+
   /// Draws the shadow of the white text raster [text] laid out at [dst]: the
   /// raster recoloured, spread and blurred, shifted by [offset].
   ///
@@ -101,16 +113,11 @@ class Flut5ShadowSpec(
   /// raster ([Flut5TextCache.bakedShadow]), so a frame only blits it.
   void paintText(Canvas canvas, Flut5CachedText text, Rect dst) {
     final at = dst.shift(offset);
-    if (blur <= 0 && spread <= 0) {
+    final baked = resolveBakedShadow(text);
+    if (baked == null) {
       canvas.drawImageRect(text.image, text.srcRect, at, textTintPaint);
       return;
     }
-    final baked = Flut5TextCache.instance.bakedShadow(
-      text,
-      _textBakeKey,
-      _textBakePaint,
-      spread + (blur > 0 ? 3 * _blurSigma : 0),
-    );
     canvas.drawImageRect(
       baked.image,
       baked.srcRect,

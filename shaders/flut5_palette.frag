@@ -13,11 +13,19 @@ uniform vec2 u_size;
 // Number of palette colours.
 uniform float u_count;
 uniform sampler2D u_image;
-// The palette, u_count × 1 pixels, one colour per pixel.
+// The palette, u_count × 3 pixels:
+//   row 0 (v = 0.5 / 3.0): premultiplied output colour (RGBA8)
+//   row 1 (v = 1.5 / 3.0): high 8 bits of CPU-precomputed OKLab (L, a+0.5, b+0.5)
+//   row 2 (v = 2.5 / 3.0): low  8 bits of CPU-precomputed OKLab (L, a+0.5, b+0.5)
+// Storing 16-bit OKLab in rows 1–2 skips `pow()` inside the palette loop while
+// keeping quantization error below 8e-6 per channel.
 uniform sampler2D u_palette;
 
 // The least coverage a pixel needs to be drawn.
 const float kMinCoverage = 0.5;
+const float kRowColor = 0.5 / 3.0;
+const float kRowLabHi = 1.5 / 3.0;
+const float kRowLabLo = 2.5 / 3.0;
 
 out vec4 frag_color;
 
@@ -41,30 +49,32 @@ vec3 oklab(vec3 srgb) {
   );
 }
 
-// Samples are premultiplied; colours are compared and returned straight.
+// Samples are premultiplied; colours are compared straight.
 vec3 unpremultiply(vec4 c) {
   return c.a > 0.0 ? c.rgb / c.a : vec3(0.0);
 }
 
-// The palette colour nearest [target], an OKLab colour: straight colour,
-// its alpha in a.
+// The palette colour nearest [target], an OKLab colour: returned premultiplied
+// straight from row 0 of u_palette.
 vec4 nearestPaletteColour(vec3 target) {
   float best = 1e20;
-  vec4 nearest = vec4(0.0);
+  float bestU = 0.5 / u_count;
   for (int i = 0; i < 4096; i++) {
     if (float(i) >= u_count) {
       break;
     }
-    vec4 entry = texture(u_palette, vec2((float(i) + 0.5) / u_count, 0.5));
-    vec3 rgb = unpremultiply(entry);
-    vec3 d = oklab(rgb) - target;
+    float u = (float(i) + 0.5) / u_count;
+    vec3 hi = texture(u_palette, vec2(u, kRowLabHi)).rgb;
+    vec3 lo = texture(u_palette, vec2(u, kRowLabLo)).rgb;
+    vec3 lab = (hi * 256.0 + lo) / 257.0 - vec3(0.0, 0.5, 0.5);
+    vec3 d = lab - target;
     float distance = dot(d, d);
     if (distance < best) {
       best = distance;
-      nearest = vec4(rgb, entry.a);
+      bestU = u;
     }
   }
-  return nearest;
+  return texture(u_palette, vec2(bestU, kRowColor));
 }
 
 // main() has a single exit: early returns next to texture samplers can crash
@@ -75,9 +85,7 @@ void main() {
   // Empty unless at least half covered.
   vec4 colour = vec4(0.0);
   if (pixel.a >= kMinCoverage) {
-    vec4 nearest = nearestPaletteColour(oklab(unpremultiply(pixel)));
-    // Drawn in full; only a translucent palette colour thins it.
-    colour = vec4(nearest.rgb * nearest.a, nearest.a);
+    colour = nearestPaletteColour(oklab(unpremultiply(pixel)));
   }
   frag_color = colour;
 }

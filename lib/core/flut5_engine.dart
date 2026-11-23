@@ -2,7 +2,8 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as dart_ui;
 
-import 'package:flutter/foundation.dart' show kDebugMode, kIsWasm, kIsWeb;
+import 'package:flutter/foundation.dart'
+    show kDebugMode, kIsWasm, kIsWeb, visibleForTesting;
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 
@@ -20,6 +21,7 @@ import '../shape/flut5_fill.dart';
 import '../shape/flut5_stroke.dart';
 import '../shape/flut5_vertex.dart';
 import '../steering/flut5_steering.dart';
+import '../text/flut5_font.dart';
 import '../text/flut5_text.dart';
 import '../widgets/flut5_widgets.dart';
 import 'flut5_blur.dart';
@@ -129,71 +131,95 @@ final class Flut5Engine()
 
   set canvas(Canvas value) => _canvas = value;
 
+  final Flut5EnvironmentState _env = Flut5EnvironmentState();
+
   /// The active dimensions of the drawing area.
-  Size get size => environment.size;
+  Size get size => _env.size;
 
   /// Width of the drawing area.
   @override
-  double get width => environment.width;
+  double get width => _env.width;
 
   /// Height of the drawing area.
   @override
-  double get height => environment.height;
+  double get height => _env.height;
 
   @override
-  Size get canvasSize => environment.size;
+  Size get canvasSize => _env.size;
+
+  @override
+  Map<String, Flut5FontData> get fonts => _env.fonts;
 
   /// Per-sketch runtime environment state such as frame timing.
+  ///
+  /// Lazily materializes an immutable [SketchEnvironment] snapshot on read;
+  /// per-frame ticks and pointer/keyboard updates mutate the engine's internal
+  /// environment state in place without allocating.
   @override
-  SketchEnvironment environment = const SketchEnvironment();
+  SketchEnvironment get environment => _env.snapshot;
+  @override
+  set environment(SketchEnvironment value) => _env.loadFrom(value);
+
+  /// Internal: updates canvas dimensions in place without allocating a new
+  /// [SketchEnvironment]. Returns `true` when [newSize] differed from [size].
+  bool updateEnvironmentSize(Size newSize) => _env.setSize(newSize);
+
+  /// Internal: advances frame timing and mouse velocity ring buffers in place
+  /// without allocating a new [SketchEnvironment].
+  void advanceEnvironmentFrame(int nowMs) => _env.nextFrame(nowMs);
+
+  /// Whether an immutable [SketchEnvironment] snapshot is currently cached on
+  /// this engine. Test-only seam for verifying zero-alloc updates.
+  @visibleForTesting
+  bool get debugHasCachedEnvironmentSnapshot => _env.hasCachedSnapshot;
 
   /// Current mouse x position in local canvas coordinates.
   @override
-  double get mouseX => environment.mouseX;
+  double get mouseX => _env.mouseX;
 
   /// Current mouse y position in local canvas coordinates.
   @override
-  double get mouseY => environment.mouseY;
+  double get mouseY => _env.mouseY;
 
   /// Previous mouse x position in local canvas coordinates.
-  double get pmouseX => environment.pmouseX;
+  double get pmouseX => _env.pmouseX;
 
   /// Previous mouse y position in local canvas coordinates.
-  double get pmouseY => environment.pmouseY;
+  double get pmouseY => _env.pmouseY;
 
   /// Average mouse velocity x-component (px / frame) over the last
   /// [avgMouseFrames] rendered frames.
   @override
-  double get avgMouseX => environment.avgMouseX;
+  double get avgMouseX => _env.avgMouseX;
 
   /// Average mouse velocity y-component (px / frame) over the last
   /// [avgMouseFrames] rendered frames.
   @override
-  double get avgMouseY => environment.avgMouseY;
+  double get avgMouseY => _env.avgMouseY;
 
   /// Average mouse velocity (px / frame) over the last [avgMouseFrames]
   /// rendered frames as a 2D [Flut5Vector]. Useful for getting a general
   /// idea of where the mouse is heading.
   @override
-  Flut5Vector get avgMouse => environment.avgMouse;
+  Flut5Vector get avgMouse => _env.avgMouse;
 
   /// Number of frames used to compute [avgMouseX] / [avgMouseY] / [avgMouse]
   /// (frame-sampled) and the average velocity reported on
   /// [SketchPointerEvent.velocity] / [Flut5Touch.velocity] (move-sampled).
-  int get avgMouseFrames => environment.avgMouseFrames;
+  int get avgMouseFrames => _env.avgMouseFrames;
 
   /// Sets the rolling window used to compute the average mouse and pointer
   /// velocities. Must be >= 1.
   void setAvgMouseFrames(int frames) {
-    environment = environment.withAvgMouseFrames(frames);
+    _env.setAvgMouseFrames(frames);
     events.avgMouseFrames = frames;
   }
 
   /// Most recent keyboard key value, matching the latest keyboard event.
-  String get key => environment.key;
+  String get key => _env.key;
 
   /// Most recent keyboard key code, matching the latest keyboard event.
-  int get keyCode => environment.keyCode;
+  int get keyCode => _env.keyCode;
 
   /// Currently active pointers on the canvas (fingers, mouse buttons,
   /// styluses) — empty when nothing is pressed. Mirrors p5.js's `touches`
@@ -206,6 +232,9 @@ final class Flut5Engine()
   /// on the canvas. Mirrors p5.js's `mouseIsPressed`. Equivalent to
   /// `touches.isNotEmpty`.
   bool get pointerIsDown => events.pointerIsDown;
+
+  /// Processing / p5.js alias for [pointerIsDown].
+  bool get mouseIsPressed => events.pointerIsDown;
 
   /// Buffered mouse-wheel / trackpad scroll for the current frame, or `null`
   /// when no wheel motion occurred. Read by scroll-mode containers; cleared
@@ -223,7 +252,7 @@ final class Flut5Engine()
   /// Event management for internal broadcasting.
   late final Flut5Event events = Flut5Event(
     onPointerPositionChanged: (event) {
-      environment = environment.withMousePosition(
+      _env.setMousePosition(
         mouseX: event.location.dx,
         mouseY: event.location.dy,
         pmouseX: event.plocation.dx,
@@ -231,7 +260,7 @@ final class Flut5Engine()
       );
     },
     onKeyboardChanged: (event) {
-      environment = environment.withKeyboard(
+      _env.setKeyboard(
         key: event.key,
         keyCode: event.keyCode,
       );
@@ -362,8 +391,7 @@ final class Flut5Engine()
     }
 
     if (!pointsEmpty && strokeColor != flut5Transparent) {
-      final Paint pointPaint = getStrokePaint().clone()
-        ..strokeCap = StrokeCap.round;
+      final Paint pointPaint = snapshotPointPaint()!;
       renderQueue.enqueue(
         MultiPointRenderItem(
           Float32List.fromList(points),
@@ -376,11 +404,11 @@ final class Flut5Engine()
 
   /// Number of frames drawn since the sketch started. 0 during [setup].
   @override
-  int get frameCount => environment.frameCount;
+  int get frameCount => _env.frameCount;
 
   /// Milliseconds elapsed since the last frame was drawn.
   /// Useful for frame-rate-independent animation. 0 on the first frame.
-  double get deltaTime => environment.deltaTime;
+  double get deltaTime => _env.deltaTime;
 
   double? _frameRateCap = 60.0;
 
@@ -410,7 +438,57 @@ final class Flut5Engine()
     if (fps != null) {
       frameRateCap = fps;
     }
-    return environment.frameRate();
+    return _env.frameRate();
+  }
+
+  // ── Draw loop control (Processing / p5 noLoop / loop / redraw) ───────────
+
+  bool _isLooping = true;
+  void Function(bool looping)? _onLoopingChanged;
+  VoidCallback? _onRedrawRequested;
+
+  /// Whether the sketch's `draw()` loop is currently running continuously.
+  bool get isLooping => _isLooping;
+
+  /// Stops [Flut5Sketch.draw] from executing continuously.
+  ///
+  /// Mirrors Processing / p5.js `noLoop()`. Calling this in `setup()` still
+  /// runs `draw()` once for the initial frame; calling it in `draw()` lets the
+  /// current frame finish and then pauses the loop until [loop] or [redraw] is
+  /// called.
+  void noLoop() {
+    if (!_isLooping) return;
+    _isLooping = false;
+    _onLoopingChanged?.call(false);
+  }
+
+  /// Resumes continuous execution of [Flut5Sketch.draw] after [noLoop].
+  void loop() {
+    if (_isLooping) return;
+    _isLooping = true;
+    _onLoopingChanged?.call(true);
+  }
+
+  /// Runs [Flut5Sketch.draw] once — useful after [noLoop] to repaint on demand
+  /// (for instance inside `mousePressed` or a UI control callback).
+  void redraw() {
+    _onRedrawRequested?.call();
+  }
+
+  /// Internal hook used by [Flut5Canvas] to connect [noLoop], [loop], and
+  /// [redraw] to the widget's [Ticker] and repaint controller.
+  void attachLoopControls({
+    required void Function(bool looping) onLoopingChanged,
+    required VoidCallback onRedrawRequested,
+  }) {
+    _onLoopingChanged = onLoopingChanged;
+    _onRedrawRequested = onRedrawRequested;
+  }
+
+  /// Detaches the hosting [Flut5Canvas] loop hooks on widget swap or dispose.
+  void detachLoopControls() {
+    _onLoopingChanged = null;
+    _onRedrawRequested = null;
   }
 
   // ── Frame snapshot (trail accumulation) ──────────────────────────────────
@@ -819,6 +897,10 @@ final class Flut5Engine()
   double? _calibrationCostEma;
   bool _calibrationDone = false;
 
+  List<double>? _cachedCalibrationLadder;
+  double _cachedLadderFloor = -1;
+  double _cachedLadderCeiling = -1;
+
   /// Candidate factors between the floor and the ceiling, ascending.
   ///
   /// The interior steps come from the same eighth-fraction ladder the
@@ -829,6 +911,12 @@ final class Flut5Engine()
   List<double> get _calibrationLadder {
     final floor = frameSnapshotResolutionFactor;
     final ceiling = _resolutionFactorCeiling;
+    final cached = _cachedCalibrationLadder;
+    if (cached != null &&
+        _cachedLadderFloor == floor &&
+        _cachedLadderCeiling == ceiling) {
+      return cached;
+    }
     final ladder = <double>[floor];
     // _resolutionRungs is descending; walk it backwards for ascending order.
     for (var i = _resolutionRungs.length - 1; i >= 0; i--) {
@@ -836,7 +924,9 @@ final class Flut5Engine()
       if (rung > floor + 1e-6 && rung < ceiling - 1e-6) ladder.add(rung);
     }
     if (ceiling > floor + 1e-6) ladder.add(ceiling);
-    return ladder;
+    _cachedLadderFloor = floor;
+    _cachedLadderCeiling = ceiling;
+    return _cachedCalibrationLadder = ladder;
   }
 
   /// The resolution factor calibration has settled on — the floor until the
@@ -1027,7 +1117,7 @@ final class Flut5Engine()
   /// See [frameSnapshotCapBinding] for *which* limit is responsible.
   double get effectiveFrameSnapshotResolutionFactor {
     final dpr = devicePixelRatio > 0 ? devicePixelRatio : 1.0;
-    final size = environment.size;
+    final size = _env.size;
     var factor = frameSnapshotCalibratedFactor;
     final longestLogical = size.width > size.height ? size.width : size.height;
     final edgeCap = _frameSnapshotMaxResolution;
@@ -1060,7 +1150,7 @@ final class Flut5Engine()
     final effective = effectiveFrameSnapshotResolutionFactor;
     if (effective >= frameSnapshotCalibratedFactor - 1e-9) return null;
     final dpr = devicePixelRatio > 0 ? devicePixelRatio : 1.0;
-    final size = environment.size;
+    final size = _env.size;
     final logicalArea = size.width * size.height;
     final pixelCap = _frameSnapshotMaxPixels;
     if (pixelCap != null && pixelCap > 0 && logicalArea > 0) {
@@ -1471,7 +1561,7 @@ final class Flut5Engine()
   /// faded" — and folds this frame's rate into [smoothedFrameRate].
   void noteFramePainted() {
     if (_framesSinceSnapshotApplied < 1 << 20) _framesSinceSnapshotApplied++;
-    final dt = environment.deltaTime;
+    final dt = _env.deltaTime;
     if (dt <= 0) return;
     final previous = _frameTimeEmaMs;
     // Smooth the frame *time* and invert at the end, rather than smoothing

@@ -32,6 +32,12 @@ class TextRenderItem({
 
   /// Drop shadow drawn beneath the text, or `null` for none.
   final Flut5ShadowSpec? shadow,
+
+  /// Active variable-font axes for rasterization, or `null` when default.
+  final List<FontVariation>? fontVariations,
+
+  /// Canonical cache-key string for [fontVariations] (`''` when unused).
+  final String fontVariationKey = '',
 }) extends Flut5RenderItem {
   /// GPU tint paints for the stroke and fill passes, rebuilt only when the
   /// source paint changes — see [_GlyphTint].
@@ -51,16 +57,18 @@ class TextRenderItem({
   /// solid-color path.
   static final Paint _layerPaint = Paint();
 
-  // One-entry shader caches — avoids calling createShader every frame when
-  // the gradient and text bounds haven't changed. Keyed by object identity
-  // (same pattern as Flut5Fill / Flut5Stroke).
-  static Gradient? _cachedFillGradient;
-  static Rect? _cachedFillBounds;
-  static ui.Shader? _cachedFillShader;
+  // Bounded shader cache — avoids calling createShader every frame when
+  // multiple gradient labels draw with stable bounds.
+  static const int _shaderCacheCap = 64;
+  static final Map<(Gradient, Rect), ui.Shader> _shaderCache = {};
 
-  static Gradient? _cachedStrokeGradient;
-  static Rect? _cachedStrokeBounds;
-  static ui.Shader? _cachedStrokeShader;
+  static ui.Shader _shaderFor(Gradient gradient, Rect bounds) {
+    final key = (gradient, bounds);
+    final cached = _shaderCache[key];
+    if (cached != null) return cached;
+    if (_shaderCache.length >= _shaderCacheCap) _shaderCache.clear();
+    return _shaderCache[key] = gradient.createShader(bounds);
+  }
   double _alignedX(double originalX, double width) {
     if (textAlign == TextAlign.center) return originalX - width / 2;
     if (textAlign == TextAlign.right || textAlign == TextAlign.end) {
@@ -101,8 +109,11 @@ class TextRenderItem({
     // raster — recolored to the shadow color and blurred, shifted by the offset.
     // Reusing the text's own raster means NO new cache entry (a blurred shadow
     // bakes its silhouette onto that entry), and an outline-only text casts an
-    // outline shadow rather than a solid blob.
+    // outline shadow rather than a solid blob. Keep the lookup so the fill or
+    // stroke pass below reuses it without a second cache hash lookup.
     final shadowSpec = shadow;
+    Flut5CachedText? shadowCachedFill;
+    Flut5CachedText? shadowCachedStroke;
     if (shadowSpec != null) {
       final bool shadowStroke = fillPaint == null && strokePaint != null;
       final cachedShadow = cache.getOrCreate(
@@ -118,7 +129,14 @@ class TextRenderItem({
         align: textAlign,
         paintingStyle: shadowStroke ? 1 : 0,
         strokeWidth: shadowStroke ? strokePaint!.strokeWidth : 0.0,
+        fontVariations: fontVariations,
+        fontVariationKey: fontVariationKey,
       );
+      if (shadowStroke) {
+        shadowCachedStroke = cachedShadow;
+      } else {
+        shadowCachedFill = cachedShadow;
+      }
       final sdx = _alignedX(x, cachedShadow.width);
       shadowSpec.paintText(
         canvas,
@@ -135,20 +153,24 @@ class TextRenderItem({
 
     // Stroke Pass (Bottom)
     if (strokePaint != null) {
-      final cachedStroke = cache.getOrCreate(
-        text: text,
-        maxWidth: maxWidth,
-        maxHeight: maxHeight,
-        fontFamily: fontFamily,
-        fontSize: fontSize,
-        fontWeight: fontWeight,
-        fontStyle: fontStyle,
-        textLeading: textLeading,
-        letterSpacing: letterSpacing,
-        align: textAlign,
-        paintingStyle: 1, // Stroke
-        strokeWidth: strokePaint!.strokeWidth,
-      );
+      final cachedStroke =
+          shadowCachedStroke ??
+          cache.getOrCreate(
+            text: text,
+            maxWidth: maxWidth,
+            maxHeight: maxHeight,
+            fontFamily: fontFamily,
+            fontSize: fontSize,
+            fontWeight: fontWeight,
+            fontStyle: fontStyle,
+            textLeading: textLeading,
+            letterSpacing: letterSpacing,
+            align: textAlign,
+            paintingStyle: 1, // Stroke
+            strokeWidth: strokePaint!.strokeWidth,
+            fontVariations: fontVariations,
+            fontVariationKey: fontVariationKey,
+          );
 
       painterWidth = cachedStroke.width;
       dx = _alignedX(x, painterWidth);
@@ -184,14 +206,8 @@ class TextRenderItem({
         );
         if (strokeGradient != null) {
           final sizeRect = Rect.fromLTWH(0, 0, dst.width, dst.height);
-          if (!identical(_cachedStrokeGradient, strokeGradient) ||
-              _cachedStrokeBounds != sizeRect) {
-            _cachedStrokeShader = strokeGradient!.createShader(sizeRect);
-            _cachedStrokeGradient = strokeGradient;
-            _cachedStrokeBounds = sizeRect;
-          }
           _gradientOverlayPaint
-            ..shader = _cachedStrokeShader
+            ..shader = _shaderFor(strokeGradient!, sizeRect)
             ..blendMode = ui.BlendMode.srcIn;
           canvas.save();
           canvas.translate(dst.left, dst.top);
@@ -216,20 +232,25 @@ class TextRenderItem({
 
     // Fill Pass (Top)
     if (fillPaint != null) {
-      final cachedFill = cache.getOrCreate(
-        text: text,
-        maxWidth: maxWidth,
-        maxHeight: maxHeight,
-        fontFamily: fontFamily,
-        fontSize: fontSize,
-        fontWeight: fontWeight,
-        fontStyle: fontStyle,
-        textLeading: textLeading,
-        letterSpacing: letterSpacing,
-        align: textAlign,
-        paintingStyle: 0, // Fill
-        strokeWidth: 0.0,
-      );
+      final cachedFill =
+          (shadowCachedFill != null && !shadowCachedFill.image.debugDisposed)
+          ? shadowCachedFill
+          : cache.getOrCreate(
+              text: text,
+              maxWidth: maxWidth,
+              maxHeight: maxHeight,
+              fontFamily: fontFamily,
+              fontSize: fontSize,
+              fontWeight: fontWeight,
+              fontStyle: fontStyle,
+              textLeading: textLeading,
+              letterSpacing: letterSpacing,
+              align: textAlign,
+              paintingStyle: 0, // Fill
+              strokeWidth: 0.0,
+              fontVariations: fontVariations,
+              fontVariationKey: fontVariationKey,
+            );
 
       if (painterWidth == null) {
         dx = _alignedX(x, cachedFill.width);
@@ -266,14 +287,8 @@ class TextRenderItem({
         );
         if (fillGradient != null) {
           final sizeRect = Rect.fromLTWH(0, 0, dst.width, dst.height);
-          if (!identical(_cachedFillGradient, fillGradient) ||
-              _cachedFillBounds != sizeRect) {
-            _cachedFillShader = fillGradient!.createShader(sizeRect);
-            _cachedFillGradient = fillGradient;
-            _cachedFillBounds = sizeRect;
-          }
           _gradientOverlayPaint
-            ..shader = _cachedFillShader
+            ..shader = _shaderFor(fillGradient!, sizeRect)
             ..blendMode = ui.BlendMode.srcIn;
           canvas.save();
           canvas.translate(dst.left, dst.top);

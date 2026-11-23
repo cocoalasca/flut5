@@ -140,12 +140,44 @@ class _Flut5CanvasState()
     // lands before the first frame; see Flut5Shaders.
     Flut5Shaders.load();
     _ticker = createTicker(_onTick);
-    _ticker.start();
+    _attachLoopControls(widget.sketch.flut5);
+    if (widget.sketch.flut5.isLooping) {
+      _ticker.start();
+    }
     _painter = Flut5Painter(sketch: widget.sketch, repaint: _repaint);
     _trailPainter = _TrailPainter(widget.sketch.flut5);
     _keyboardFocusNode = FocusNode(debugLabel: 'Flut5Canvas');
     _liveCanvasCount++;
     _maybeWarnMultipleCanvases();
+  }
+
+  void _attachLoopControls(Flut5Engine engine) {
+    engine.attachLoopControls(
+      onLoopingChanged: _handleLoopingChanged,
+      onRedrawRequested: _handleRedrawRequested,
+    );
+  }
+
+  void _handleLoopingChanged(bool looping) {
+    if (!mounted) return;
+    if (looping) {
+      _nextFrameTarget = Duration.zero;
+      if (!_ticker.isActive) _ticker.start();
+    } else {
+      if (_ticker.isActive) _ticker.stop();
+    }
+  }
+
+  void _handleRedrawRequested() {
+    if (!mounted) return;
+    if (SchedulerBinding.instance.schedulerPhase ==
+        SchedulerPhase.persistentCallbacks) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _repaint.refresh();
+      });
+    } else {
+      _repaint.refresh();
+    }
   }
 
   /// Emits a one-time note the first time a [Flut5Canvas.child] is used.
@@ -213,7 +245,10 @@ class _Flut5CanvasState()
   void didUpdateWidget(Flut5Canvas oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.sketch != widget.sketch) {
+      oldWidget.sketch.flut5.detachLoopControls();
       _disposeSketch(oldWidget.sketch);
+      _attachLoopControls(widget.sketch.flut5);
+      _handleLoopingChanged(widget.sketch.flut5.isLooping);
       _painter = Flut5Painter(sketch: widget.sketch, repaint: _repaint);
       _trailPainter = _TrailPainter(widget.sketch.flut5);
       _setupScheduled = false;
@@ -232,6 +267,7 @@ class _Flut5CanvasState()
   @override
   void dispose() {
     _liveCanvasCount--;
+    widget.sketch.flut5.detachLoopControls();
     _ticker.dispose();
     _keyboardFocusNode.dispose();
     _repaint.dispose();
@@ -286,9 +322,7 @@ class _Flut5CanvasState()
     Flut5Engine.current = widget.sketch.flut5;
 
     // Set the size of the sketch
-    widget.sketch.flut5.environment = widget.sketch.flut5.environment.withSize(
-      Size(width, height),
-    );
+    widget.sketch.flut5.updateEnvironmentSize(Size(width, height));
 
     // Drop any leftover trail snapshot so setup() / hot reload starts clean.
     widget.sketch.flut5.clearFrameSnapshot();
@@ -325,6 +359,13 @@ class _Flut5CanvasState()
     // paint frame would execute and clear them; if draw() is empty, every
     // subsequent frame paints nothing and the canvas appears blank.
     _captureSetupSnapshot(width, height);
+
+    // If setup() called noLoop(), still run draw() once for the initial frame
+    // (matching Processing / p5.js) while keeping the continuous ticker paused.
+    if (!widget.sketch.flut5.isLooping && mounted) {
+      if (_ticker.isActive) _ticker.stop();
+      _repaint.refresh();
+    }
   }
 
   void _captureSetupSnapshot(double width, double height) {
@@ -429,8 +470,7 @@ class _Flut5CanvasState()
           final psize = _previousSize;
 
           // Pre-update the engine dimensions before firing the event
-          widget.sketch.flut5.environment = widget.sketch.flut5.environment
-              .withSize(size);
+          widget.sketch.flut5.updateEnvironmentSize(size);
 
           // Default behaviour: drop the trail snapshot on resize so the
           // next frame starts a fresh accumulation at the new size.
@@ -566,6 +606,13 @@ class Flut5Painter({required final Flut5Sketch sketch, super.repaint})
   String? _hudText;
   TextPainter? _hudTextPainter;
 
+  /// Monotonic frame clock so [Flut5Painter.paint] advances [SketchEnvironment]
+  /// without allocating a [DateTime] or jumping under NTP adjustments.
+  final Stopwatch _frameClock = Stopwatch()..start();
+
+  /// Reused background paint for [_paintSnapshotHud].
+  static final Paint _hudBgPaint = Paint();
+
   /// Pictures recorded last frame, released at the top of the next [paint].
   /// See [_deferPictureDispose]. Bounded by the number of pictures one frame
   /// can record (at most the trail picture plus its foreground).
@@ -631,17 +678,16 @@ class Flut5Painter({required final Flut5Sketch sketch, super.repaint})
     // when multiple canvases are alive.
     Flut5Engine.current = engine;
     engine.canvas = canvas;
-    if (engine.environment.size != size) {
-      engine.environment = engine.environment.withSize(size);
+    if (engine.updateEnvironmentSize(size)) {
       // Capture cost scales with canvas area, so a measurement taken at the
       // old size says nothing about the new one. Resizing already drops the
       // trail by default, so re-searching costs nothing to trail quality.
       engine.resetSnapshotCalibration();
     }
 
-    // Update frame timing before draw()
-    final now = DateTime.now().millisecondsSinceEpoch;
-    engine.environment = engine.environment.nextFrame(now);
+    // Update frame timing before draw() — monotonic ms (+1 so frame 1 is > 0).
+    final now = _frameClock.elapsedMilliseconds + 1;
+    engine.advanceEnvironmentFrame(now);
     // Age the displayed snapshot by one frame (reset whenever a fresh capture
     // lands, so smoothTrailFade always knows how far the visible trail has
     // fallen behind the fade it should be showing) and fold this frame into
@@ -672,57 +718,6 @@ class Flut5Painter({required final Flut5Sketch sketch, super.repaint})
 
     final queue = engine.renderQueue;
     final snapshot = engine.frameSnapshot;
-    final snapshotLogicalSize = engine.frameSnapshotLogicalSize;
-    final dpr = _effectiveDevicePixelRatio(engine.devicePixelRatio);
-    final currentLogicalSize = Size(width, height);
-    // Three factors, three scales. The ceiling is what startup calibration is
-    // allowed to climb to; the calibrated factor is where it settled (the
-    // floor until it finds the device can afford more); the floor is the
-    // resolution the sketch is guaranteed regardless.
-    final baseCaptureScale = _captureScale(
-      width,
-      height,
-      dpr,
-      engine.frameSnapshotMaxResolution,
-      engine.frameSnapshotResolutionFactorMax,
-      maxPixels: engine.frameSnapshotMaxPixels,
-    );
-    final calibratedScale = _captureScale(
-      width,
-      height,
-      dpr,
-      engine.frameSnapshotMaxResolution,
-      engine.frameSnapshotCalibratedFactor,
-      maxPixels: engine.frameSnapshotMaxPixels,
-    );
-    var floorScale = _captureScale(
-      width,
-      height,
-      dpr,
-      engine.frameSnapshotMaxResolution,
-      engine.frameSnapshotResolutionFactor,
-      maxPixels: engine.frameSnapshotMaxPixels,
-    );
-    // Calibration settles the resolution; the overload throttle can still
-    // pull below it, but never below the guaranteed floor — nor below the
-    // absolute frameSnapshotMinResolution guarantee, which applies only on
-    // this path. Cadence (and with it the smooth per-frame fade) is
-    // sacrificed only once this lever is exhausted.
-    var captureScale = calibratedScale;
-    if (engine.adaptiveSnapshotThrottle) {
-      final absoluteFloor = _floorCaptureScale(
-        baseCaptureScale,
-        width > height ? width : height,
-        engine.frameSnapshotMinResolution,
-      );
-      if (absoluteFloor > floorScale) floorScale = absoluteFloor;
-      if (floorScale > baseCaptureScale) floorScale = baseCaptureScale;
-      captureScale = calibratedScale * engine.frameSnapshotResolutionScale;
-      if (captureScale < floorScale) captureScale = floorScale;
-    }
-    final physicalWidth = _physicalExtent(width, captureScale);
-    final physicalHeight = _physicalExtent(height, captureScale);
-
     final layered = engine.useLayeredTrails;
 
     if (queue.isEmpty) {
@@ -730,10 +725,11 @@ class Flut5Painter({required final Flut5Sketch sketch, super.repaint})
       // In layered mode the dedicated [_TrailPainter] handles the blit, so the
       // foreground stays blank to avoid drawing the snapshot twice.
       if (!layered && snapshot != null) {
+        final dpr = _effectiveDevicePixelRatio(engine.devicePixelRatio);
         _drawSnapshot(
           canvas,
           snapshot,
-          snapshotLogicalSize ?? currentLogicalSize,
+          engine.frameSnapshotLogicalSize ?? Size(width, height),
           dpr,
         );
       }
@@ -748,6 +744,57 @@ class Flut5Painter({required final Flut5Sketch sketch, super.repaint})
       // Translucent full-canvas fill: the trail path is live, so in a debug
       // build say once that this is not where to judge its cost.
       if (queue.trailFadeColor != null) _maybeAdviseTrailBuildMode();
+
+      final snapshotLogicalSize = engine.frameSnapshotLogicalSize;
+      final dpr = _effectiveDevicePixelRatio(engine.devicePixelRatio);
+      final currentLogicalSize = Size(width, height);
+      // Three factors, three scales. The ceiling is what startup calibration is
+      // allowed to climb to; the calibrated factor is where it settled (the
+      // floor until it finds the device can afford more); the floor is the
+      // resolution the sketch is guaranteed regardless.
+      final baseCaptureScale = _captureScale(
+        width,
+        height,
+        dpr,
+        engine.frameSnapshotMaxResolution,
+        engine.frameSnapshotResolutionFactorMax,
+        maxPixels: engine.frameSnapshotMaxPixels,
+      );
+      final calibratedScale = _captureScale(
+        width,
+        height,
+        dpr,
+        engine.frameSnapshotMaxResolution,
+        engine.frameSnapshotCalibratedFactor,
+        maxPixels: engine.frameSnapshotMaxPixels,
+      );
+      var floorScale = _captureScale(
+        width,
+        height,
+        dpr,
+        engine.frameSnapshotMaxResolution,
+        engine.frameSnapshotResolutionFactor,
+        maxPixels: engine.frameSnapshotMaxPixels,
+      );
+      // Calibration settles the resolution; the overload throttle can still
+      // pull below it, but never below the guaranteed floor — nor below the
+      // absolute frameSnapshotMinResolution guarantee, which applies only on
+      // this path. Cadence (and with it the smooth per-frame fade) is
+      // sacrificed only once this lever is exhausted.
+      var captureScale = calibratedScale;
+      if (engine.adaptiveSnapshotThrottle) {
+        final absoluteFloor = _floorCaptureScale(
+          baseCaptureScale,
+          width > height ? width : height,
+          engine.frameSnapshotMinResolution,
+        );
+        if (absoluteFloor > floorScale) floorScale = absoluteFloor;
+        if (floorScale > baseCaptureScale) floorScale = baseCaptureScale;
+        captureScale = calibratedScale * engine.frameSnapshotResolutionScale;
+        if (captureScale < floorScale) captureScale = floorScale;
+      }
+      final physicalWidth = _physicalExtent(width, captureScale);
+      final physicalHeight = _physicalExtent(height, captureScale);
 
       final previousSnapshot = queue.hasOpaqueFullCanvasBackground
           ? null
@@ -1035,13 +1082,10 @@ class Flut5Painter({required final Flut5Sketch sketch, super.repaint})
     // actually caps the frame rate is visible at a glance instead of needing
     // the percentage to be read.
     final overBudget = load != null && load > 1.0;
-    canvas.drawRect(
-      boxRect,
-      Paint()
-        ..color = overBudget
-            ? const Color(0xCC7A1020)
-            : const Color(0xAA000000),
-    );
+    _hudBgPaint.color = overBudget
+        ? const Color(0xCC7A1020)
+        : const Color(0xAA000000);
+    canvas.drawRect(boxRect, _hudBgPaint);
     tp.paint(canvas, Offset(boxRect.left + pad, boxRect.top + pad));
   }
 

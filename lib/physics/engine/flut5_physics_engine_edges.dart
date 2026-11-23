@@ -116,6 +116,7 @@ mixin _PhysicsEdges {
     final (:left, :top, :right, :bottom) = limits;
 
     for (final particle in _particles) {
+      if (particle.isStatic || particle.isSleeping) continue;
       // A particle touches an edge when its center is one radius away.
       final radius = particle.radius;
       final x = particle.position.x;

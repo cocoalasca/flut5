@@ -1,6 +1,8 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'flut5_line_segment.dart';
+import 'flut5_ray_scene.dart';
 import 'flut5_vector.dart';
 
 /// Slack allowed on each segment's 0‥1 parameter range, so a hit that lands
@@ -212,8 +214,9 @@ mixin Flut5Intersection {
   /// }
   /// ```
   ///
-  /// Walls are tested the same way as [castRay]. See [Flut5Intersection] for
-  /// the coordinate space.
+  /// For static or large wall sets, build a BVH-accelerated [Flut5RayScene]
+  /// with [createRayScene] instead. Walls are tested the same way as
+  /// [castRay]. See [Flut5Intersection] for the coordinate space.
   Flut5Vector? castRayClosest(
     double rayX,
     double rayY,
@@ -230,6 +233,7 @@ mixin Flut5Intersection {
         directionX,
         directionY,
         wall,
+        maxDistanceAlongRay: closestDistanceAlongRay,
       );
       if (distanceAlongRay < closestDistanceAlongRay) {
         closestDistanceAlongRay = distanceAlongRay;
@@ -245,6 +249,48 @@ mixin Flut5Intersection {
     );
   }
 
+  /// Casts a ray from ([rayX], [rayY]) along [rayDirection] and returns the
+  /// closest intersection point on the circle centered at ([cx], [cy]) with
+  /// [radius], or `null` if the ray misses.
+  ///
+  /// If the ray starts inside the circle, returns the exit point ahead of the
+  /// origin. A zero direction or negative [radius] returns `null`.
+  Flut5Vector? rayCircleIntersection(
+    double cx,
+    double cy,
+    double radius,
+    double rayX,
+    double rayY,
+    Flut5Vector rayDirection,
+  ) {
+    if (radius < 0.0 || !radius.isFinite) return null;
+    final dx = rayDirection.x;
+    final dy = rayDirection.y;
+    final a = dx * dx + dy * dy;
+    if (a == 0.0 || !a.isFinite) return null;
+
+    final ocx = rayX - cx;
+    final ocy = rayY - cy;
+    final halfB = ocx * dx + ocy * dy;
+    final c = ocx * ocx + ocy * ocy - radius * radius;
+    final discriminant = halfB * halfB - a * c;
+    if (discriminant < 0.0) return null;
+
+    final sqrtDisc = math.sqrt(discriminant);
+    var t = (-halfB - sqrtDisc) / a;
+    if (t < -_parameterTolerance) {
+      t = (-halfB + sqrtDisc) / a;
+      if (t < -_parameterTolerance) return null;
+    }
+    if (t < 0.0) t = 0.0;
+    return Flut5Vector(rayX + t * dx, rayY + t * dy);
+  }
+
+  /// Builds a BVH-accelerated [Flut5RayScene] over [walls] for fast multi-ray
+  /// casting, reflections, and visibility polygons.
+  Flut5RayScene createRayScene(Iterable<Flut5LineSegment> walls) =>
+      Flut5RayScene(walls);
+
   /// How many direction vectors ([directionX], [directionY]) along the ray
   /// [wall] is crossed, or [double.infinity] if the ray misses it. Every wall
   /// is measured in the same unit, so comparing these orders hits by
@@ -259,8 +305,9 @@ mixin Flut5Intersection {
     double rayY,
     double directionX,
     double directionY,
-    Flut5LineSegment wall,
-  ) => _crossingParameter(
+    Flut5LineSegment wall, {
+    double maxDistanceAlongRay = double.infinity,
+  }) => _crossingParameter(
     firstX: rayX,
     firstY: rayY,
     firstDeltaX: directionX,
@@ -270,6 +317,7 @@ mixin Flut5Intersection {
     secondY: wall.start.y,
     secondDeltaX: wall.end.x - wall.start.x,
     secondDeltaY: wall.end.y - wall.start.y,
+    maxFirstParameter: maxDistanceAlongRay,
   );
 
   /// The point [distanceAlongRay] direction vectors from the ray's origin.
@@ -323,29 +371,47 @@ mixin Flut5Intersection {
     required double secondY,
     required double secondDeltaX,
     required double secondDeltaY,
+    double maxFirstParameter = double.infinity,
   }) {
     const noCrossing = double.infinity;
 
     // 2-D cross product of the two directions: zero when they are parallel
     // (or either is zero-length), where no single crossing point exists.
     final denominator = firstDeltaX * secondDeltaY - firstDeltaY * secondDeltaX;
-    if (denominator == 0) return noCrossing;
+    if (denominator == 0.0 || !denominator.isFinite) return noCrossing;
 
     final startGapX = secondX - firstX;
     final startGapY = secondY - firstY;
-    final firstParameter =
-        (startGapX * secondDeltaY - startGapY * secondDeltaX) / denominator;
-    final secondParameter =
-        (startGapX * firstDeltaY - startGapY * firstDeltaX) / denominator;
 
-    if (firstParameter < -_parameterTolerance) return noCrossing;
-    if (!firstIsRay && firstParameter > 1 + _parameterTolerance) {
-      return noCrossing;
+    // Division-free early rejection: check `u` (segment bounds) and `t`
+    // (ray/segment + closest-hit bounds) via cross-multiplications before
+    // paying for a single floating-point divide.
+    if (denominator > 0.0) {
+      final tolDen = _parameterTolerance * denominator;
+      final uNum = startGapX * firstDeltaY - startGapY * firstDeltaX;
+      if (uNum < -tolDen || uNum > denominator + tolDen) return noCrossing;
+      final tNum = startGapX * secondDeltaY - startGapY * secondDeltaX;
+      if (tNum < -tolDen) return noCrossing;
+      if (!firstIsRay && tNum > denominator + tolDen) return noCrossing;
+      if (maxFirstParameter.isFinite &&
+          tNum >= maxFirstParameter * denominator) {
+        return noCrossing;
+      }
+      final t = tNum / denominator;
+      return t.isFinite ? t : noCrossing;
+    } else {
+      final negDen = -denominator;
+      final tolDen = _parameterTolerance * negDen;
+      final uNum = -(startGapX * firstDeltaY - startGapY * firstDeltaX);
+      if (uNum < -tolDen || uNum > negDen + tolDen) return noCrossing;
+      final tNum = -(startGapX * secondDeltaY - startGapY * secondDeltaX);
+      if (tNum < -tolDen) return noCrossing;
+      if (!firstIsRay && tNum > negDen + tolDen) return noCrossing;
+      if (maxFirstParameter.isFinite && tNum >= maxFirstParameter * negDen) {
+        return noCrossing;
+      }
+      final t = tNum / negDen;
+      return t.isFinite ? t : noCrossing;
     }
-    if (secondParameter < -_parameterTolerance ||
-        secondParameter > 1 + _parameterTolerance) {
-      return noCrossing;
-    }
-    return firstParameter;
   }
 }

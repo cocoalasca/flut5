@@ -15,6 +15,15 @@ mixin _PhysicsPolygons {
   double get windowBoundsRestitution;
   _WindowLimits? _windowLimits();
   _ParticleGrid _fileParticles();
+  _ParticleGrid get _particleGrid;
+  void _notifyCollision(
+    Flut5PhysicsRigidBody a,
+    Flut5PhysicsRigidBody b,
+    double normalX,
+    double normalY,
+    double normalZ,
+    double overlap,
+  );
 
   /// Creates a [width] × [height] [Flut5PhysicsRect] centered on ([x], [y]),
   /// registers it and returns it. Make it a platform with
@@ -67,6 +76,10 @@ mixin _PhysicsPolygons {
   /// `_polygons[i]`. Refreshed at the start of each collision pass.
   final List<_PolygonShape> _polygonShapes = [];
 
+  /// Sweep-and-prune view of [_polygonShapes], kept sorted by `minX` via
+  /// insertion sort for O(N + K) polygon–polygon broadphase.
+  final List<_PolygonShape> _sapShapes = [];
+
   final _ContactManifold _manifold = _ContactManifold();
   final _Segment _clippedEdge = _Segment();
 
@@ -80,25 +93,59 @@ mixin _PhysicsPolygons {
   /// would jitter.
   static const double _referenceTolerance = 0.05;
 
-  /// One collision pass for polygons: every polygon against every other
-  /// (two static ones never), then every polygon against the particles
-  /// around it.
-  void _collidePolygons() {
+  /// One collision pass for polygons: every polygon against every other via
+  /// 1D sweep-and-prune on `minX` (two static ones never), then every polygon
+  /// against the particles around it.
+  void _collidePolygons({bool reuseParticleGrid = false}) {
     _refreshPolygonShapes();
     final shapes = _polygonShapes;
-    for (var a = 0; a < shapes.length; a++) {
-      final shapeA = shapes[a];
-      for (var b = a + 1; b < shapes.length; b++) {
-        final shapeB = shapes[b];
-        if (shapeA.polygon.isStatic && shapeB.polygon.isStatic) continue;
-        if (!shapeA.boundsOverlap(shapeB)) continue;
-        _collidePolygonPair(shapeA, shapeB);
+    final count = shapes.length;
+    if (count > 1) {
+      final sap = _sapShapes;
+      // Insertion sort by minX — O(N) on temporally coherent frames.
+      for (var i = 1; i < count; i++) {
+        final key = sap[i];
+        final keyMinX = key.minX;
+        var j = i - 1;
+        while (j >= 0 && sap[j].minX > keyMinX) {
+          sap[j + 1] = sap[j];
+          j--;
+        }
+        sap[j + 1] = key;
+      }
+      for (var a = 0; a < count; a++) {
+        final shapeA = sap[a];
+        final polyA = shapeA.polygon;
+        final aStatic = polyA.isStatic;
+        final aImmobile =
+            polyA.isSleeping ||
+            (aStatic && polyA.velocity.length2 == 0.0 && polyA.angularVelocity == 0.0);
+        for (var b = a + 1; b < count; b++) {
+          final shapeB = sap[b];
+          if (shapeB.minX > shapeA.maxX) break;
+          final polyB = shapeB.polygon;
+          if (aStatic && polyB.isStatic) continue;
+          if (aImmobile &&
+              (polyB.isSleeping ||
+                  (polyB.isStatic &&
+                      polyB.velocity.length2 == 0.0 &&
+                      polyB.angularVelocity == 0.0))) {
+            continue;
+          }
+          if (!shapeA.boundsOverlap(shapeB)) continue;
+          // Keep creation-order tie-breaking for reference edge selection.
+          if (shapeA.index < shapeB.index) {
+            _collidePolygonPair(shapeA, shapeB);
+          } else {
+            _collidePolygonPair(shapeB, shapeA);
+          }
+        }
       }
     }
     if (shapes.isEmpty || _particles.isEmpty) return;
-    final grid = _fileParticles();
-    for (final shape in shapes) {
-      _collidePolygonWithNearbyParticles(shape, grid);
+    final grid = reuseParticleGrid ? _particleGrid : _fileParticles();
+    for (var i = 0; i < shapes.length; i++) {
+      _collidePolygonWithNearbyParticles(shapes[i], grid);
     }
   }
 
@@ -113,25 +160,57 @@ mixin _PhysicsPolygons {
     // other half is for particles that pushes earlier in this pass moved
     // since they were filed.
     final reach = grid.cellSize;
-    final firstColumn = grid.columnAt(shape.minX - reach);
-    final lastColumn = grid.columnAt(shape.maxX + reach);
-    final firstRow = grid.rowAt(shape.minY - reach);
-    final lastRow = grid.rowAt(shape.maxY + reach);
-    final cellStarts = grid.cellStarts;
-    final filedParticles = grid.filedParticles;
-    for (var row = firstRow; row <= lastRow; row++) {
-      // The cells of one row are one run of the list.
-      final rowStart = row * grid.columns;
-      final runEnd = cellStarts[rowStart + lastColumn + 1];
-      for (
-        var slot = cellStarts[rowStart + firstColumn];
-        slot < runEnd;
-        slot++
-      ) {
-        _collidePolygonWithParticleIfNear(
-          shape,
-          particles[filedParticles[slot]],
-        );
+    if (grid.isHashed) {
+      final c0 = grid.hashColumnAt(shape.minX - reach);
+      final c1 = grid.hashColumnAt(shape.maxX + reach);
+      final r0 = grid.hashRowAt(shape.minY - reach);
+      final r1 = grid.hashRowAt(shape.maxY + reach);
+      final spanCells = (c1 - c0 + 1) * (r1 - r0 + 1);
+      if (spanCells > grid.filedCount) {
+        final filed = grid.filedParticles;
+        for (var slot = 0; slot < grid.filedCount; slot++) {
+          _collidePolygonWithParticleIfNear(shape, particles[filed[slot]]);
+        }
+      } else {
+        final hashHeads = grid.hashHeads;
+        final hashNext = grid.hashNext;
+        final cellX = grid.cellX;
+        final cellY = grid.cellY;
+        for (var row = r0; row <= r1; row++) {
+          for (var col = c0; col <= c1; col++) {
+            for (
+              var p = hashHeads[grid.hashSlot(col, row)];
+              p >= 0;
+              p = hashNext[p]
+            ) {
+              if (cellX[p] == col && cellY[p] == row) {
+                _collidePolygonWithParticleIfNear(shape, particles[p]);
+              }
+            }
+          }
+        }
+      }
+    } else {
+      final firstColumn = grid.columnAt(shape.minX - reach);
+      final lastColumn = grid.columnAt(shape.maxX + reach);
+      final firstRow = grid.rowAt(shape.minY - reach);
+      final lastRow = grid.rowAt(shape.maxY + reach);
+      final cellStarts = grid.cellStarts;
+      final filedParticles = grid.filedParticles;
+      for (var row = firstRow; row <= lastRow; row++) {
+        // The cells of one row are one run of the list.
+        final rowStart = row * grid.columns;
+        final runEnd = cellStarts[rowStart + lastColumn + 1];
+        for (
+          var slot = cellStarts[rowStart + firstColumn];
+          slot < runEnd;
+          slot++
+        ) {
+          _collidePolygonWithParticleIfNear(
+            shape,
+            particles[filedParticles[slot]],
+          );
+        }
       }
     }
     final largeParticles = grid.largeParticles;
@@ -146,6 +225,16 @@ mixin _PhysicsPolygons {
     _PolygonShape shape,
     Flut5PhysicsParticle particle,
   ) {
+    final poly = shape.polygon;
+    final polyImmobile =
+        poly.isSleeping ||
+        (poly.isStatic &&
+            poly.velocity.length2 == 0.0 &&
+            poly.angularVelocity == 0.0);
+    final partImmobile =
+        particle.isSleeping ||
+        (particle.isStatic && particle.velocity.length2 == 0.0);
+    if (polyImmobile && partImmobile) return;
     final position = particle.position;
     if (!shape.boundsTouchCircle(position.x, position.y, particle.radius)) {
       return;
@@ -157,14 +246,26 @@ mixin _PhysicsPolygons {
   void _refreshPolygonShapes() {
     final polygons = _polygons;
     final shapes = _polygonShapes;
+    final sap = _sapShapes;
+    var membershipChanged = shapes.length != polygons.length;
     if (shapes.length > polygons.length) shapes.length = polygons.length;
     for (var i = 0; i < polygons.length; i++) {
       if (i == shapes.length) {
-        shapes.add(_PolygonShape(polygons[i]));
+        shapes.add(_PolygonShape(polygons[i])..index = i);
+        membershipChanged = true;
       } else {
-        shapes[i].bind(polygons[i]);
+        if (!identical(shapes[i].polygon, polygons[i])) {
+          shapes[i].bind(polygons[i]);
+          membershipChanged = true;
+        }
+        shapes[i].index = i;
       }
       shapes[i].refresh();
+    }
+    if (membershipChanged || sap.length != shapes.length) {
+      sap
+        ..clear()
+        ..addAll(shapes);
     }
   }
 
@@ -188,9 +289,17 @@ mixin _PhysicsPolygons {
     if (!_findContactPoints(reference, referenceEdge, incident)) return;
     if (referenceIsB) _manifold.flipNormal(); // keep it pointing from a to b
 
+    if (a.polygon.isSleeping) a.polygon.wake();
+    if (b.polygon.isSleeping) b.polygon.wake();
+    final overlap = _manifold.pointCount == 2
+        ? math.max(_manifold.depth[0], _manifold.depth[1])
+        : _manifold.depth[0];
+    final nx = _manifold.normalX;
+    final ny = _manifold.normalY;
     _resolve(a.polygon, b.polygon, _polygonRestitution);
     if (!a.polygon.isStatic) a.refresh();
     if (!b.polygon.isStatic) b.refresh();
+    _notifyCollision(a.polygon, b.polygon, nx, ny, 0.0, overlap);
   }
 
   /// The edge of [shape] that [other] sinks into least, and how far: for
@@ -346,8 +455,14 @@ mixin _PhysicsPolygons {
         ..addPoint(closestX, closestY, radius - distance);
     }
 
+    if (shape.polygon.isSleeping) shape.polygon.wake();
+    if (particle.isSleeping) particle.wake();
+    final overlap = _manifold.depth[0];
+    final nx = _manifold.normalX;
+    final ny = _manifold.normalY;
     _resolve(shape.polygon, particle, _polygonRestitution);
     if (!shape.polygon.isStatic) shape.refresh();
+    _notifyCollision(shape.polygon, particle, nx, ny, 0.0, overlap);
   }
 
   /// Bounces every moving polygon off the enabled window edges it crossed.
@@ -357,7 +472,7 @@ mixin _PhysicsPolygons {
     final limits = _windowLimits();
     if (limits == null) return;
     for (final shape in _polygonShapes) {
-      if (shape.polygon.isStatic) continue;
+      if (shape.polygon.isStatic || shape.polygon.isSleeping) continue;
       if (shape.minX < limits.left) {
         _collideWithWindowEdge(shape, .left, limits.left);
       }
@@ -422,6 +537,10 @@ final class _PolygonShape(var Flut5PhysicsPolygon polygon) {
   late Float64List cornerX, cornerY, normalX, normalY;
   late Float64List _localNormalX, _localNormalY;
   double minX = 0, minY = 0, maxX = 0, maxY = 0;
+  int index = 0;
+  double _lastX = double.nan;
+  double _lastY = double.nan;
+  double _lastAngle = double.nan;
 
   int get count => cornerX.length;
 
@@ -429,6 +548,7 @@ final class _PolygonShape(var Flut5PhysicsPolygon polygon) {
   void bind(Flut5PhysicsPolygon polygon) {
     if (identical(polygon, this.polygon)) return;
     this.polygon = polygon;
+    _lastX = double.nan;
     _measure();
   }
 
@@ -455,12 +575,36 @@ final class _PolygonShape(var Flut5PhysicsPolygon polygon) {
   }
 
   /// Turns and moves the corners and normals to where [polygon] is now.
+  /// Skips all work when position and angle haven't changed (e.g. static or
+  /// resting bodies) and avoids trig when [polygon.angle] is 0.
   void refresh() {
-    final local = polygon.localCorners;
-    final cos = math.cos(polygon.angle), sin = math.sin(polygon.angle);
     final centerX = polygon.position.x, centerY = polygon.position.y;
+    final angle = polygon.angle;
+    if (centerX == _lastX && centerY == _lastY && angle == _lastAngle) return;
+    _lastX = centerX;
+    _lastY = centerY;
+    _lastAngle = angle;
+
+    final local = polygon.localCorners;
     minX = minY = double.infinity;
     maxX = maxY = double.negativeInfinity;
+    if (angle == 0.0) {
+      for (var i = 0; i < count; i++) {
+        final corner = local[i];
+        final x = centerX + corner.x;
+        final y = centerY + corner.y;
+        cornerX[i] = x;
+        cornerY[i] = y;
+        normalX[i] = _localNormalX[i];
+        normalY[i] = _localNormalY[i];
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+      return;
+    }
+    final cos = math.cos(angle), sin = math.sin(angle);
     for (var i = 0; i < count; i++) {
       final corner = local[i];
       final x = centerX + corner.x * cos - corner.y * sin;

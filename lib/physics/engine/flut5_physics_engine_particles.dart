@@ -9,6 +9,14 @@ mixin _PhysicsParticles {
   PhysicsRotationMode get rotationMode;
   double get friction;
   set collisionIterations(int iterations);
+  void _notifyCollision(
+    Flut5PhysicsRigidBody a,
+    Flut5PhysicsRigidBody b,
+    double normalX,
+    double normalY,
+    double normalZ,
+    double overlap,
+  );
 
   /// Creates a [Flut5PhysicsParticle] at ([x], [y]), registers it and
   /// returns it.
@@ -82,6 +90,7 @@ mixin _PhysicsParticles {
   Float64List _collisionY = Float64List(0);
   Float64List _collisionZ = Float64List(0);
   Float64List _collisionRadius = Float64List(0);
+  bool _collisionHasZ = false;
 
   /// Where the particles are, for finding the ones near each other — and,
   /// in the polygons part, the ones near a polygon.
@@ -103,32 +112,111 @@ mixin _PhysicsParticles {
     final positionY = _collisionY;
     final positionZ = _collisionZ;
     final radius = _collisionRadius;
+    var hasZ = false;
     for (var i = 0; i < count; i++) {
       final particle = particles[i];
-      positionX[i] = particle.position.x;
-      positionY[i] = particle.position.y;
-      positionZ[i] = particle.position.z;
+      final pos = particle.position;
+      positionX[i] = pos.x;
+      positionY[i] = pos.y;
+      final z = pos.z;
+      positionZ[i] = z;
+      if (z != 0.0) hasZ = true;
       radius[i] = particle.radius;
     }
+    _collisionHasZ = hasZ;
     return _particleGrid..file(count, positionX, positionY, radius);
   }
 
   /// Separates every overlapping pair of particles and bounces the ones that
   /// are approaching each other, testing each pair that could touch once.
-  void _collideParticles() {
+  ///
+  /// Returns `true` when [_particleGrid] remained accurate enough (no particle
+  /// was pushed past half a cell) for [_PhysicsPolygons] to reuse without
+  /// re-filing.
+  bool _collideParticles() {
     final grid = _fileParticles();
     // Without a radius anywhere, no two particles can touch.
-    if (grid.largestRadius == 0) return;
+    if (grid.largestRadius == 0) return true;
 
-    _collideNeighbors(grid);
+    if (grid.isHashed) {
+      _collideNeighborsHashed(grid);
+    } else {
+      _collideNeighbors(grid);
+    }
     _collideLargeParticles(grid);
 
     final particles = _particles;
     final positionX = _collisionX;
     final positionY = _collisionY;
     final positionZ = _collisionZ;
+    final maxShift = grid.cellSize * 0.45;
+    var gridFresh = true;
     for (var i = 0; i < particles.length; i++) {
-      particles[i].position.setValues(positionX[i], positionY[i], positionZ[i]);
+      final pos = particles[i].position;
+      final nx = positionX[i], ny = positionY[i], nz = positionZ[i];
+      if (gridFresh &&
+          ((nx - pos.x).abs() > maxShift || (ny - pos.y).abs() > maxShift)) {
+        gridFresh = false;
+      }
+      pos.setValues(nx, ny, nz);
+    }
+    return gridFresh;
+  }
+
+  /// Collides every filed particle in a hashed [_ParticleGrid] with the rest
+  /// of its own cell and the four forward neighbor cells — each pair once.
+  void _collideNeighborsHashed(_ParticleGrid grid) {
+    final filedParticles = grid.filedParticles;
+    final filedCount = grid.filedCount;
+    final cellX = grid.cellX;
+    final cellY = grid.cellY;
+    final hashHeads = grid.hashHeads;
+    final hashNext = grid.hashNext;
+    for (var slot = 0; slot < filedCount; slot++) {
+      final a = filedParticles[slot];
+      final cx = cellX[a], cy = cellY[a];
+      // Same cell: bucket chains are in ascending creation order, so every
+      // later particle in (cx, cy) sits strictly after `a` along hashNext.
+      for (var b = hashNext[a]; b >= 0; b = hashNext[b]) {
+        if (cellX[b] == cx && cellY[b] == cy) _collideIfTouching(a, b);
+      }
+      _collideHashedCell(a, grid, hashHeads, hashNext, cellX, cellY, cx + 1, cy);
+      _collideHashedCell(
+        a,
+        grid,
+        hashHeads,
+        hashNext,
+        cellX,
+        cellY,
+        cx - 1,
+        cy + 1,
+      );
+      _collideHashedCell(a, grid, hashHeads, hashNext, cellX, cellY, cx, cy + 1);
+      _collideHashedCell(
+        a,
+        grid,
+        hashHeads,
+        hashNext,
+        cellX,
+        cellY,
+        cx + 1,
+        cy + 1,
+      );
+    }
+  }
+
+  void _collideHashedCell(
+    int a,
+    _ParticleGrid grid,
+    Int32List hashHeads,
+    Int32List hashNext,
+    Int32List cellX,
+    Int32List cellY,
+    int nx,
+    int ny,
+  ) {
+    for (var b = hashHeads[grid.hashSlot(nx, ny)]; b >= 0; b = hashNext[b]) {
+      if (cellX[b] == nx && cellY[b] == ny) _collideIfTouching(a, b);
     }
   }
 
@@ -181,12 +269,33 @@ mixin _PhysicsParticles {
     final particles = _particles;
     final positionX = _collisionX;
     final positionY = _collisionY;
-    final positionZ = _collisionZ;
     final radius = _collisionRadius;
-    // Particle a's position and radius, held in locals while it is tested
-    // against the run.
-    var aX = positionX[a], aY = positionY[a], aZ = positionZ[a];
+    var aX = positionX[a], aY = positionY[a];
     final aRadius = radius[a];
+    if (!_collisionHasZ) {
+      for (var slot = from; slot < to; slot++) {
+        final b = others[slot];
+        final dx = positionX[b] - aX;
+        final dy = positionY[b] - aY;
+        final touchingDistance = aRadius + radius[b];
+        if (dx * dx + dy * dy < touchingDistance * touchingDistance) {
+          final aSoftBody = particles[a].softBody;
+          if (aSoftBody != null && identical(aSoftBody, particles[b].softBody)) {
+            continue;
+          }
+          if (a < b) {
+            _resolveCollision(a, b);
+          } else {
+            _resolveCollision(b, a);
+          }
+          aX = positionX[a];
+          aY = positionY[a];
+        }
+      }
+      return;
+    }
+    final positionZ = _collisionZ;
+    var aZ = positionZ[a];
     for (var slot = from; slot < to; slot++) {
       final b = others[slot];
       final dx = positionX[b] - aX;
@@ -262,6 +371,16 @@ mixin _PhysicsParticles {
   /// apart, then [_bounceApart] changes their velocities if they were
   /// approaching each other.
   void _resolveCollision(int a, int b) {
+    final pa = _particles[a];
+    final pb = _particles[b];
+    final aImmobile =
+        pa.isSleeping || (pa.isStatic && pa.velocity.length2 == 0.0);
+    final bImmobile =
+        pb.isSleeping || (pb.isStatic && pb.velocity.length2 == 0.0);
+    if (aImmobile && bImmobile) return;
+    if (pa.isSleeping) pa.wake();
+    if (pb.isSleeping) pb.wake();
+
     final dx = _collisionX[b] - _collisionX[a];
     final dy = _collisionY[b] - _collisionY[a];
     final dz = _collisionZ[b] - _collisionZ[a];
@@ -278,16 +397,18 @@ mixin _PhysicsParticles {
 
     final overlap = _collisionRadius[a] + _collisionRadius[b] - distance;
     _correctOverlap(a, b, normal, overlap);
-    _bounceApart(_particles[a], _particles[b], normal);
+    _bounceApart(pa, pb, normal);
+    _notifyCollision(pa, pb, normal.x, normal.y, normal.z, overlap);
   }
 
   /// Moves particles [a] and [b] apart along [normal] by [overlap] in total,
   /// so they end up just touching. The distance is split by mass: the
   /// lighter particle moves more.
   void _correctOverlap(int a, int b, Flut5Vector normal, double overlap) {
-    final inverseMassA = 1 / _particles[a].mass;
-    final inverseMassB = 1 / _particles[b].mass;
+    final inverseMassA = _particles[a].inverseMass;
+    final inverseMassB = _particles[b].inverseMass;
     final inverseMassSum = inverseMassA + inverseMassB;
+    if (inverseMassSum == 0) return;
     final moveA = overlap * inverseMassA / inverseMassSum;
     final moveB = overlap * inverseMassB / inverseMassSum;
 
@@ -310,6 +431,11 @@ mixin _PhysicsParticles {
     Flut5PhysicsParticle b,
     Flut5Vector normal,
   ) {
+    final inverseMassA = a.inverseMass;
+    final inverseMassB = b.inverseMass;
+    final inverseMassSum = inverseMassA + inverseMassB;
+    if (inverseMassSum == 0) return;
+
     final velocityA = a.velocity;
     final velocityB = b.velocity;
     // How fast b moves away from a along the normal (a dot product).
@@ -319,12 +445,8 @@ mixin _PhysicsParticles {
         (velocityB.z - velocityA.z) * normal.z;
     if (separatingSpeed >= 0) return; // already moving apart
 
-    final inverseMassA = 1 / a.mass;
-    final inverseMassB = 1 / b.mass;
     final impulse =
-        -(1 + _particleRestitution) *
-        separatingSpeed /
-        (inverseMassA + inverseMassB);
+        -(1 + _particleRestitution) * separatingSpeed / inverseMassSum;
     final changeA = impulse * inverseMassA;
     final changeB = impulse * inverseMassB;
     velocityA

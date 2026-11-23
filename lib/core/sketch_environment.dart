@@ -100,6 +100,7 @@ final class const SketchEnvironment._({
 
   /// Returns an updated environment with a new canvas [size].
   SketchEnvironment withSize(Size size) {
+    if (size == this.size) return this;
     return SketchEnvironment._(
       size: size,
       mouseX: mouseX,
@@ -129,6 +130,12 @@ final class const SketchEnvironment._({
     required double pmouseX,
     required double pmouseY,
   }) {
+    if (mouseX == this.mouseX &&
+        mouseY == this.mouseY &&
+        pmouseX == this.pmouseX &&
+        pmouseY == this.pmouseY) {
+      return this;
+    }
     return SketchEnvironment._(
       size: size,
       mouseX: mouseX,
@@ -153,6 +160,7 @@ final class const SketchEnvironment._({
 
   /// Returns an updated environment with the latest keyboard state.
   SketchEnvironment withKeyboard({required String key, required int keyCode}) {
+    if (key == this.key && keyCode == this.keyCode) return this;
     return SketchEnvironment._(
       size: size,
       mouseX: mouseX,
@@ -331,5 +339,211 @@ final class const SketchEnvironment._({
       sampleHead: _sampleHead,
       sampleCount: _sampleCount,
     );
+  }
+}
+
+/// Package-internal mutable host for [SketchEnvironment] fields.
+///
+/// [Flut5Engine] mutates these scalar fields and ring buffers in place on every
+/// pointer move (120–1000 Hz), keyboard event, canvas resize, and frame tick
+/// without allocating a new [SketchEnvironment] wrapper. An immutable
+/// [SketchEnvironment] snapshot is materialized lazily only when callers read
+/// `engine.environment`, and assigning `engine.environment = ...` synchronizes
+/// all fields back via [loadFrom].
+final class Flut5EnvironmentState() {
+  Size size = Size.zero;
+  double mouseX = 0;
+  double mouseY = 0;
+  double pmouseX = 0;
+  double pmouseY = 0;
+  String key = '';
+  int keyCode = 0;
+  int frameCount = 0;
+  double deltaTime = 0;
+  Map<String, Flut5FontData> fonts = const <String, Flut5FontData>{};
+  int _lastFrameMs = 0;
+  int avgMouseFrames = 15;
+  double avgMouseX = 0;
+  double avgMouseY = 0;
+  Float64List? _vxSamples;
+  Float64List? _vySamples;
+  int _sampleHead = 0;
+  int _sampleCount = 0;
+
+  SketchEnvironment? _cachedSnapshot = const SketchEnvironment();
+
+  double get width => size.width;
+  double get height => size.height;
+  Flut5Vector get avgMouse => Flut5Vector(avgMouseX, avgMouseY);
+  double frameRate() => deltaTime > 0 ? 1000 / deltaTime : 0;
+
+  /// Whether an immutable [SketchEnvironment] snapshot is currently cached.
+  bool get hasCachedSnapshot => _cachedSnapshot != null;
+
+  /// Updates [size] in place. Returns `true` if the size actually changed.
+  bool setSize(Size newSize) {
+    if (size == newSize) return false;
+    size = newSize;
+    _cachedSnapshot = null;
+    return true;
+  }
+
+  /// Updates mouse coordinates in place without allocating.
+  void setMousePosition({
+    required double mouseX,
+    required double mouseY,
+    required double pmouseX,
+    required double pmouseY,
+  }) {
+    if (this.mouseX == mouseX &&
+        this.mouseY == mouseY &&
+        this.pmouseX == pmouseX &&
+        this.pmouseY == pmouseY) {
+      return;
+    }
+    this.mouseX = mouseX;
+    this.mouseY = mouseY;
+    this.pmouseX = pmouseX;
+    this.pmouseY = pmouseY;
+    _cachedSnapshot = null;
+  }
+
+  /// Updates keyboard state in place without allocating.
+  void setKeyboard({required String key, required int keyCode}) {
+    if (this.key == key && this.keyCode == keyCode) return;
+    this.key = key;
+    this.keyCode = keyCode;
+    _cachedSnapshot = null;
+  }
+
+  /// Resizes the rolling average mouse velocity window in place.
+  void setAvgMouseFrames(int frames) {
+    if (frames < 1) {
+      throw ArgumentError.value(frames, 'frames', 'must be >= 1');
+    }
+    var vx = _vxSamples;
+    var vy = _vySamples;
+    var head = _sampleHead;
+    var count = _sampleCount;
+    if (vx != null && vy != null && vx.length != frames) {
+      final resized = SketchEnvironment._resizeRing(vx, vy, head, count, frames);
+      vx = resized.$1;
+      vy = resized.$2;
+      head = resized.$3;
+      count = resized.$4;
+      _vxSamples = vx;
+      _vySamples = vy;
+      _sampleHead = head;
+      _sampleCount = count;
+    }
+    avgMouseFrames = frames;
+    if (vx == null || vy == null || count == 0) {
+      avgMouseX = 0.0;
+      avgMouseY = 0.0;
+    } else {
+      double sumX = 0;
+      double sumY = 0;
+      for (int i = 0; i < count; i++) {
+        sumX += vx[i];
+        sumY += vy[i];
+      }
+      avgMouseX = sumX / count;
+      avgMouseY = sumY / count;
+    }
+    _cachedSnapshot = null;
+  }
+
+  /// Advances frame timing and updates the rolling velocity ring buffer in
+  /// place without allocating per frame.
+  void nextFrame(int nowMs) {
+    deltaTime = _lastFrameMs == 0 ? 0.0 : (nowMs - _lastFrameMs).toDouble();
+    var vx = _vxSamples;
+    var vy = _vySamples;
+    var head = _sampleHead;
+    var count = _sampleCount;
+    if (vx == null || vy == null || vx.length != avgMouseFrames) {
+      final resized = SketchEnvironment._resizeRing(
+        vx,
+        vy,
+        head,
+        count,
+        avgMouseFrames,
+      );
+      vx = resized.$1;
+      vy = resized.$2;
+      head = resized.$3;
+      count = resized.$4;
+      _vxSamples = vx;
+      _vySamples = vy;
+    }
+    vx[head] = mouseX - pmouseX;
+    vy[head] = mouseY - pmouseY;
+    head = head + 1 == vx.length ? 0 : head + 1;
+    if (count < vx.length) count++;
+    _sampleHead = head;
+    _sampleCount = count;
+    double sumX = 0;
+    double sumY = 0;
+    for (int i = 0; i < count; i++) {
+      sumX += vx[i];
+      sumY += vy[i];
+    }
+    avgMouseX = count == 0 ? 0.0 : sumX / count;
+    avgMouseY = count == 0 ? 0.0 : sumY / count;
+    frameCount++;
+    _lastFrameMs = nowMs;
+    _cachedSnapshot = null;
+  }
+
+  /// Replaces the preloaded font shape map in place.
+  void setFonts(Map<String, Flut5FontData> newFonts) {
+    fonts = Map.unmodifiable(newFonts);
+    _cachedSnapshot = null;
+  }
+
+  /// Lazily materializes and caches an immutable [SketchEnvironment] snapshot.
+  SketchEnvironment get snapshot => _cachedSnapshot ??= SketchEnvironment._(
+    size: size,
+    mouseX: mouseX,
+    mouseY: mouseY,
+    pmouseX: pmouseX,
+    pmouseY: pmouseY,
+    key: key,
+    keyCode: keyCode,
+    frameCount: frameCount,
+    deltaTime: deltaTime,
+    fonts: fonts,
+    lastFrameMs: _lastFrameMs,
+    avgMouseFrames: avgMouseFrames,
+    avgMouseX: avgMouseX,
+    avgMouseY: avgMouseY,
+    vxSamples: _vxSamples,
+    vySamples: _vySamples,
+    sampleHead: _sampleHead,
+    sampleCount: _sampleCount,
+  );
+
+  /// Synchronizes all mutable state from an externally assigned
+  /// [SketchEnvironment].
+  void loadFrom(SketchEnvironment env) {
+    size = env.size;
+    mouseX = env.mouseX;
+    mouseY = env.mouseY;
+    pmouseX = env.pmouseX;
+    pmouseY = env.pmouseY;
+    key = env.key;
+    keyCode = env.keyCode;
+    frameCount = env.frameCount;
+    deltaTime = env.deltaTime;
+    fonts = env.fonts;
+    _lastFrameMs = env._lastFrameMs;
+    avgMouseFrames = env.avgMouseFrames;
+    avgMouseX = env.avgMouseX;
+    avgMouseY = env.avgMouseY;
+    _vxSamples = env._vxSamples;
+    _vySamples = env._vySamples;
+    _sampleHead = env._sampleHead;
+    _sampleCount = env._sampleCount;
+    _cachedSnapshot = env;
   }
 }

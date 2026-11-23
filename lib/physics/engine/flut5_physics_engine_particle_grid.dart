@@ -14,9 +14,14 @@ part of 'flut5_physics_engine.dart';
 /// refiling them: a particle pushed across a cell border is found again on
 /// the next pass.
 final class _ParticleGrid() {
-  /// How many cells the grid has across and down.
+  /// How many cells the grid has across and down (dense mode).
   int columns = 1;
   int rows = 1;
+
+  /// True when sparse/outlier particle coordinates caused the grid to switch
+  /// to flat spatial hashing so [cellSize] stays tuned to particle radii
+  /// instead of inflating and collapsing clustered particles to O(N²).
+  bool isHashed = false;
 
   /// Side of a cell, in pixels. No filed particle's radius is more than
   /// half of it.
@@ -26,14 +31,23 @@ final class _ParticleGrid() {
   /// one — then no two particles can touch.
   double largestRadius = 0;
 
-  /// Where each cell's particles start in [filedParticles]: cell `c` holds
-  /// `filedParticles[cellStarts[c]]` up to, not including,
-  /// `filedParticles[cellStarts[c + 1]]`. Cells are numbered row by row, so
-  /// cells side by side sit next to each other in [filedParticles] too.
+  /// Where each cell's particles start in [filedParticles] (dense mode):
+  /// cell `c` holds `filedParticles[cellStarts[c]]` up to, not including,
+  /// `filedParticles[cellStarts[c + 1]]`.
   Int32List cellStarts = Int32List(0);
 
-  /// Particle indices grouped by cell, oldest first within a cell.
+  /// Particle indices grouped by cell (dense mode), or filed particles in
+  /// creation order (hashed mode, first [filedCount] entries).
   Int32List filedParticles = Int32List(0);
+  int filedCount = 0;
+
+  /// Hash table backing [isHashed] mode: bucket head -> particle index (-1 if
+  /// empty), per-particle next pointer, and per-particle integer cell coords.
+  Int32List hashHeads = Int32List(0);
+  Int32List hashNext = Int32List(0);
+  Int32List cellX = Int32List(0);
+  Int32List cellY = Int32List(0);
+  int _hashMask = 0;
 
   /// Indices of the particles too big for a cell, oldest first; the first
   /// [largeCount] entries count.
@@ -54,9 +68,19 @@ final class _ParticleGrid() {
   /// infinite or not a number. It can't touch anything.
   static const int _nowhere = -1;
   static const int _tooLarge = -2;
+  static const double _maxHashCoord = 1e9;
 
   /// Whether [particle] was kept out of the cells for being too big.
   bool isLarge(int particle) => _cellOfParticle[particle] == _tooLarge;
+
+  /// Hash bucket index for integer cell `(cx, cy)` in [isHashed] mode.
+  int hashSlot(int cx, int cy) => ((cx * 73856093) ^ (cy * 19349663)) & _hashMask;
+
+  /// Unclamped integer cell column for [x] in [isHashed] mode.
+  int hashColumnAt(double x) => ((x - _left) * _cellsPerPixel).floor();
+
+  /// Unclamped integer cell row for [y] in [isHashed] mode.
+  int hashRowAt(double y) => ((y - _top) * _cellsPerPixel).floor();
 
   /// The column [x] falls in, or the nearest one if it is outside the grid.
   int columnAt(double x) => _nearestCell((x - _left) * _cellsPerPixel, columns);
@@ -79,6 +103,10 @@ final class _ParticleGrid() {
     Float64List radius,
   ) {
     _sizeCells(count, positionX, positionY, radius);
+    if (isHashed) {
+      _fileHashed(count, positionX, positionY, radius);
+      return;
+    }
     final cellCount = columns * rows;
     _growLists(count, cellCount);
     _countParticlesPerCell(count, cellCount, positionX, positionY, radius);
@@ -86,7 +114,8 @@ final class _ParticleGrid() {
   }
 
   /// Lays the grid over the particles: from the box around them and their
-  /// typical radius, sets [cellSize], [columns] and [rows].
+  /// typical radius, sets [cellSize], [columns] and [rows], switching to
+  /// [isHashed] mode when particles are spread across outliers.
   void _sizeCells(
     int count,
     Float64List positionX,
@@ -118,6 +147,7 @@ final class _ParticleGrid() {
     if (placedCount == 0 || !width.isFinite || !height.isFinite) {
       // Nothing to lay a grid over, or particles too far apart to measure:
       // one cell for everything.
+      isHashed = false;
       _left = _top = 0;
       _cellsPerPixel = 0;
       cellSize = double.infinity;
@@ -134,23 +164,93 @@ final class _ParticleGrid() {
     if (size == 0) size = math.max(width, height) / placedCount;
     if (size == 0) size = 1;
 
-    // Particles spread thin would need far more cells than there are
-    // particles; bigger cells then cost nothing.
+    // Dense 2D grid while compact; switch to flat spatial hash when sparse or
+    // stretched by outliers so cellSize stays tuned to particle radii.
     final mostCells = 4.0 * count + 64;
     final wantedCells = (width / size + 1) * (height / size + 1);
     if (wantedCells > mostCells) {
-      size *= math.sqrt(wantedCells / mostCells);
-      while ((width / size + 1) * (height / size + 1) > mostCells) {
-        size *= 2;
-      }
+      isHashed = true;
+      _left = left;
+      _top = top;
+      cellSize = size;
+      _cellsPerPixel = 1 / size;
+      columns = rows = 0;
+      return;
     }
 
+    isHashed = false;
     _left = left;
     _top = top;
     cellSize = size;
     _cellsPerPixel = 1 / size;
     columns = (width * _cellsPerPixel).toInt() + 1;
     rows = (height * _cellsPerPixel).toInt() + 1;
+  }
+
+  void _fileHashed(
+    int count,
+    Float64List positionX,
+    Float64List positionY,
+    Float64List radius,
+  ) {
+    if (_cellOfParticle.length < count) {
+      final cap = count * 2;
+      _cellOfParticle = Int32List(cap);
+      filedParticles = Int32List(cap);
+      largeParticles = Int32List(cap);
+      hashNext = Int32List(cap);
+      cellX = Int32List(cap);
+      cellY = Int32List(cap);
+    } else if (hashNext.length < count) {
+      final cap = _cellOfParticle.length;
+      hashNext = Int32List(cap);
+      cellX = Int32List(cap);
+      cellY = Int32List(cap);
+    }
+    var slots = 64;
+    final target = count * 2;
+    while (slots < target) {
+      slots <<= 1;
+    }
+    if (hashHeads.length < slots) {
+      hashHeads = Int32List(slots);
+    }
+    hashHeads.fillRange(0, slots, -1);
+    _hashMask = slots - 1;
+
+    final cellOfParticle = _cellOfParticle;
+    final largestFiledRadius = cellSize / 2;
+    largeCount = 0;
+    filedCount = 0;
+    for (var i = 0; i < count; i++) {
+      final x = positionX[i], y = positionY[i];
+      if (!x.isFinite || !y.isFinite) {
+        cellOfParticle[i] = _nowhere;
+        continue;
+      }
+      final gx = (x - _left) * _cellsPerPixel;
+      final gy = (y - _top) * _cellsPerPixel;
+      if (radius[i] > largestFiledRadius ||
+          gx.abs() > _maxHashCoord ||
+          gy.abs() > _maxHashCoord) {
+        cellOfParticle[i] = _tooLarge;
+        largeParticles[largeCount++] = i;
+        continue;
+      }
+      final cx = gx.floor();
+      final cy = gy.floor();
+      cellX[i] = cx;
+      cellY[i] = cy;
+      cellOfParticle[i] = 0;
+      filedParticles[filedCount++] = i;
+    }
+    // Link in reverse so each hash bucket chain is in ascending creation order.
+    for (var slot = filedCount - 1; slot >= 0; slot--) {
+      final i = filedParticles[slot];
+      final bucket = hashSlot(cellX[i], cellY[i]);
+      hashNext[i] = hashHeads[bucket];
+      hashHeads[bucket] = i;
+    }
   }
 
   void _growLists(int count, int cellCount) {

@@ -65,17 +65,23 @@ class Flut5Image._(
 
   /// Where this image came from — an asset key, a URL, or a placeholder for
   /// in-memory sources. Used to make warnings identify the culprit.
-  final String source,
-) {
+  final String source, {
+  bool hasTransparentBorder = false,
+}) {
   /// Wraps an already-decoded [ui.Image] — an escape hatch for bitmaps that
   /// came from somewhere other than [load], such as the engine's
   /// `frameSnapshot` or a `PictureRecorder` of your own.
   ///
   /// Ownership transfers: [dispose] (and [resize], which replaces the bitmap)
   /// disposes [image]. Pass `image.clone()` to keep your own handle alive.
-  /// [source] only labels the image in warnings.
-  Flut5Image.fromUiImage(ui.Image image, {String source = '<ui.Image>'})
-    : this._(image, source);
+  /// [source] only labels the image in warnings. Pass [transparentBorder]
+  /// `true` if every 1px outer perimeter pixel of [image] has alpha 0 so
+  /// rotated runs can batch directly into one `drawRawAtlas` call at any scale.
+  Flut5Image.fromUiImage(
+    ui.Image image, {
+    String source = '<ui.Image>',
+    bool transparentBorder = false,
+  }) : this._(image, source, hasTransparentBorder: transparentBorder);
 
   /// A blank, fully transparent [width]×[height] image whose [pixels] are
   /// ready to edit straight away. The engine's `createImage()` forwards here.
@@ -88,6 +94,7 @@ class Flut5Image._(
     return Flut5Image._(
       _paintBitmap(width, height, null),
       'createImage($width, $height)',
+      hasTransparentBorder: true,
     ).._pixels = Uint8ClampedList(width * height * 4);
   }
 
@@ -118,11 +125,47 @@ class Flut5Image._(
   }
 
   bool _disposed = false;
+  bool _hasTransparentBorder = hasTransparentBorder;
+  Rect? _fullSourceRect;
+
+  /// Whether every 1px outer perimeter pixel of this image is known to be
+  /// fully transparent (`alpha == 0`).
+  ///
+  /// Updated automatically by [Flut5Image.create], [loadPixels], and
+  /// [updatePixels] (or passed to [Flut5Image.fromUiImage]). When `true`,
+  /// rotated full-image draws can batch directly into a single GPU
+  /// `drawRawAtlas` call at any scale with exact edge antialiasing.
+  bool get hasTransparentBorder => !_disposed && _hasTransparentBorder;
+
+  static bool _perimeterIsTransparent(Uint8ClampedList rgba, int w, int h) {
+    if (w <= 0 || h <= 0) return false;
+    final rowStride = w * 4;
+    final bottomOffset = (h - 1) * rowStride;
+    for (var x = 0; x < w; x++) {
+      final aOff = x * 4 + 3;
+      if (rgba[aOff] != 0 || rgba[bottomOffset + aOff] != 0) return false;
+    }
+    final rightCol = (w - 1) * 4 + 3;
+    for (var y = 1; y < h - 1; y++) {
+      final rowOff = y * rowStride;
+      if (rgba[rowOff + 3] != 0 || rgba[rowOff + rightCol] != 0) return false;
+    }
+    return true;
+  }
 
   /// The decoded bitmap. Valid until [dispose]; replaced by [resize] and
   /// [updatePixels], after which a handle read earlier is no longer this
   /// image's and may already be freed — read it again rather than keeping it.
   ui.Image get uiImage => _image;
+
+  /// Cached full-image source rectangle `(0, 0, width, height)`, avoiding a
+  /// per-call [Rect] allocation when drawing the whole bitmap with `image()`.
+  Rect get fullSourceRect => _fullSourceRect ??= Rect.fromLTWH(
+    0,
+    0,
+    width.toDouble(),
+    height.toDouble(),
+  );
 
   /// Width of the decoded bitmap, in pixels. Also the logical width the image
   /// draws at when `image()` is called without an explicit size.
@@ -437,6 +480,7 @@ class Flut5Image._(
     // The CPU copy was the old size and can't be resampled to match the GPU
     // result exactly — drop it; `loadPixels()` reads the new bitmap.
     _pixels = null;
+    _hasTransparentBorder = false;
     _uploader?.releaseScratch();
     _replaceBitmap(resized);
   }
@@ -447,6 +491,7 @@ class Flut5Image._(
   void _replaceBitmap(ui.Image next) {
     Flut5ImageHandles.disposeWhenReleased(_image);
     _image = next;
+    _fullSourceRect = null;
     _bitmapVersion++;
   }
 
@@ -654,6 +699,11 @@ class Flut5Image._(
       } else {
         _pixels = fresh;
       }
+      _hasTransparentBorder = _perimeterIsTransparent(
+        _pixels!,
+        _image.width,
+        _image.height,
+      );
       return;
     }
   }
@@ -675,6 +725,11 @@ class Flut5Image._(
   void updatePixels() {
     final straightRgba = _loadedPixelsOrWarn('updatePixels() ignored');
     if (straightRgba == null) return;
+    _hasTransparentBorder = _perimeterIsTransparent(
+      straightRgba,
+      _image.width,
+      _image.height,
+    );
     final uploader = _uploader ??= Flut5PixelUploader();
     _replaceBitmap(uploader.upload(straightRgba, _image.width, _image.height));
   }
@@ -772,6 +827,8 @@ class Flut5Image._(
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    _hasTransparentBorder = false;
+    _fullSourceRect = null;
     _pixels = null;
     _uploader = null;
     Flut5ImageHandles.disposeWhenReleased(_image);
