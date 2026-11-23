@@ -30,6 +30,10 @@ void main() {
   Rect placed(Flut5CachedText t, double x, double y) =>
       Rect.fromLTWH(x - t.leftPad, y, t.drawWidth, t.height);
 
+  /// Where the raster itself goes for text with its pen at ([x], [y]).
+  Rect rasterRect(Flut5CachedText t, double x, double y) =>
+      Rect.fromLTWH(x - t.rasterLeft, y - t.rasterTop, t.blitWidth, t.blitHeight);
+
   /// The shadow filtered live, every draw — what the bake stands in for.
   Paint live(Flut5ShadowSpec s) {
     final sigma = Shadow.convertRadiusToSigma(s.blur);
@@ -65,10 +69,12 @@ void main() {
         // At the raster's own resolution — the screen's — the bake is the
         // live filter's output up to rounding: Impeller's downsampled blur
         // moves a few levels with where its layer starts. Off it, the
-        // silhouette is resampled rather than blurred in place.
+        // silhouette is resampled rather than blurred in place, and Impeller
+        // filters the live draw at the reduced size.
         final ratio =
             ui.PlatformDispatcher.instance.views.first.devicePixelRatio;
-        final cases = [(ratio, 0.0, 6), (1.0, 0.0, 12), (ratio, .4, 12)];
+        final offScale = ui.ImageFilter.isShaderFilterSupported ? 40 : 12;
+        final cases = [(ratio, 0.0, 6), (1.0, 0.0, offScale), (ratio, .4, 12)];
         for (final (scale, rotation, tolerance) in cases) {
           void place(Canvas c) => c
             ..scale(scale)
@@ -84,7 +90,7 @@ void main() {
             c.drawImageRect(
               t.image,
               t.srcRect,
-              placed(t, 0, 0).shift(spec.offset),
+              rasterRect(t, 0, 0).shift(spec.offset),
               live(spec),
             );
           }, size);
@@ -103,7 +109,8 @@ void main() {
       final t = raster('G');
       final spec = Flut5ShadowSpec(Colors.black, Offset.zero, 8, 0);
       final sharp = await _pixels(
-        (c) => c.drawImageRect(t.image, t.srcRect, placed(t, 20, 20), Paint()),
+        (c) =>
+            c.drawImageRect(t.image, t.srcRect, rasterRect(t, 20, 20), Paint()),
       );
       final baked = await _pixels(
         (c) => spec.paintText(c, t, placed(t, 20, 20)),
@@ -210,7 +217,7 @@ void main() {
         c.drawImageRect(
           t.image,
           t.srcRect,
-          placed(t, 20, 20),
+          rasterRect(t, 20, 20),
           Paint()
             ..colorFilter = const ColorFilter.mode(
               Colors.white,

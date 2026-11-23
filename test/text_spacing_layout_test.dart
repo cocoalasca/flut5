@@ -5,6 +5,20 @@ import 'package:flut5/flut5.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+/// Expects two renders to match: byte for byte on Skia, and on the software
+/// GPU of `flutter test --enable-impeller` within the few levels it samples a
+/// large atlas page off by on steep edges.
+void _expectSamePicture(Uint8List actual, Uint8List expected, {String? reason}) {
+  expect(actual.length, expected.length);
+  final tolerance = ui.ImageFilter.isShaderFilterSupported ? 4 : 0;
+  var worst = 0;
+  for (var i = 0; i < actual.length; i++) {
+    final difference = (actual[i] - expected[i]).abs();
+    if (difference > worst) worst = difference;
+  }
+  expect(worst, lessThanOrEqualTo(tolerance), reason: reason);
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   final cache = Flut5TextCache.instance;
@@ -130,7 +144,7 @@ void main() {
                 strokeOnly: style == 2,
               ),
             );
-            expect(
+            _expectSamePicture(
               actual,
               reference,
               reason: '$align style=$style spacing=$spacing',
@@ -194,13 +208,25 @@ void main() {
       final taller = await render(3.125, 47.375);
       expect(taller, isNot(orderedEquals(wider)));
 
+      // Spacing moves glyphs across subpixel positions, so a glyph may gain
+      // its other phases — but never a raster per animation value.
       for (var i = 0; i < 20; i++) {
         await render(-1.25 + i * .137, 25.5 + i * .713);
         expect(cache.layoutCacheLength, 1);
-        expect(cache.cacheLength, textureCount);
-        expect(cache.cacheBytes, textureBytes);
+        expect(
+          cache.cacheLength,
+          lessThanOrEqualTo(textureCount * Flut5TextCache.subpixelPhases),
+        );
       }
-      expect(await render(0, 30), orderedEquals(original));
+      final warmCount = cache.cacheLength;
+      final warmBytes = cache.cacheBytes;
+      expect(warmBytes, greaterThanOrEqualTo(textureBytes));
+      for (var i = 0; i < 20; i++) {
+        await render(-1.25 + i * .137, 25.5 + i * .713);
+        expect(cache.cacheLength, warmCount);
+        expect(cache.cacheBytes, warmBytes);
+      }
+      _expectSamePicture(await render(0, 30), original);
     },
   );
 

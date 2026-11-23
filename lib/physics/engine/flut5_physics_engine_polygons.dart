@@ -93,21 +93,45 @@ mixin _PhysicsPolygons {
   /// would jitter.
   static const double _referenceTolerance = 0.05;
 
+  /// Whether [_sapShapes] is sorted along y rather than x.
+  bool _sweepsAlongY = false;
+
+  /// Picks the sweep axis: the one the polygons are more spread out on, so
+  /// a tall column doesn't test every polygon against every other. Swaps
+  /// only on a clear difference, since a swap costs a full re-sort.
+  void _chooseSweepAxis(List<_PolygonShape> shapes) {
+    var lowX = double.infinity, highX = double.negativeInfinity;
+    var lowY = double.infinity, highY = double.negativeInfinity;
+    for (var i = 0; i < shapes.length; i++) {
+      final shape = shapes[i];
+      if (shape.minX < lowX) lowX = shape.minX;
+      if (shape.maxX > highX) highX = shape.maxX;
+      if (shape.minY < lowY) lowY = shape.minY;
+      if (shape.maxY > highY) highY = shape.maxY;
+    }
+    final spreadX = highX - lowX, spreadY = highY - lowY;
+    if (_sweepsAlongY ? spreadX > spreadY * 1.25 : spreadY > spreadX * 1.25) {
+      _sweepsAlongY = !_sweepsAlongY;
+    }
+  }
+
   /// One collision pass for polygons: every polygon against every other via
-  /// 1D sweep-and-prune on `minX` (two static ones never), then every polygon
-  /// against the particles around it.
+  /// 1D sweep-and-prune along the wider axis (two static ones never), then
+  /// every polygon against the particles around it.
   void _collidePolygons({bool reuseParticleGrid = false}) {
     _refreshPolygonShapes();
     final shapes = _polygonShapes;
     final count = shapes.length;
     if (count > 1) {
       final sap = _sapShapes;
-      // Insertion sort by minX — O(N) on temporally coherent frames.
+      _chooseSweepAxis(sap);
+      final alongY = _sweepsAlongY;
+      // Insertion sort by the leading edge — O(N) on coherent frames.
       for (var i = 1; i < count; i++) {
         final key = sap[i];
-        final keyMinX = key.minX;
+        final keyStart = alongY ? key.minY : key.minX;
         var j = i - 1;
-        while (j >= 0 && sap[j].minX > keyMinX) {
+        while (j >= 0 && (alongY ? sap[j].minY : sap[j].minX) > keyStart) {
           sap[j + 1] = sap[j];
           j--;
         }
@@ -122,7 +146,11 @@ mixin _PhysicsPolygons {
             (aStatic && polyA.velocity.length2 == 0.0 && polyA.angularVelocity == 0.0);
         for (var b = a + 1; b < count; b++) {
           final shapeB = sap[b];
-          if (shapeB.minX > shapeA.maxX) break;
+          if (alongY
+              ? shapeB.minY > shapeA.maxY
+              : shapeB.minX > shapeA.maxX) {
+            break;
+          }
           final polyB = shapeB.polygon;
           if (aStatic && polyB.isStatic) continue;
           if (aImmobile &&

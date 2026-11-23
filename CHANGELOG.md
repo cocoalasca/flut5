@@ -1,5 +1,25 @@
 ## 0.0.1
 
+* `text()` now comes out as Flutter draws text. Each glyph is rasterized for
+  its quarter-pixel position and placed on whole device pixels, ligatures
+  stay together, text under `scale()` stays sharp, and accents and thick
+  strokes are no longer cut off. A glyph can keep up to four rasters.
+* Arabic, Hebrew, Devanagari, Thai and other scripts whose letters join or
+  reorder, combining accents and emoji sequences now draw correctly in the
+  default `text()`.
+* Fix letters disappearing for a frame when the glyph atlas filled up.
+* Fix `textStatic()` with a shadow throwing in profile and release builds.
+* Scroll containers measure text by its real size, so wrapped paragraphs can
+  be scrolled to the end, and overlapping shadowed text keeps its order.
+* A scroll container without an `id` keeps its scroll position when it moves,
+  and the scroll states of containers that are gone are released.
+* Image shadows now blur the shape of a transparent image.
+* Faster without changing the picture: physics with mixed particle sizes and
+  tall stacks of polygons, text whose size animates, blurred text on Skia,
+  long scroll containers (rows outside the view are skipped), separate
+  pixelate scopes, rotated sprites with a transparent border, sketches with
+  many distinct rotated images, and shapes labelled with text (now one batch
+  of each while they don't overlap).
 * **Breaking:** widgets are now created through `flut5Widgets`, callable
   unprefixed from any `Flut5` subclass: `flut5Widgets.createButton('Reset')`,
   `flut5Widgets.createSlider(0, 1)`, and likewise for labels, toggles,

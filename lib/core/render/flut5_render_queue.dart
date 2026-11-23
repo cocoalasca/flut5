@@ -6,9 +6,13 @@ import 'package:flutter/widgets.dart';
 
 import '../flut5_console.dart';
 import '../../image/flut5_image_handles.dart';
+import '../../image/flut5_image_shadows.dart';
 import '../../text/flut5_font.dart';
+import '../../text/flut5_text_cache.dart';
 import '../flut5_shadow.dart';
 import 'flut5_dash.dart';
+import 'flut5_overlap_index.dart';
+import 'flut5_paint_bounds.dart';
 import 'flut5_render_item.dart';
 import 'flut5_shaders.dart';
 import 'items/flut5_multi_line_render_item.dart';
@@ -47,7 +51,8 @@ export 'items/flut5_multi_line_render_item.dart';
 export 'items/flut5_multi_point_render_item.dart';
 export 'items/flut5_point_render_item.dart';
 export 'items/flut5_rect_render_item.dart';
-export 'items/flut5_text_dynamic_batch_render_item.dart';
+export 'items/flut5_text_dynamic_batch_render_item.dart'
+    hide Flut5GlyphGrid, flut5TextInkBox;
 export 'items/flut5_text_dynamic_render_item.dart';
 export 'items/flut5_text_render_item.dart';
 export 'items/flut5_transform_render_item.dart';
@@ -94,7 +99,7 @@ class Flut5RenderQueue() {
   Flut5ShadowSpec? _pendingPointShadow;
   final List<_OpenCoordBatch> _openPointBatches = [];
   final Map<Paint, int> _openPointBatchOfPaint = Map.identity();
-  final _ShapeOverlapIndex _laterPointBoxes = _ShapeOverlapIndex();
+  final Flut5OverlapIndex _laterPointBoxes = Flut5OverlapIndex();
   int _pointBoxFiledCount = 0;
   int _fruitlessPointOpenings = 0;
   int _restingPointPaintChanges = 0;
@@ -106,7 +111,7 @@ class Flut5RenderQueue() {
   Flut5ShadowSpec? _pendingLineShadow;
   final List<_OpenCoordBatch> _openLineBatches = [];
   final Map<Paint, int> _openLineBatchOfPaint = Map.identity();
-  final _ShapeOverlapIndex _laterLineBoxes = _ShapeOverlapIndex();
+  final Flut5OverlapIndex _laterLineBoxes = Flut5OverlapIndex();
   int _lineBoxFiledCount = 0;
   int _fruitlessLineOpenings = 0;
   int _restingLinePaintChanges = 0;
@@ -115,7 +120,30 @@ class Flut5RenderQueue() {
   static const int _restingCoordPaintChangeCount = 1024;
 
   // ── Pending dynamic text (coalesced into drawRawAtlas batches) ────────
+  //
+  // Text waits to draw on top of the shape batches still open, so a sketch
+  // that labels its shapes draws all the shapes and then all the labels. A
+  // shape drawn after a label goes under it, so it only joins while it keeps
+  // clear of every label queued so far ([_keepShapesBeneathText]).
   final List<Flut5TextDynamicEntry> _pendingTextEntries = [];
+  final Flut5OverlapIndex _pendingTextBoxes = Flut5OverlapIndex();
+  int _textBoxesFiled = 0;
+
+  /// Whether text has been queued since the newest shape batch last grew.
+  bool _textCrossedShapes = false;
+
+  // Labels packed so close that most shapes land on the label before them
+  // share few batches, and checking costs a layout lookup per label. So each
+  // such shape counts against them, and one that keeps clear, saving a draw
+  // call, takes [_clearCrossingCredit] off. Past
+  // [_fruitlessTextCrossingsLimit], text and shapes draw strictly in turn
+  // for the next [_restingTextCrossingCount] shapes. The counts carry over
+  // from frame to frame, like [_fruitlessOpenings].
+  int _fruitlessTextCrossings = 0;
+  int _restingTextCrossings = 0;
+  static const int _fruitlessTextCrossingsLimit = 32;
+  static const int _clearCrossingCredit = 4;
+  static const int _restingTextCrossingCount = 1024;
 
   // ── Per-frame Float32List arena (reduces per-flush TypedData churn) ───
   // Sliced via Float32List.sublistView; the queue drops its reference on
@@ -156,7 +184,7 @@ class Flut5RenderQueue() {
   // a counter-clockwise shape would punch a hole in a clockwise one. Batches
   // that can show either keep their shapes' boxes here ([_pendingShapeTracked])
   // and close as soon as a new shape lands where that would happen.
-  final _ShapeOverlapIndex _pendingShapeBoxes = _ShapeOverlapIndex();
+  final Flut5OverlapIndex _pendingShapeBoxes = Flut5OverlapIndex();
   bool _pendingShapeTracked = false;
   Paint? _stacksFill;
   Paint? _stacksStroke;
@@ -205,7 +233,7 @@ class Flut5RenderQueue() {
   /// The boxes of every shape in an open batch after the first, each grown
   /// as in [_keepsApart] and filed under its batch's place among the open
   /// ones. The first batch needs none: nothing is ever drawn before it.
-  final _ShapeOverlapIndex _laterShapeBoxes = _ShapeOverlapIndex();
+  final Flut5OverlapIndex _laterShapeBoxes = Flut5OverlapIndex();
 
   /// Boxes of the newest batch's shapes, four doubles each, not yet filed
   /// in [_laterShapeBoxes]. Filing waits for the next change of colour, so
@@ -263,7 +291,7 @@ class Flut5RenderQueue() {
   Color? _atlasFirstTint;
   final List<_OpenImageBatch> _openImageBatches = [];
   final Map<ui.Image, int> _openImageBatchOfImage = Map.identity();
-  final _ShapeOverlapIndex _laterImageBoxes = _ShapeOverlapIndex();
+  final Flut5OverlapIndex _laterImageBoxes = Flut5OverlapIndex();
   Float64List _newestAtlasBoxes = Float64List(32);
   int _newestAtlasBoxCount = 0;
   int _fruitlessImageOpenings = 0;
@@ -1478,6 +1506,7 @@ class Flut5RenderQueue() {
     if (opaque &&
         _lineCount == 0 &&
         _openLineBatches.isEmpty &&
+        _pendingTextEntries.isEmpty &&
         _pendingShapeHasContent &&
         identical(_pendingShapeStroke, paint) &&
         (_activeShadow == null || _pendingShapeFill == null)) {
@@ -1564,13 +1593,7 @@ class Flut5RenderQueue() {
 
     final older = _openLineBatchOfPaint[paint];
     if (older != null &&
-        !_laterLineBoxes.overlaps(
-          left,
-          top,
-          right,
-          bottom,
-          laterThan: older,
-        )) {
+        !_laterLineBoxes.overlaps(left, top, right, bottom, laterThan: older)) {
       _openLineBatches[older].addLine(x1, y1, x2, y2);
       if (older > 0) {
         _laterLineBoxes.add(left, top, right, bottom, batch: older);
@@ -1621,10 +1644,7 @@ class Flut5RenderQueue() {
           oriented: oriented,
         );
         path.moveTo(_foldX(rect.left, rect.top), _foldY(rect.left, rect.top));
-        path.lineTo(
-          _foldX(rect.right, rect.top),
-          _foldY(rect.right, rect.top),
-        );
+        path.lineTo(_foldX(rect.right, rect.top), _foldY(rect.right, rect.top));
         path.lineTo(
           _foldX(rect.right, rect.bottom),
           _foldY(rect.right, rect.bottom),
@@ -1748,10 +1768,9 @@ class Flut5RenderQueue() {
     if (fill == null && stroke == null) return;
     if (_hasDash && stroke != null) {
       _emitDashed(
-        Path()
-          ..addOval(
-            Rect.fromLTRB(cx - radius, cy - radius, cx + radius, cy + radius),
-          ),
+        Path()..addOval(
+          Rect.fromLTRB(cx - radius, cy - radius, cx + radius, cy + radius),
+        ),
         fill,
         stroke,
       );
@@ -2803,8 +2822,12 @@ class Flut5RenderQueue() {
     if (canBatch) {
       _flushPoints();
       _flushLines();
-      _flushShapes();
       _flushImages();
+      if (_pendingShapeHasContent && _textMayCrossShapes) {
+        _textCrossedShapes = true;
+      } else {
+        _flushShapes();
+      }
       _pendingTextEntries.add(
         Flut5TextDynamicEntry(
           text: text,
@@ -2825,6 +2848,7 @@ class Flut5RenderQueue() {
           foldB: _foldB,
           foldDx: _foldDx,
           foldDy: _foldDy,
+          foldScale: _foldScale,
           shadow: _activeShadow,
           fontVariations: fontVariations,
           fontVariationKey: fontVariationKey,
@@ -2966,17 +2990,103 @@ class Flut5RenderQueue() {
     );
   }
 
+  /// Whether queued text may wait on top of the shape batches still open.
+  /// Not while text sizes animate: finding where such text lands would take
+  /// the per-glyph layout it otherwise skips ([Flut5TextCache.drawsNatively]).
+  bool get _textMayCrossShapes =>
+      _mayReorderShapes &&
+      _restingTextCrossings == 0 &&
+      !Flut5TextCache.instance.stylesAreAnimating;
+
+  /// Makes way for a shape while text is queued. The text draws after every
+  /// open shape batch, so this shape would go under it: it stays that way
+  /// only if it lands on none of it, else the shapes and the text both go
+  /// out first and the shape starts afresh on top.
+  void _keepShapesBeneathText(
+    Paint? fill,
+    Paint? stroke,
+    Rect? bounds,
+    bool mergesExactly,
+  ) {
+    if (_restingTextCrossings > 0) _restingTextCrossings--;
+    if (bounds == null || !_textMayCrossShapes) {
+      _flushShapes();
+      _flushText();
+      return;
+    }
+    if (_landsOnPendingText(fill, stroke, bounds)) {
+      if (++_fruitlessTextCrossings >= _fruitlessTextCrossingsLimit) {
+        _fruitlessTextCrossings = 0;
+        _restingTextCrossings = _restingTextCrossingCount;
+      }
+      _flushShapes();
+      _flushText();
+      return;
+    }
+    _fruitlessTextCrossings = math.max(
+      0,
+      _fruitlessTextCrossings - _clearCrossingCredit,
+    );
+    if (!_textCrossedShapes) return;
+    _textCrossedShapes = false;
+    // Shapes on either side of the text would have been separate paths.
+    // Merging them is only invisible for shapes that rasterize the same in
+    // a shared path, so the others keep theirs.
+    if (!mergesExactly || !_pendingMergesExactly) _flushShapes();
+  }
+
+  bool _landsOnPendingText(Paint? fill, Paint? stroke, Rect bounds) {
+    final entries = _pendingTextEntries;
+    for (var i = _textBoxesFiled; i < entries.length; i++) {
+      final box = entries[i].inkBounds();
+      _pendingTextBoxes.add(box.left, box.top, box.right, box.bottom);
+    }
+    _textBoxesFiled = entries.length;
+    _keepsApart(fill, stroke); // sets the pad for these paints
+    final pad = _apartPad;
+    return _pendingTextBoxes.overlaps(
+      math.min(bounds.left, bounds.right) - pad,
+      math.min(bounds.top, bounds.bottom) - pad,
+      math.max(bounds.left, bounds.right) + pad,
+      math.max(bounds.top, bounds.bottom) + pad,
+    );
+  }
+
+  // The paint of the last label queued on its own. Queued paints are never
+  // changed, so labels in one colour can share it — and, by sharing it, the
+  // tint built from it.
+  Paint? _lonePaint;
+  Color? _lonePaintColor;
+  int _lonePaintStyle = 0;
+  double _lonePaintStrokeWidth = 0;
+
+  Paint _lonePaintFor(Flut5TextDynamicEntry entry) {
+    final kept = _lonePaint;
+    if (kept != null &&
+        entry.paintingStyle == _lonePaintStyle &&
+        entry.strokeWidth == _lonePaintStrokeWidth &&
+        entry.color == _lonePaintColor) {
+      return kept;
+    }
+    _lonePaintColor = entry.color;
+    _lonePaintStyle = entry.paintingStyle;
+    _lonePaintStrokeWidth = entry.strokeWidth;
+    return _lonePaint = Paint()
+      ..color = entry.color
+      ..style = entry.paintingStyle == 1
+          ? PaintingStyle.stroke
+          : PaintingStyle.fill
+      ..strokeWidth = entry.strokeWidth;
+  }
+
   void _flushText() {
     if (_pendingTextEntries.isEmpty) return;
+    _pendingTextBoxes.clear();
+    _textBoxesFiled = 0;
     if (_pendingTextEntries.length == 1) {
       final e = _pendingTextEntries.removeLast();
       if (e.foldA == 1.0 && e.foldB == 0.0) {
-        final paint = Paint()
-          ..color = e.color
-          ..style = e.paintingStyle == 1
-              ? PaintingStyle.stroke
-              : PaintingStyle.fill
-          ..strokeWidth = e.strokeWidth;
+        final paint = _lonePaintFor(e);
         _items.add(
           TextDynamicRenderItem(
             text: e.text,
@@ -3088,6 +3198,176 @@ class Flut5RenderQueue() {
           : result.expandToInclude(transformed);
     }
     return result;
+  }
+
+  // ── Scroll-container culling ──────────────────────────────────────────
+  //
+  // A scroll container shows a window onto content that can be far larger,
+  // and everything outside the window is clipped away. [cullOutside] drops
+  // those draws once the final scroll offset is known, which saves replaying
+  // and rasterizing them. A batch is only dropped whole, so inside a scroll
+  // container batches are also kept to about one window of content each: a
+  // long list then becomes a few batches, of which one or two are visible.
+
+  /// The largest batch extent inside the innermost scroll container, or `0`
+  /// outside any. See [beginScrollContent].
+  double _chunkWidth = 0;
+  double _chunkHeight = 0;
+  final List<(double, double)> _outerChunkSizes = [];
+
+  // Box around every shape in the open batches, for [_limitBatchExtent].
+  double _chunkLeft = double.infinity;
+  double _chunkTop = double.infinity;
+  double _chunkRight = double.negativeInfinity;
+  double _chunkBottom = double.negativeInfinity;
+
+  /// Whether every shape in the newest batch rasterizes the same in a path of
+  /// its own as in a shared one, so the batch can be split without a change.
+  bool _pendingMergesExactly = true;
+
+  /// Called when a scroll container's content starts: keeps batches to about
+  /// [viewWidth] × [viewHeight] until [endScrollContent].
+  void beginScrollContent(double viewWidth, double viewHeight) {
+    _outerChunkSizes.add((_chunkWidth, _chunkHeight));
+    _chunkWidth = viewWidth > 1 ? viewWidth : 1;
+    _chunkHeight = viewHeight > 1 ? viewHeight : 1;
+    _resetBatchExtent();
+  }
+
+  /// Closes [beginScrollContent]. Call it with no shape batch open.
+  void endScrollContent() {
+    final (width, height) = _outerChunkSizes.removeLast();
+    _chunkWidth = width;
+    _chunkHeight = height;
+    _resetBatchExtent();
+  }
+
+  void _resetBatchExtent() {
+    _chunkLeft = double.infinity;
+    _chunkTop = double.infinity;
+    _chunkRight = double.negativeInfinity;
+    _chunkBottom = double.negativeInfinity;
+  }
+
+  /// Closes the open batches when a shape at [bounds] would stretch them past
+  /// the size [beginScrollContent] set — unless a split could show, which
+  /// keeps circles and rounded rects in the one batch they'd share anyway.
+  void _limitBatchExtent(Rect? bounds, bool mergesExactly) {
+    if (bounds == null) return;
+    final left = math.min(bounds.left, bounds.right);
+    final top = math.min(bounds.top, bounds.bottom);
+    final right = math.max(bounds.left, bounds.right);
+    final bottom = math.max(bounds.top, bounds.bottom);
+    if (_pendingShapeHasContent &&
+        mergesExactly &&
+        _pendingMergesExactly &&
+        (math.max(right, _chunkRight) - math.min(left, _chunkLeft) >
+                _chunkWidth ||
+            math.max(bottom, _chunkBottom) - math.min(top, _chunkTop) >
+                _chunkHeight)) {
+      _flushShapes();
+    }
+    if (left < _chunkLeft) _chunkLeft = left;
+    if (top < _chunkTop) _chunkTop = top;
+    if (right > _chunkRight) _chunkRight = right;
+    if (bottom > _chunkBottom) _chunkBottom = bottom;
+  }
+
+  /// Drops the items from [startIndex] on that can't show through [viewport]
+  /// — a rect in the coordinates active at [startIndex], the content's clip.
+  /// Call it with nothing pending. Text batches are filtered entry by entry.
+  ///
+  /// Items are kept when their extent isn't known, inside blur and pixelate
+  /// scopes (whose content spreads), and when they aren't draws at all.
+  void cullOutside(int startIndex, Rect viewport) {
+    final items = _items;
+    final stack = <Matrix4>[];
+    Matrix4? current;
+    var scopeDepth = 0;
+    var kept = startIndex;
+    for (var i = startIndex; i < items.length; i++) {
+      final item = items[i];
+      var survivor = item;
+      if (item is TransformRenderItem) {
+        current = _appliedTo(current, item, stack);
+      } else if (item is PixelateBeginRenderItem ||
+          item is BlurBeginRenderItem) {
+        scopeDepth++;
+      } else if (item is PixelateEndRenderItem || item is BlurEndRenderItem) {
+        scopeDepth--;
+      } else if (scopeDepth == 0 &&
+          item is! ClipRenderItem &&
+          item is! BackgroundRenderItem) {
+        final visible = _inViewport(item, viewport, current);
+        if (visible == null) continue;
+        survivor = visible;
+      }
+      items[kept++] = survivor;
+    }
+    items.length = kept;
+  }
+
+  /// [item] if any of it can land in [viewport], a narrower text batch if
+  /// only some of its entries can, or `null` when none can.
+  Flut5RenderItem? _inViewport(
+    Flut5RenderItem item,
+    Rect viewport,
+    Matrix4? transform,
+  ) {
+    bool shows(Rect? paint) {
+      if (paint == null) return true;
+      final placed = transform == null
+          ? paint
+          : MatrixUtils.transformRect(transform, paint);
+      return placed.overlaps(viewport);
+    }
+
+    if (item is TextDynamicBatchRenderItem) {
+      final entries = item.entries;
+      var showing = 0;
+      final visible = <Flut5TextDynamicEntry>[];
+      for (var i = 0; i < entries.length; i++) {
+        if (shows(entries[i].inkBounds().inflate(_cullPad))) {
+          visible.add(entries[i]);
+          showing++;
+        }
+      }
+      if (showing == 0) return null;
+      return showing == entries.length
+          ? item
+          : TextDynamicBatchRenderItem(visible);
+    }
+    return shows(flut5PaintBounds(item, _cullPad)) ? item : null;
+  }
+
+  /// Anti-aliasing margin for [cullOutside], in logical pixels.
+  static const double _cullPad = 2;
+
+  /// The matrix after [item], keeping saved states in [stack]; `null` is the
+  /// identity.
+  static Matrix4? _appliedTo(
+    Matrix4? current,
+    TransformRenderItem item,
+    List<Matrix4> stack,
+  ) {
+    switch (item.type) {
+      case TransformType.push:
+        stack.add(current?.clone() ?? Matrix4.identity());
+        return current;
+      case TransformType.pop:
+        return stack.isEmpty ? current : stack.removeLast();
+      case TransformType.translate:
+        return (current ?? Matrix4.identity())
+          ..translateByDouble(item.dx!, item.dy!, 0, 1);
+      case TransformType.scale:
+        return (current ?? Matrix4.identity())
+          ..scaleByDouble(item.scaleX!, item.scaleY!, 1, 1);
+      case TransformType.rotate:
+        return (current ?? Matrix4.identity())..rotateZ(item.rotation!);
+      case TransformType.matrix:
+        return (current ?? Matrix4.identity())
+          ..multiply(Matrix4.fromFloat64List(item.matrix!));
+    }
   }
 
   /// Add a new rendering operation to the queue. The folded transform state
@@ -3259,13 +3539,16 @@ class Flut5RenderQueue() {
     _flushImages();
     _flushText();
     final baseline = canvas.getSaveCount();
+    Flut5GlyphGrid.beginReplay(canvas);
     if (_hasPixelate) {
       _replayPixelated(canvas, skipBackgrounds: false);
     } else {
       for (final item in _items) {
+        Flut5GlyphGrid.beforeItem(item.keepsCanvasTransform);
         item.execute(canvas);
       }
     }
+    Flut5GlyphGrid.endReplay();
     _balanceSaveStack(canvas, baseline);
   }
 
@@ -3298,14 +3581,17 @@ class Flut5RenderQueue() {
     _flushImages();
     _flushText();
     final baseline = canvas.getSaveCount();
+    Flut5GlyphGrid.beginReplay(canvas);
     if (_hasPixelate) {
       _replayPixelated(canvas, skipBackgrounds: true);
     } else {
       for (final item in _items) {
         if (item is BackgroundRenderItem) continue;
+        Flut5GlyphGrid.beforeItem(item.keepsCanvasTransform);
         item.execute(canvas);
       }
     }
+    Flut5GlyphGrid.endReplay();
     _balanceSaveStack(canvas, baseline);
   }
 
@@ -3320,22 +3606,53 @@ class Flut5RenderQueue() {
     final base = Matrix4.fromFloat64List(canvas.getTransform());
     final passes = <_PixelatePass>[];
     var target = canvas;
-    for (final item in _items) {
+    for (var index = 0; index < _items.length; index++) {
+      final item = _items[index];
       if (item is PixelateBeginRenderItem) {
         final pass = _PixelatePass(
           item,
           target,
           passes.isEmpty ? base : passes.last.logical,
           _palettes,
+          contentBounds: _scopeContentBounds(index),
         );
         passes.add(pass);
         target = pass.canvas;
       } else if (item is PixelateEndRenderItem) {
         if (passes.isNotEmpty) target = passes.removeLast().end();
       } else if (!skipBackgrounds || item is! BackgroundRenderItem) {
+        Flut5GlyphGrid.pixelating = passes.isNotEmpty;
+        Flut5GlyphGrid.beforeItem(item.keepsCanvasTransform);
         item.execute(target);
       }
     }
+  }
+
+  /// What the pixelate scope opened at [beginIndex] paints, in the coordinates
+  /// active at its marker, so its pass can cover just those blocks. `null`
+  /// when that can't be told: it holds a background, a nested scope (whose
+  /// blocks or blur spread past their content), or a paint of unknown extent.
+  Rect? _scopeContentBounds(int beginIndex) {
+    final stack = <Matrix4>[];
+    Matrix4? current;
+    Rect? painted;
+    for (var i = beginIndex + 1; i < _items.length; i++) {
+      final item = _items[i];
+      if (item is PixelateEndRenderItem) return painted ?? Rect.zero;
+      if (item is TransformRenderItem) {
+        current = _appliedTo(current, item, stack);
+      } else if (item is! ClipRenderItem) {
+        final bounds = item is BackgroundRenderItem
+            ? null
+            : flut5PaintBounds(item, _cullPad);
+        if (bounds == null) return null;
+        final placed = current == null
+            ? bounds
+            : MatrixUtils.transformRect(current, bounds);
+        painted = painted == null ? placed : painted.expandToInclude(placed);
+      }
+    }
+    return null;
   }
 
   /// Pops the canvas save stack back down to [baseline] when the frame's
@@ -3380,6 +3697,8 @@ class Flut5RenderQueue() {
   /// kept alive, and the batches' paths are kept for the next frame to reuse.
   void clear() {
     _items.clear();
+    ImageAtlasRenderItem.noteFrameEnded();
+    Flut5ImageShadows.noteFrameEnded();
     if (_heldImages.isNotEmpty) {
       for (final image in _heldImages) {
         Flut5ImageHandles.release(image);
@@ -3408,6 +3727,11 @@ class Flut5RenderQueue() {
     _pendingShapeShadow = null;
     _pendingShapeBoxes.clear();
     _pendingShapeTracked = false;
+    _pendingMergesExactly = true;
+    _chunkWidth = 0;
+    _chunkHeight = 0;
+    _outerChunkSizes.clear();
+    _resetBatchExtent();
     _openBatches.clear();
     _openBatchOfPaint.clear();
     _laterShapeBoxes.clear();
@@ -3429,6 +3753,9 @@ class Flut5RenderQueue() {
     _laterImageBoxes.clear();
     _newestAtlasBoxCount = 0;
     _pendingTextEntries.clear();
+    _pendingTextBoxes.clear();
+    _textBoxesFiled = 0;
+    _textCrossedShapes = false;
     _clipRecordingPath = null;
     // Fold state is per-frame — the canvas transform resets with the frame.
     _foldA = 1.0;
@@ -3539,6 +3866,8 @@ class Flut5RenderQueue() {
   /// True when [_beginShape] has to read the box of a shape painted with
   /// [fill]/[stroke] to batch it correctly.
   bool _needsBox(Paint? fill, Paint? stroke, bool oriented) =>
+      _chunkWidth > 0 ||
+      _pendingTextEntries.isNotEmpty ||
       _pendingShapeTracked ||
       (fill != null && !oriented) ||
       _stacks(fill, stroke) ||
@@ -3591,6 +3920,10 @@ class Flut5RenderQueue() {
     bool oriented = true,
     bool mergesExactly = true,
   }) {
+    if (_pendingTextEntries.isNotEmpty) {
+      _keepShapesBeneathText(fill, stroke, bounds, mergesExactly);
+    }
+    if (_chunkWidth > 0) _limitBatchExtent(bounds, mergesExactly);
     final stacks = _stacks(fill, stroke);
     final unwound = fill != null && !oriented;
     final apart = _keepsApart(fill, stroke);
@@ -3641,14 +3974,16 @@ class Flut5RenderQueue() {
     }
     if (_pendingShapePath == null) {
       _pendingShapeTracked = !plain;
+      _pendingMergesExactly = mergesExactly;
       // The first open batch needs no boxes; a later one needs every one.
       _newestStaysOpen =
           plain &&
           reorders &&
           _mayReorderShapes &&
           (_openBatches.isEmpty || bounds != null);
-    } else if (!reorders) {
-      _newestStaysOpen = false;
+    } else {
+      if (!mergesExactly) _pendingMergesExactly = false;
+      if (!reorders) _newestStaysOpen = false;
     }
     if (_pendingShapeTracked) {
       _pendingShapeBoxes.add(
@@ -3673,7 +4008,6 @@ class Flut5RenderQueue() {
     _flushPoints();
     _flushLines();
     _flushImages();
-    _flushText();
     final path = _pendingShapePath ??= _takeBatchPath();
     _pendingShapeFill = fill;
     _pendingShapeStroke = stroke;
@@ -3879,7 +4213,9 @@ class Flut5RenderQueue() {
   }
 
   void _flushShapes() {
+    _textCrossedShapes = false;
     _closeOpenBatches();
+    if (_chunkWidth > 0) _resetBatchExtent();
     _pendingShapeBoxes.clear();
     _pendingShapeTracked = false;
     _newestStaysOpen = false;
@@ -3949,190 +4285,6 @@ extension Flut5PaintCloner on Paint {
       ..imageFilter = imageFilter
       ..isAntiAlias = isAntiAlias
       ..filterQuality = filterQuality;
-  }
-}
-
-/// Boxes of the shapes in the open shape batch, for asking whether a new
-/// shape lands on one already in it. Boxes that only touch do not overlap.
-///
-/// A handful of boxes are scanned directly. Past [_scanLimit] they are filed
-/// on a uniform grid by the cell their centre falls in, and a query walks the
-/// cells its box can reach once widened by the largest half-extent on file.
-/// Cells hash into a flat table, so two cells may share a chain — every
-/// candidate still gets the exact box test, so a collision costs a
-/// comparison, never a wrong answer.
-///
-/// [overlaps] may answer `true` when deciding would be expensive: a box far
-/// larger than the grid was sized for, a crowded cell, or coordinates that
-/// cannot be hashed. The queue then closes the batch — one extra draw call —
-/// and the next batch sizes a fresh grid from the shapes that follow, so the
-/// per-shape cost stays bounded whatever the sketch draws.
-class _ShapeOverlapIndex() {
-  static const int _scanLimit = 16;
-  static const int _firstSlots = 64;
-  static const int _maxCells = 16;
-  static const int _maxTests = 96;
-  static const double _coordLimit = 1e9;
-
-  // Doubles, not float32: touching shapes must compare exactly as drawn.
-  Float64List _boxes = Float64List(_scanLimit * 4);
-  Int32List _next = Int32List(_scanLimit);
-  // Per box: 1 when added as `marked`, for queries that only avoid those.
-  Uint8List _marks = Uint8List(_scanLimit);
-  // Per box: the `batch` it was added under, for queries that only avoid
-  // the boxes of later batches.
-  Int32List _batches = Int32List(_scanLimit);
-  // Slot → newest box filed there, -1 when empty. Only the first `_mask + 1`
-  // slots are live; the list keeps its largest size across batches so a
-  // small batch never pays to reset a big batch's table.
-  Int32List _heads = Int32List(_firstSlots);
-  int _mask = 0;
-  int _count = 0;
-  // Zero until the grid is built.
-  double _cellW = 0;
-  double _cellH = 0;
-  double _maxHalfW = 0;
-  double _maxHalfH = 0;
-  bool _undecidable = false;
-
-  void clear() {
-    _count = 0;
-    _cellW = 0;
-    _cellH = 0;
-    _maxHalfW = 0;
-    _maxHalfH = 0;
-    _undecidable = false;
-  }
-
-  // Also false for NaN.
-  static bool _hashable(double l, double t, double r, double b) =>
-      l > -_coordLimit &&
-      t > -_coordLimit &&
-      r < _coordLimit &&
-      b < _coordLimit;
-
-  int _slot(int cx, int cy) => ((cx * 73856093) ^ (cy * 19349663)) & _mask;
-
-  /// Whether the box lands on one already added — on any of them, with
-  /// [markedOnly] just on those added as `marked`, and with [laterThan] just
-  /// on those added under a `batch` after that one.
-  bool overlaps(
-    double x1,
-    double y1,
-    double x2,
-    double y2, {
-    bool markedOnly = false,
-    int laterThan = -1,
-  }) {
-    if (_undecidable) return true;
-    if (_count == 0) return false;
-    final l = math.min(x1, x2), r = math.max(x1, x2);
-    final t = math.min(y1, y2), b = math.max(y1, y2);
-    if (!_hashable(l, t, r, b)) return true;
-    final boxes = _boxes, marks = _marks, batches = _batches;
-    if (_cellW == 0) {
-      for (int o = 0, end = _count * 4; o < end; o += 4) {
-        if (markedOnly && marks[o >> 2] == 0) continue;
-        if (batches[o >> 2] <= laterThan) continue;
-        if (l < boxes[o + 2] &&
-            boxes[o] < r &&
-            t < boxes[o + 3] &&
-            boxes[o + 1] < b) {
-          return true;
-        }
-      }
-      return false;
-    }
-    final cx0 = ((l - _maxHalfW) / _cellW).floor();
-    final cx1 = ((r + _maxHalfW) / _cellW).floor();
-    final cy0 = ((t - _maxHalfH) / _cellH).floor();
-    final cy1 = ((b + _maxHalfH) / _cellH).floor();
-    if ((cx1 - cx0 + 1) * (cy1 - cy0 + 1) > _maxCells) return true;
-    final heads = _heads, next = _next;
-    int tests = 0;
-    for (int cx = cx0; cx <= cx1; cx++) {
-      for (int cy = cy0; cy <= cy1; cy++) {
-        for (int i = heads[_slot(cx, cy)]; i >= 0; i = next[i]) {
-          if (++tests > _maxTests) return true;
-          if (markedOnly && marks[i] == 0) continue;
-          if (batches[i] <= laterThan) continue;
-          final o = i * 4;
-          if (l < boxes[o + 2] &&
-              boxes[o] < r &&
-              t < boxes[o + 3] &&
-              boxes[o + 1] < b) {
-            return true;
-          }
-        }
-      }
-    }
-    return false;
-  }
-
-  void add(
-    double x1,
-    double y1,
-    double x2,
-    double y2, {
-    bool marked = false,
-    int batch = 0,
-  }) {
-    final l = math.min(x1, x2), r = math.max(x1, x2);
-    final t = math.min(y1, y2), b = math.max(y1, y2);
-    if (!_hashable(l, t, r, b)) {
-      _undecidable = true;
-      return;
-    }
-    if (_count == _next.length) {
-      _boxes = Float64List(_count * 8)..setRange(0, _count * 4, _boxes);
-      _next = Int32List(_count * 2)..setRange(0, _count, _next);
-      _marks = Uint8List(_count * 2)..setRange(0, _count, _marks);
-      _batches = Int32List(_count * 2)..setRange(0, _count, _batches);
-    }
-    _marks[_count] = marked ? 1 : 0;
-    _batches[_count] = batch;
-    final o = _count * 4;
-    _boxes[o] = l;
-    _boxes[o + 1] = t;
-    _boxes[o + 2] = r;
-    _boxes[o + 3] = b;
-    final halfW = (r - l) * 0.5, halfH = (b - t) * 0.5;
-    if (halfW > _maxHalfW) _maxHalfW = halfW;
-    if (halfH > _maxHalfH) _maxHalfH = halfH;
-    final i = _count++;
-    if (_cellW == 0) {
-      if (_count > _scanLimit) {
-        // Two shape-widths per cell: a query for a typical shape reaches two
-        // cells per axis, each holding a handful of non-overlapping shapes.
-        _cellW = math.max(_maxHalfW * 4, 1.0);
-        _cellH = math.max(_maxHalfH * 4, 1.0);
-        _regrid(_firstSlots);
-      }
-    } else if (_count > (_mask + 1) >> 1) {
-      _regrid((_mask + 1) * 2);
-    } else {
-      _file(i);
-    }
-  }
-
-  /// Resets the table to [slots] (a power of two) and files every box.
-  void _regrid(int slots) {
-    if (_heads.length < slots) _heads = Int32List(slots);
-    _heads.fillRange(0, slots, -1);
-    _mask = slots - 1;
-    for (int j = 0; j < _count; j++) {
-      _file(j);
-    }
-  }
-
-  void _file(int i) {
-    final o = i * 4;
-    final slot = _slot(
-      ((_boxes[o] + _boxes[o + 2]) * 0.5 / _cellW).floor(),
-      ((_boxes[o + 1] + _boxes[o + 3]) * 0.5 / _cellH).floor(),
-    );
-    _next[i] = _heads[slot];
-    _heads[slot] = i;
   }
 }
 
@@ -4366,6 +4518,9 @@ class _TransformedImageRenderItem(
 ) extends Flut5RenderItem {
   @override
   late final Rect? bounds = fold.bounds(item.dst);
+
+  @override
+  Rect? get inkBounds => bounds;
   late final Float64List _matrix = fold.matrix;
 
   @override
@@ -4396,8 +4551,12 @@ class _PixelatePass(
   /// Logical pixels → [canvas] pixels, before any transform inside the
   /// scope. The base a nested scope builds its grid on.
   var Matrix4 logical,
-  final _PaletteImages _palettes,
-) {
+  final _PaletteImages _palettes, {
+
+  /// What the scope paints, in its own coordinates: the pass then covers only
+  /// the blocks under it. `null` covers the whole canvas.
+  Rect? contentBounds,
+}) {
   this : _palette = scope.palette, canvas = parent {
     final size = scope.blockSize;
     if (!(size >= 1) || !size.isFinite) return;
@@ -4411,10 +4570,36 @@ class _PixelatePass(
         fromCurrent.copyInverse(current) == 0) {
       return;
     }
-    final blocks = Matrix4.diagonal3Values(1 / size, 1 / size, 1);
-    _cols = cols;
-    _rows = rows;
+    // The grid stays anchored to the canvas origin: a cropped pass is the
+    // same blocks, with fewer of them, moved by a whole number of pixels.
+    var firstCol = 0, firstRow = 0, lastCol = cols, lastRow = rows;
+    if (contentBounds != null) {
+      final painted = MatrixUtils.transformRect(
+        fromLogical.multiplied(current),
+        contentBounds,
+      );
+      if (painted.isFinite) {
+        firstCol = math.max(0, (painted.left / size).floor() - 1);
+        firstRow = math.max(0, (painted.top / size).floor() - 1);
+        lastCol = math.min(cols, (painted.right / size).ceil() + 1);
+        lastRow = math.min(rows, (painted.bottom / size).ceil() + 1);
+        if (firstCol >= lastCol || firstRow >= lastRow) {
+          // Nothing lands on the canvas: one empty block will do.
+          firstCol = firstRow = 0;
+          lastCol = lastRow = 1;
+        }
+      }
+    }
+    _firstCol = firstCol;
+    _firstRow = firstRow;
+    _cols = lastCol - firstCol;
+    _rows = lastRow - firstRow;
     _size = size;
+    final blocks = Matrix4.translationValues(
+      -firstCol.toDouble(),
+      -firstRow.toDouble(),
+      0,
+    )..scaleByDouble(1 / size, 1 / size, 1, 1);
     // Scope-local → logical (logical⁻¹ · current) → blocks.
     final toBlocks = blocks.multiplied(fromLogical)..multiply(current);
     // From the parent's transform back to logical: current⁻¹ · logical.
@@ -4432,6 +4617,8 @@ class _PixelatePass(
   ui.PictureRecorder? _recorder;
   final List<Color>? _palette;
   late final Matrix4 _back;
+  late final int _firstCol;
+  late final int _firstRow;
   late final int _cols;
   late final int _rows;
   late final double _size;
@@ -4468,7 +4655,12 @@ class _PixelatePass(
       ..drawImageRect(
         image,
         Rect.fromLTWH(0, 0, _cols.toDouble(), _rows.toDouble()),
-        Rect.fromLTWH(0, 0, _cols * _size, _rows * _size),
+        Rect.fromLTWH(
+          _firstCol * _size,
+          _firstRow * _size,
+          _cols * _size,
+          _rows * _size,
+        ),
         _blockPaint,
       )
       ..restore();

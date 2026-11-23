@@ -71,12 +71,23 @@ class TextDynamicRenderItem({
     return _shaderCache[key] = gradient.createShader(bounds);
   }
 
-  static bool _canAtlasPaint(Paint paint) =>
-      paint.blendMode == ui.BlendMode.srcOver &&
-      paint.shader == null &&
-      paint.maskFilter == null &&
-      paint.colorFilter == null &&
-      paint.imageFilter == null;
+  /// The last paint [_canAtlasPaint] said yes to. Queued paints are immutable
+  /// snapshots, so its identity stands for its content.
+  static Paint? _lastAtlasPaint;
+
+  static bool _canAtlasPaint(Paint paint) {
+    if (identical(paint, _lastAtlasPaint)) return true;
+    final canAtlas =
+        paint.blendMode == ui.BlendMode.srcOver &&
+        paint.shader == null &&
+        paint.maskFilter == null &&
+        paint.colorFilter == null &&
+        paint.imageFilter == null;
+    if (canAtlas) _lastAtlasPaint = paint;
+    return canAtlas;
+  }
+
+  static Paint _maskPaintForGlyphs() => _maskPaint;
 
   // With no wrapping, spacing changes offsets and alignment but never line
   // breaks. Reuse the zero-spacing layout and keep the exact animated value
@@ -86,12 +97,22 @@ class TextDynamicRenderItem({
   double _lineWidth(Flut5TextLine line) =>
       line.widthWithSpacing(_compositionSpacing);
 
+  late final Flut5GlyphFont _font = Flut5GlyphFont(
+    family: fontFamily,
+    size: fontSize,
+    weight: fontWeight,
+    style: fontStyle,
+    variations: fontVariations,
+    variationKey: fontVariationKey,
+  );
+
   Rect _lineInkBounds(
     Flut5TextCache cache,
     Flut5TextLine line,
     double lineHeight,
     int paintingStyle,
     double strokeWidth,
+    double rasterScale,
   ) {
     double left = 0.0;
     final lineWidth = _lineWidth(line);
@@ -100,18 +121,14 @@ class TextDynamicRenderItem({
     var hasInk = false;
 
     for (int i = 0; i < line.glyphs.length; i++) {
-      final cached = cache.getOrCreate(
-        text: line.glyphs[i],
-        fontFamily: fontFamily,
-        fontSize: fontSize,
-        fontWeight: fontWeight,
-        fontStyle: fontStyle,
-        textLeading: null,
-        align: TextAlign.left,
+      final cached = cache.lineGlyph(
+        line,
+        i,
+        _font,
         paintingStyle: paintingStyle,
         strokeWidth: strokeWidth,
-        fontVariations: fontVariations,
-        fontVariationKey: fontVariationKey,
+        phase: 0,
+        rasterScale: rasterScale,
       );
       final glyphLeft = line.offsetWithSpacing(i, spacing) - cached.leftPad;
       final glyphRight = glyphLeft + cached.drawWidth;
@@ -136,258 +153,183 @@ class TextDynamicRenderItem({
     return originalX;
   }
 
-  /// Approximate text block bounds used for scroll-mode container sizing.
-  /// Avoids glyph measurement: width/height are estimated from the character
-  /// count and [fontSize] (or the explicit [maxWidth]/[maxHeight]). Memoized —
+  List<Flut5TextLine> get _layoutLines => Flut5TextCache.instance
+      .getOrCreateLayout(
+        text: text,
+        fontFamily: fontFamily,
+        fontSize: fontSize,
+        fontWeight: fontWeight,
+        fontStyle: fontStyle,
+        letterSpacing: maxWidth == null ? 0.0 : letterSpacing ?? 0.0,
+        maxWidth: maxWidth,
+        fontVariations: fontVariations,
+        fontVariationKey: fontVariationKey,
+      )
+      .lines;
+
+  double get _lineHeight => textLeading != null
+      ? fontSize * textLeading!
+      : Flut5TextCache.instance.measureLineHeight(
+          fontFamily: fontFamily,
+          fontSize: fontSize,
+          fontWeight: fontWeight,
+          fontStyle: fontStyle,
+          fontVariations: fontVariations,
+          fontVariationKey: fontVariationKey,
+        );
+
+  /// The laid-out text block, as sizes a scroll-mode container. Memoized —
   /// items are immutable once queued. See [Flut5RenderItem.bounds].
   @override
   late final Rect? bounds = _computeBounds();
 
   Rect _computeBounds() {
-    final lines = text.split('\n');
-    int longest = 0;
+    final lines = _layoutLines;
+    var left = double.infinity, right = double.negativeInfinity;
     for (final line in lines) {
-      if (line.length > longest) longest = line.length;
+      final width = _lineWidth(line);
+      final start = _alignedX(x, width);
+      if (start < left) left = start;
+      if (start + width > right) right = start + width;
     }
-    final width = maxWidth ?? (longest * fontSize * 0.55);
-    final height = maxHeight ?? (lines.length * fontSize * 1.3);
-    return Rect.fromLTWH(_alignedX(x, width), y, width, height);
+    if (left > right) left = right = x;
+    final height = maxHeight ?? lines.length * _lineHeight;
+    return Rect.fromLTRB(left, y, right, y + height);
   }
 
-  /// Blits one laid-out line: resolves the line's glyphs from the cache and
-  /// emits a single `Canvas.drawRawAtlas` when painting with a plain colour or
-  /// gradient mask, falling back to `drawImageRect` for filters, shadows,
-  /// oversized glyphs, or mid-line eviction.
+  /// Everything this text can paint: its block grown by what glyphs reach
+  /// past it, its stroke, and its shadow.
+  @override
+  late final Rect? inkBounds = flut5TextInkBox(
+    bounds!,
+    fontSize,
+    strokePaint?.strokeWidth ?? 0,
+    shadow,
+  );
+
+  /// Whether this draw has no shadow, gradient or box to clip it to, as the
+  /// platform's text renderer needs, before looking at its paints.
+  bool get _mayDrawNatively =>
+      maxHeight == null &&
+      shadow == null &&
+      fillGradient == null &&
+      strokeGradient == null;
+
+  /// Whether the paints are solid colours, as the platform's text renderer
+  /// needs too.
+  bool get _hasPlainPaints =>
+      (fillPaint == null || _canAtlasPaint(fillPaint!)) &&
+      (strokePaint == null || _canAtlasPaint(strokePaint!));
+
+  /// Draws every line through the platform's text renderer, each line's
+  /// stroke beneath its fill, as the cached route layers them.
+  void _paintNatively(Canvas canvas) {
+    final spacing = _compositionSpacing;
+    final strokeForeground = strokePaint == null
+        ? null
+        : (Paint()
+            ..color = strokePaint!.color
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = strokePaint!.strokeWidth);
+    final fillForeground = fillPaint == null
+        ? null
+        : (Paint()..color = fillPaint!.color);
+    if (maxWidth == null) {
+      Flut5GlyphAtlasBlitter.paintUnwrappedNatively(
+        canvas,
+        text,
+        _font,
+        foregrounds: [?strokeForeground, ?fillForeground],
+        x: x,
+        y: y,
+        spacing: spacing,
+        align: textAlign,
+        lineHeight: () => _lineHeight,
+      );
+      return;
+    }
+    final lines = _layoutLines;
+    final lineHeight = _lineHeight;
+    var cursorY = y;
+    for (final line in lines) {
+      if (line.glyphs.isNotEmpty) {
+        final startX = _alignedX(x, _lineWidth(line));
+        for (final foreground in [strokeForeground, fillForeground]) {
+          if (foreground == null) continue;
+          Flut5GlyphAtlasBlitter.paintLineNatively(
+            canvas,
+            line,
+            _font,
+            foreground: foreground,
+            startX: startX,
+            y: cursorY,
+            spacing: letterSpacing ?? 0,
+          );
+        }
+      }
+      cursorY += lineHeight;
+    }
+  }
+
+  /// Queues and draws one laid-out line: a plain colour or gradient mask goes
+  /// through the glyph atlas, a shadow through its own pass, and paints an
+  /// atlas can't apply glyph by glyph with [paint].
   void _drawGlyphs(
     Canvas canvas,
     Flut5TextCache cache,
+    Flut5GlyphGrid grid,
+    double rasterScale,
     Flut5TextLine line,
     double startX,
     double y,
-    Paint? paint,
+    Paint Function()? paint,
     int paintingStyle,
     double strokeWidth, {
     Flut5ShadowSpec? shadow,
     Paint? sourcePaint,
     bool isMask = false,
   }) {
+    if (line.glyphs.isEmpty) return;
     final spacing = _compositionSpacing;
-    final glyphCount = line.glyphs.length;
-    if (glyphCount == 0) return;
-
     if (shadow != null) {
-      final generation = cache.textureGeneration;
-      final isSoft = shadow.blur > 0 || shadow.spread > 0;
-      final fetched = <Flut5CachedText>[];
-      final bakedShadows = isSoft ? <Flut5ShadowRaster>[] : null;
-      for (int i = 0; i < glyphCount; i++) {
-        final cached = cache.getOrCreate(
-          text: line.glyphs[i],
-          fontFamily: fontFamily,
-          fontSize: fontSize,
-          fontWeight: fontWeight,
-          fontStyle: fontStyle,
-          textLeading: null,
-          align: TextAlign.left,
-          paintingStyle: paintingStyle,
-          strokeWidth: strokeWidth,
-          fontVariations: fontVariations,
-          fontVariationKey: fontVariationKey,
-        );
-        fetched.add(cached);
-        if (bakedShadows != null) {
-          bakedShadows.add(shadow.resolveBakedShadow(cached)!);
-        }
-      }
-      if (generation == cache.textureGeneration) {
-        Flut5GlyphAtlasBlitter.drawShadowLine(
-          canvas,
-          cache,
-          line,
-          fetched,
-          bakedShadows,
-          startX,
-          y,
-          spacing,
-          shadow,
-          cache.textBlitQuality,
-        );
-      } else {
-        // Eviction happened mid-line (very small cache budget) — re-fetch and
-        // paint glyph by glyph safely.
-        for (int i = 0; i < glyphCount; i++) {
-          final cached = cache.getOrCreate(
-            text: line.glyphs[i],
-            fontFamily: fontFamily,
-            fontSize: fontSize,
-            fontWeight: fontWeight,
-            fontStyle: fontStyle,
-            textLeading: null,
-            align: TextAlign.left,
-            paintingStyle: paintingStyle,
-            strokeWidth: strokeWidth,
-            fontVariations: fontVariations,
-            fontVariationKey: fontVariationKey,
-          );
-          final dst = Rect.fromLTWH(
-            startX + line.offsetWithSpacing(i, spacing) - cached.leftPad,
-            y,
-            cached.blitWidth,
-            cached.blitHeight,
-          );
-          shadow.paintText(canvas, cached, dst);
-        }
-      }
-      return;
-    }
-
-    final useAtlas =
-        isMask || (sourcePaint != null && _canAtlasPaint(sourcePaint));
-
-    final kept = cache.resolvedGlyphs(line, paintingStyle, strokeWidth);
-    if (kept != null) {
-      if (useAtlas) {
-        if (isMask) {
-          Flut5GlyphAtlasBlitter.drawResolvedMaskLine(
-            canvas,
-            cache,
-            line,
-            kept,
-            startX,
-            y,
-            spacing,
-            paint!,
-          );
-        } else {
-          Flut5GlyphAtlasBlitter.drawResolvedLine(
-            canvas,
-            cache,
-            line,
-            kept,
-            startX,
-            y,
-            spacing,
-            paint!,
-            sourcePaint!.color,
-            cache.textBlitQuality,
-          );
-        }
-        return;
-      }
-      for (int i = 0; i < glyphCount; i++) {
-        final cached = kept[i];
-        canvas.drawImageRect(
-          cached.image,
-          cached.srcRect,
-          Rect.fromLTWH(
-            startX + line.offsetWithSpacing(i, spacing) - cached.leftPad,
-            y,
-            cached.blitWidth,
-            cached.blitHeight,
-          ),
-          paint!,
-        );
-      }
-      return;
-    }
-
-    final generation = cache.textureGeneration;
-    final fetched = <Flut5CachedText>[];
-    for (int i = 0; i < glyphCount; i++) {
-      final cached = cache.getOrCreate(
-        text: line.glyphs[i],
-        fontFamily: fontFamily,
-        fontSize: fontSize,
-        fontWeight: fontWeight,
-        fontStyle: fontStyle,
-        textLeading: null,
-        align: TextAlign.left,
+      Flut5GlyphAtlasBlitter.drawShadowLine(
+        canvas,
+        cache,
+        line,
+        _font,
+        grid,
+        shadow: shadow,
         paintingStyle: paintingStyle,
         strokeWidth: strokeWidth,
-        fontVariations: fontVariations,
-        fontVariationKey: fontVariationKey,
+        rasterScale: rasterScale,
+        startX: startX,
+        y: y,
+        spacing: spacing,
       );
-      fetched.add(cached);
-      if (!useAtlas) {
-        // At the raster's own pixel size, so no texel is resampled.
-        final dst = Rect.fromLTWH(
-          startX + line.offsetWithSpacing(i, spacing) - cached.leftPad,
-          y,
-          cached.blitWidth,
-          cached.blitHeight,
-        );
-        canvas.drawImageRect(cached.image, cached.srcRect, dst, paint!);
-      }
-    }
-    final intact = generation == cache.textureGeneration;
-    if (intact) {
-      cache.rememberGlyphs(
+    } else {
+      Flut5GlyphAtlasBlitter.drawLine(
+        canvas,
+        cache,
         line,
-        paintingStyle,
-        strokeWidth,
-        fetched,
-        generation,
+        _font,
+        grid,
+        paintingStyle: paintingStyle,
+        strokeWidth: strokeWidth,
+        rasterScale: rasterScale,
+        startX: startX,
+        y: y,
+        spacing: spacing,
+        spriteColor: isMask ? null : sourcePaint?.color.toARGB32(),
+        directPaint: paint!,
+        useAtlas:
+            isMask || (sourcePaint != null && _canAtlasPaint(sourcePaint)),
       );
     }
-    if (useAtlas) {
-      if (intact) {
-        if (isMask) {
-          Flut5GlyphAtlasBlitter.drawResolvedMaskLine(
-            canvas,
-            cache,
-            line,
-            fetched,
-            startX,
-            y,
-            spacing,
-            paint!,
-          );
-        } else {
-          Flut5GlyphAtlasBlitter.drawResolvedLine(
-            canvas,
-            cache,
-            line,
-            fetched,
-            startX,
-            y,
-            spacing,
-            paint!,
-            sourcePaint!.color,
-            cache.textBlitQuality,
-          );
-        }
-      } else {
-        // Cache evicted mid-line — re-fetch each glyph safely and blit via
-        // the same drawRawAtlas path for bit-exact parity with packed runs.
-        final quality = cache.textBlitQuality;
-        final tint = isMask ? null : sourcePaint!.color;
-        for (int i = 0; i < glyphCount; i++) {
-          final cached = cache.getOrCreate(
-            text: line.glyphs[i],
-            fontFamily: fontFamily,
-            fontSize: fontSize,
-            fontWeight: fontWeight,
-            fontStyle: fontStyle,
-            textLeading: null,
-            align: TextAlign.left,
-            paintingStyle: paintingStyle,
-            strokeWidth: strokeWidth,
-            fontVariations: fontVariations,
-            fontVariationKey: fontVariationKey,
-          );
-          Flut5GlyphAtlasBlitter.drawSingleGlyph(
-            canvas,
-            cache,
-            cached,
-            startX + line.offsetWithSpacing(i, spacing) - cached.leftPad,
-            y,
-            quality,
-            tintColor: tint,
-          );
-        }
-      }
-    }
+    Flut5GlyphAtlasBlitter.flush(canvas);
   }
+
+  @override
+  bool get keepsCanvasTransform => true;
 
   @override
   void execute(Canvas canvas) {
@@ -396,6 +338,32 @@ class TextDynamicRenderItem({
     final cache = Flut5TextCache.instance;
     final FilterQuality glyphQuality = cache.textBlitQuality;
     _maskPaint.filterQuality = glyphQuality;
+
+    final grid = Flut5GlyphGrid.of(canvas, cache.pixelRatio);
+    final requestedScale = grid.canvasScale;
+    final rasterScale = cache.rasterScaleFor(fontSize, requestedScale);
+    Flut5GlyphAtlasBlitter.setQuality(glyphQuality);
+
+    // Decided before any layout: text that goes native doesn't need one.
+    if (_mayDrawNatively) {
+      // Both passes are asked, so each counts as seen this frame.
+      final fillGoesNative =
+          fillPaint != null &&
+          cache.drawsNatively(_font, 0, 0, rasterScale, requestedScale);
+      final strokeGoesNative =
+          strokePaint != null &&
+          cache.drawsNatively(
+            _font,
+            1,
+            strokePaint!.strokeWidth,
+            rasterScale,
+            requestedScale,
+          );
+      if ((fillGoesNative || strokeGoesNative) && _hasPlainPaints) {
+        _paintNatively(canvas);
+        return;
+      }
+    }
 
     // Line height: composition-time value.
     // If textLeading is set, compute from fontSize * multiplier.
@@ -433,6 +401,12 @@ class TextDynamicRenderItem({
 
     if (lines.isEmpty) return;
 
+    // How far a pass's layer has to reach past the layout box for its ink.
+    final layerPad =
+        fontSize * Flut5TextCache.verticalInkReach +
+        (strokePaint?.strokeWidth ?? 0) * 2 +
+        2;
+
     // When auto-bounds gradients are active, compute a size-only rect so the
     // cache key is position-independent. gradientOriginX tracks where that
     // (0,0) local space sits on the canvas for the translate below.
@@ -455,7 +429,14 @@ class TextDynamicRenderItem({
         final lineStartX = _alignedX(x, _lineWidth(line));
         Rect? localBounds;
         if (fillInkBounds != null) {
-          final ink = _lineInkBounds(cache, line, lineHeight, 0, 0);
+          final ink = _lineInkBounds(
+            cache,
+            line,
+            lineHeight,
+            0,
+            0,
+            rasterScale,
+          );
           fillInkBounds[lineIndex] = ink;
           localBounds = ink;
         }
@@ -466,6 +447,7 @@ class TextDynamicRenderItem({
             lineHeight,
             1,
             strokePaint!.strokeWidth,
+            rasterScale,
           );
           strokeInkBounds[lineIndex] = ink;
           localBounds = localBounds == null
@@ -523,6 +505,8 @@ class TextDynamicRenderItem({
         _drawGlyphs(
           canvas,
           cache,
+          grid,
+          rasterScale,
           line,
           _alignedX(x, _lineWidth(line)),
           cursorY,
@@ -567,7 +551,7 @@ class TextDynamicRenderItem({
           final lineStartX = _alignedX(x, _lineWidth(line));
           final localInk =
               precomputedInk?[lineIndex] ??
-              _lineInkBounds(cache, line, lineHeight, style, sw);
+              _lineInkBounds(cache, line, lineHeight, style, sw, rasterScale);
           final lb = localInk.shift(Offset(lineStartX, cy));
           unionBounds = unionBounds == null
               ? lb
@@ -577,12 +561,13 @@ class TextDynamicRenderItem({
       }
 
       if (unionBounds != null) {
+        final layerBounds = unionBounds.inflate(layerPad);
         _layerPaint
           ..colorFilter = null
           ..blendMode = activePaint.blendMode
           ..maskFilter = activePaint.maskFilter
           ..imageFilter = activePaint.imageFilter;
-        canvas.saveLayer(unionBounds, _layerPaint);
+        canvas.saveLayer(layerBounds, _layerPaint);
 
         cy = y;
         for (var lineIndex = 0; lineIndex < lines.length; lineIndex++) {
@@ -593,10 +578,12 @@ class TextDynamicRenderItem({
             _drawGlyphs(
               canvas,
               cache,
+              grid,
+              rasterScale,
               line,
               lineStartX,
               cy,
-              _maskPaint,
+              _maskPaintForGlyphs,
               style,
               sw,
               isMask: true,
@@ -612,12 +599,7 @@ class TextDynamicRenderItem({
           canvas.save();
           canvas.translate(gradientOriginX, y);
           canvas.drawRect(
-            Rect.fromLTWH(
-              unionBounds.left - gradientOriginX,
-              unionBounds.top - y,
-              unionBounds.width,
-              unionBounds.height,
-            ),
+            layerBounds.shift(Offset(-gradientOriginX, -y)),
             _gradientOverlayPaint,
           );
           canvas.restore();
@@ -625,7 +607,7 @@ class TextDynamicRenderItem({
           _gradientOverlayPaint
             ..shader = activePaint.shader
             ..blendMode = ui.BlendMode.srcIn;
-          canvas.drawRect(unionBounds, _gradientOverlayPaint);
+          canvas.drawRect(layerBounds, _gradientOverlayPaint);
         }
         canvas.restore();
       }
@@ -655,8 +637,11 @@ class TextDynamicRenderItem({
                 lineHeight,
                 1,
                 strokePaint!.strokeWidth,
+                rasterScale,
               );
-          final lineBounds = localInkBounds.shift(Offset(lineStartX, cursorY));
+          final lineBounds = localInkBounds
+              .shift(Offset(lineStartX, cursorY))
+              .inflate(layerPad);
           _layerPaint
             ..colorFilter = null
             ..blendMode = strokePaint!.blendMode
@@ -667,10 +652,12 @@ class TextDynamicRenderItem({
           _drawGlyphs(
             canvas,
             cache,
+            grid,
+            rasterScale,
             line,
             lineStartX,
             cursorY,
-            _maskPaint,
+            _maskPaintForGlyphs,
             1,
             strokePaint!.strokeWidth,
             isMask: true,
@@ -683,12 +670,7 @@ class TextDynamicRenderItem({
             canvas.save();
             canvas.translate(gradientOriginX, y);
             canvas.drawRect(
-              Rect.fromLTWH(
-                lineBounds.left - gradientOriginX,
-                cursorY - y,
-                lineBounds.width,
-                lineBounds.height,
-              ),
+              lineBounds.shift(Offset(-gradientOriginX, -y)),
               _gradientOverlayPaint,
             );
             canvas.restore();
@@ -703,10 +685,12 @@ class TextDynamicRenderItem({
           _drawGlyphs(
             canvas,
             cache,
+            grid,
+            rasterScale,
             line,
             lineStartX,
             cursorY,
-            _strokeTint.of(strokePaint!, glyphQuality),
+            () => _strokeTint.of(strokePaint!, glyphQuality),
             1,
             strokePaint!.strokeWidth,
             sourcePaint: strokePaint,
@@ -719,8 +703,10 @@ class TextDynamicRenderItem({
         if (fillPaint!.shader != null || fillGradient != null) {
           final localInkBounds =
               fillInkBounds?[lineIndex] ??
-              _lineInkBounds(cache, line, lineHeight, 0, 0.0);
-          final lineBounds = localInkBounds.shift(Offset(lineStartX, cursorY));
+              _lineInkBounds(cache, line, lineHeight, 0, 0.0, rasterScale);
+          final lineBounds = localInkBounds
+              .shift(Offset(lineStartX, cursorY))
+              .inflate(layerPad);
           _layerPaint
             ..colorFilter = null
             ..blendMode = fillPaint!.blendMode
@@ -731,10 +717,12 @@ class TextDynamicRenderItem({
           _drawGlyphs(
             canvas,
             cache,
+            grid,
+            rasterScale,
             line,
             lineStartX,
             cursorY,
-            _maskPaint,
+            _maskPaintForGlyphs,
             0,
             0.0,
             isMask: true,
@@ -747,12 +735,7 @@ class TextDynamicRenderItem({
             canvas.save();
             canvas.translate(gradientOriginX, y);
             canvas.drawRect(
-              Rect.fromLTWH(
-                lineBounds.left - gradientOriginX,
-                cursorY - y,
-                lineBounds.width,
-                lineBounds.height,
-              ),
+              lineBounds.shift(Offset(-gradientOriginX, -y)),
               _gradientOverlayPaint,
             );
             canvas.restore();
@@ -767,10 +750,12 @@ class TextDynamicRenderItem({
           _drawGlyphs(
             canvas,
             cache,
+            grid,
+            rasterScale,
             line,
             lineStartX,
             cursorY,
-            _fillTint.of(fillPaint!, glyphQuality),
+            () => _fillTint.of(fillPaint!, glyphQuality),
             0,
             0.0,
             sourcePaint: fillPaint,

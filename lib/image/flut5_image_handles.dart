@@ -1,6 +1,7 @@
 import 'dart:ui' as ui;
 
 import '../core/render/items/flut5_image_atlas_render_item.dart';
+import 'flut5_image_shadows.dart';
 
 /// Keeps a replaced or disposed bitmap alive for as long as a render queue
 /// still references it.
@@ -42,10 +43,14 @@ abstract final class Flut5ImageHandles() {
       return;
     }
     _holdCounts.remove(image);
-    if (_awaitingDisposal.remove(image)) {
-      ImageAtlasRenderItem.evictPadded(image);
-      image.dispose();
-    }
+    if (_awaitingDisposal.remove(image)) _disposeWithCopies(image);
+  }
+
+  /// Frees [image] and everything derived from it.
+  static void _disposeWithCopies(ui.Image image) {
+    ImageAtlasRenderItem.evictPadded(image);
+    Flut5ImageShadows.evict(image);
+    image.dispose();
   }
 
   /// Disposes [image] now, or as soon as the last render queue holding it
@@ -54,8 +59,7 @@ abstract final class Flut5ImageHandles() {
     if (_holdCounts.containsKey(image)) {
       _awaitingDisposal.add(image);
     } else {
-      ImageAtlasRenderItem.evictPadded(image);
-      image.dispose();
+      _disposeWithCopies(image);
     }
   }
 

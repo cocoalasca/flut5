@@ -131,8 +131,9 @@ class Flut5Image._(
   /// Whether every 1px outer perimeter pixel of this image is known to be
   /// fully transparent (`alpha == 0`).
   ///
-  /// Updated automatically by [Flut5Image.create], [loadPixels], and
-  /// [updatePixels] (or passed to [Flut5Image.fromUiImage]). When `true`,
+  /// Worked out when the image is loaded or resized, and updated by
+  /// [Flut5Image.create], [loadPixels], and [updatePixels] (or passed to
+  /// [Flut5Image.fromUiImage]). When `true`,
   /// rotated full-image draws can batch directly into a single GPU
   /// `drawRawAtlas` call at any scale with exact edge antialiasing.
   bool get hasTransparentBorder => !_disposed && _hasTransparentBorder;
@@ -205,16 +206,19 @@ class Flut5Image._(
     if (source is Flut5Image) return source;
     if (source is ui.Image) return Flut5Image.fromUiImage(source);
     if (source is Uint8List) {
-      return Flut5Image._(await _decodeBytes(source, '<bytes>'), '<bytes>');
+      return _withBorderChecked(
+        Flut5Image._(await _decodeBytes(source, '<bytes>'), '<bytes>'),
+      );
     }
     if (source is ImageProvider) {
-      return Flut5Image._(await _resolveProvider(source), '$source');
+      return _withBorderChecked(
+        Flut5Image._(await _resolveProvider(source), '$source'),
+      );
     }
     if (source is String) {
       if (_isNetworkUrl(source)) {
-        return Flut5Image._(
-          await _resolveProvider(NetworkImage(source)),
-          source,
+        return _withBorderChecked(
+          Flut5Image._(await _resolveProvider(NetworkImage(source)), source),
         );
       }
       final key = await _resolveAssetKey(source);
@@ -228,13 +232,90 @@ class Flut5Image._(
         data.offsetInBytes,
         data.lengthInBytes,
       );
-      return Flut5Image._(await _decodeBytes(bytes, key), key);
+      return _withBorderChecked(
+        Flut5Image._(await _decodeBytes(bytes, key), key),
+      );
     }
     throw ArgumentError(
       'loadImage() expects a String asset name, asset path or URL, a '
       'Uint8List of encoded bytes, a ui.Image, or an ImageProvider. '
       'Got ${source.runtimeType}.',
     );
+  }
+
+  static Future<Flut5Image> _withBorderChecked(Flut5Image image) async {
+    await image._detectTransparentBorder();
+    return image;
+  }
+
+  /// Works out [hasTransparentBorder] from the bitmap. Reads back only the
+  /// outer ring of pixels, so a large photo costs the same as a small sprite.
+  /// A failed read just leaves the flag off, which only skips a fast path.
+  Future<void> _detectTransparentBorder() async {
+    if (_disposed) return;
+    final version = _bitmapVersion;
+    // Our own handle, so a resize() or dispose() during the read can't free
+    // the bitmap out from under it.
+    final bitmap = _image.clone();
+    try {
+      final transparent = await _ringIsTransparent(bitmap);
+      if (!_disposed && version == _bitmapVersion) {
+        _hasTransparentBorder = transparent;
+      }
+    } catch (_) {
+      // Keep the flag as it is.
+    } finally {
+      bitmap.dispose();
+    }
+  }
+
+  static Future<bool> _ringIsTransparent(ui.Image bitmap) async {
+    final w = bitmap.width.toDouble(), h = bitmap.height.toDouble();
+    if (w < 3 || h < 3) return false;
+    final rows = await _stripBytes(bitmap, bitmap.width, 2, [
+      (Rect.fromLTWH(0, 0, w, 1), Rect.fromLTWH(0, 0, w, 1)),
+      (Rect.fromLTWH(0, h - 1, w, 1), Rect.fromLTWH(0, 1, w, 1)),
+    ]);
+    if (rows == null || !_alphaIsZero(rows)) return false;
+    final columns = await _stripBytes(bitmap, 2, bitmap.height, [
+      (Rect.fromLTWH(0, 0, 1, h), Rect.fromLTWH(0, 0, 1, h)),
+      (Rect.fromLTWH(w - 1, 0, 1, h), Rect.fromLTWH(1, 0, 1, h)),
+    ]);
+    return columns != null && _alphaIsZero(columns);
+  }
+
+  /// Copies [regions] of [bitmap] 1:1 into a [width]×[height] strip and
+  /// reads it back.
+  static Future<Uint8List?> _stripBytes(
+    ui.Image bitmap,
+    int width,
+    int height,
+    List<(Rect, Rect)> regions,
+  ) async {
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    for (final (from, to) in regions) {
+      canvas.drawImageRect(bitmap, from, to, _copyPaint);
+    }
+    final picture = recorder.endRecording();
+    final strip = await picture.toImage(width, height);
+    picture.dispose();
+    try {
+      final bytes = await strip.toByteData();
+      return bytes?.buffer.asUint8List(
+        bytes.offsetInBytes,
+        bytes.lengthInBytes,
+      );
+    } finally {
+      strip.dispose();
+    }
+  }
+
+  static bool _alphaIsZero(Uint8List rgba) {
+    for (var offset = 3; offset < rgba.length; offset += 4) {
+      if (rgba[offset] != 0) return false;
+    }
+    return true;
   }
 
   static bool _isNetworkUrl(String source) =>
@@ -483,6 +564,9 @@ class Flut5Image._(
     _hasTransparentBorder = false;
     _uploader?.releaseScratch();
     _replaceBitmap(resized);
+    // Resampling can pull content into the border or leave it clear, so the
+    // old answer no longer holds. Sprites batch again once this lands.
+    unawaited(_detectTransparentBorder());
   }
 
   /// Swaps in [next] as this image's bitmap. The old handle is freed once no

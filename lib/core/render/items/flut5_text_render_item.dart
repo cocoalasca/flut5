@@ -5,6 +5,7 @@ import 'package:flut5/text/flut5_text_cache.dart';
 
 import '../flut5_render_item.dart';
 import '../../flut5_shadow.dart';
+import 'flut5_text_dynamic_batch_render_item.dart';
 
 class TextRenderItem({
   required final String text,
@@ -77,46 +78,8 @@ class TextRenderItem({
     return originalX;
   }
 
-  /// Approximate text block bounds used for scroll-mode container sizing.
-  /// Avoids the cost of glyph measurement: width/height are estimated from the
-  /// character count and [fontSize] (or the explicit [maxWidth]/[maxHeight]),
-  /// which is close enough to bound scrolling. Memoized — items are immutable
-  /// once queued. See [Flut5RenderItem.bounds].
-  @override
-  late final Rect? bounds = _computeBounds();
-
-  Rect _computeBounds() {
-    final lines = text.split('\n');
-    int longest = 0;
-    for (final line in lines) {
-      if (line.length > longest) longest = line.length;
-    }
-    final width = maxWidth ?? (longest * fontSize * 0.55);
-    final height = maxHeight ?? (lines.length * fontSize * 1.3);
-    return Rect.fromLTWH(_alignedX(x, width), y, width, height);
-  }
-
-  @override
-  void execute(Canvas canvas) {
-    final cache = Flut5TextCache.instance;
-    final FilterQuality glyphQuality = cache.textBlitQuality;
-    _maskPaint.filterQuality = glyphQuality;
-    double? painterWidth;
-    double dx = x;
-
-    // Shadow Pass (under everything): reuse the cached white glyph image the
-    // text itself draws — the FILL silhouette when filled, otherwise the STROKE
-    // raster — recolored to the shadow color and blurred, shifted by the offset.
-    // Reusing the text's own raster means NO new cache entry (a blurred shadow
-    // bakes its silhouette onto that entry), and an outline-only text casts an
-    // outline shadow rather than a solid blob. Keep the lookup so the fill or
-    // stroke pass below reuses it without a second cache hash lookup.
-    final shadowSpec = shadow;
-    Flut5CachedText? shadowCachedFill;
-    Flut5CachedText? shadowCachedStroke;
-    if (shadowSpec != null) {
-      final bool shadowStroke = fillPaint == null && strokePaint != null;
-      final cachedShadow = cache.getOrCreate(
+  ({double width, double height}) get _block =>
+      Flut5TextCache.instance.measureBlock(
         text: text,
         maxWidth: maxWidth,
         maxHeight: maxHeight,
@@ -127,24 +90,110 @@ class TextRenderItem({
         textLeading: textLeading,
         letterSpacing: letterSpacing,
         align: textAlign,
-        paintingStyle: shadowStroke ? 1 : 0,
-        strokeWidth: shadowStroke ? strokePaint!.strokeWidth : 0.0,
         fontVariations: fontVariations,
         fontVariationKey: fontVariationKey,
       );
-      if (shadowStroke) {
-        shadowCachedStroke = cachedShadow;
-      } else {
-        shadowCachedFill = cachedShadow;
+
+  /// The laid-out text block, as sizes a scroll-mode container. Memoized —
+  /// items are immutable once queued. See [Flut5RenderItem.bounds].
+  @override
+  late final Rect? bounds = _computeBounds();
+
+  Rect _computeBounds() {
+    final block = _block;
+    return Rect.fromLTWH(_alignedX(x, block.width), y, block.width, block.height);
+  }
+
+  /// Everything this text can paint: its block grown by what glyphs reach
+  /// past it, its stroke, and its shadow. A `maxHeight` clips the raster,
+  /// but a stroke's or shadow's reach past the sides still counts.
+  @override
+  late final Rect? inkBounds = flut5TextInkBox(
+    bounds!,
+    fontSize,
+    strokePaint?.strokeWidth ?? 0,
+    shadow,
+  );
+
+  Flut5CachedText _raster(
+    Flut5TextCache cache,
+    int paintingStyle,
+    double strokeWidth,
+    int phase,
+    double rasterScale,
+  ) => cache.getOrCreate(
+    text: text,
+    maxWidth: maxWidth,
+    maxHeight: maxHeight,
+    fontFamily: fontFamily,
+    fontSize: fontSize,
+    fontWeight: fontWeight,
+    fontStyle: fontStyle,
+    textLeading: textLeading,
+    letterSpacing: letterSpacing,
+    align: textAlign,
+    paintingStyle: paintingStyle,
+    strokeWidth: strokeWidth,
+    fontVariations: fontVariations,
+    fontVariationKey: fontVariationKey,
+    subpixelPhase: phase,
+    rasterScale: rasterScale,
+  );
+
+  @override
+  bool get keepsCanvasTransform => true;
+
+  @override
+  void execute(Canvas canvas) {
+    final cache = Flut5TextCache.instance;
+    final FilterQuality glyphQuality = cache.textBlitQuality;
+    _maskPaint.filterQuality = glyphQuality;
+
+    final grid = Flut5GlyphGrid.of(canvas, cache.pixelRatio);
+    final rasterScale = cache.rasterScaleFor(fontSize, grid.canvasScale);
+    final aligned = grid.isAligned(1, 0);
+    final boxX = _alignedX(x, _block.width);
+
+    // Where the text's pen goes: on the device's pixel grid when the
+    // transform allows it, so the raster isn't resampled.
+    var penX = boxX, penY = y, phase = 0;
+    if (aligned) {
+      penX = grid.snapX(boxX);
+      phase = grid.phase;
+      penY = grid.snapY(y);
+    }
+
+    // Shadow Pass (under everything): reuse the cached white glyph image the
+    // text itself draws — the FILL silhouette when filled, otherwise the STROKE
+    // raster — recolored to the shadow color and blurred, shifted by the offset.
+    // Reusing the text's own raster means NO new cache entry (a blurred shadow
+    // bakes its silhouette onto that entry), and an outline-only text casts an
+    // outline shadow rather than a solid blob.
+    final shadowSpec = shadow;
+    if (shadowSpec != null) {
+      final bool shadowStroke = fillPaint == null && strokePaint != null;
+      final isSoft = shadowSpec.blur > 0 || shadowSpec.spread > 0;
+      // A hard shadow is a crisp copy and lands on the grid like the text.
+      // A soft one has no edge to keep and uses a single raster.
+      var shadowPenX = boxX, shadowPenY = y, shadowPhase = 0;
+      if (aligned && !isSoft) {
+        shadowPenX = grid.snapX(boxX + shadowSpec.offset.dx) - shadowSpec.offset.dx;
+        shadowPhase = grid.phase;
+        shadowPenY = grid.snapY(y + shadowSpec.offset.dy) - shadowSpec.offset.dy;
       }
-      final sdx = _alignedX(x, cachedShadow.width);
+      final cachedShadow = _raster(
+        cache,
+        shadowStroke ? 1 : 0,
+        shadowStroke ? strokePaint!.strokeWidth : 0.0,
+        shadowPhase,
+        rasterScale,
+      );
       shadowSpec.paintText(
         canvas,
         cachedShadow,
-        // At the raster's own pixel size, so no texel is resampled.
         Rect.fromLTWH(
-          sdx - cachedShadow.leftPad,
-          y,
+          shadowPenX - cachedShadow.leftPad,
+          shadowPenY,
           cachedShadow.blitWidth,
           cachedShadow.blitHeight,
         ),
@@ -153,163 +202,98 @@ class TextRenderItem({
 
     // Stroke Pass (Bottom)
     if (strokePaint != null) {
-      final cachedStroke =
-          shadowCachedStroke ??
-          cache.getOrCreate(
-            text: text,
-            maxWidth: maxWidth,
-            maxHeight: maxHeight,
-            fontFamily: fontFamily,
-            fontSize: fontSize,
-            fontWeight: fontWeight,
-            fontStyle: fontStyle,
-            textLeading: textLeading,
-            letterSpacing: letterSpacing,
-            align: textAlign,
-            paintingStyle: 1, // Stroke
-            strokeWidth: strokePaint!.strokeWidth,
-            fontVariations: fontVariations,
-            fontVariationKey: fontVariationKey,
-          );
-
-      painterWidth = cachedStroke.width;
-      dx = _alignedX(x, painterWidth);
-
-      final dst = Rect.fromLTWH(
-        dx - cachedStroke.leftPad,
-        y,
-        cachedStroke.drawWidth,
-        cachedStroke.height,
+      _drawPass(
+        canvas,
+        _raster(cache, 1, strokePaint!.strokeWidth, phase, rasterScale),
+        strokePaint!,
+        strokeGradient,
+        _strokeTint,
+        glyphQuality,
+        boxX,
+        penX,
+        penY,
       );
-      // The raster is drawn at its own pixel size, so no texel is
-      // resampled: a fraction of a pixel past [dst], which still bounds the
-      // layer and the gradient.
-      final blit = Rect.fromLTWH(
-        dst.left,
-        dst.top,
-        cachedStroke.blitWidth,
-        cachedStroke.blitHeight,
-      );
-
-      if (strokePaint!.shader != null || strokeGradient != null) {
-        _layerPaint
-          ..colorFilter = null
-          ..blendMode = strokePaint!.blendMode
-          ..maskFilter = strokePaint!.maskFilter
-          ..imageFilter = strokePaint!.imageFilter;
-        canvas.saveLayer(dst, _layerPaint);
-        canvas.drawImageRect(
-          cachedStroke.image,
-          cachedStroke.srcRect,
-          blit,
-          _maskPaint,
-        );
-        if (strokeGradient != null) {
-          final sizeRect = Rect.fromLTWH(0, 0, dst.width, dst.height);
-          _gradientOverlayPaint
-            ..shader = _shaderFor(strokeGradient!, sizeRect)
-            ..blendMode = ui.BlendMode.srcIn;
-          canvas.save();
-          canvas.translate(dst.left, dst.top);
-          canvas.drawRect(sizeRect, _gradientOverlayPaint);
-          canvas.restore();
-        } else {
-          _gradientOverlayPaint
-            ..shader = strokePaint!.shader
-            ..blendMode = ui.BlendMode.srcIn;
-          canvas.drawRect(dst, _gradientOverlayPaint);
-        }
-        canvas.restore();
-      } else {
-        canvas.drawImageRect(
-          cachedStroke.image,
-          cachedStroke.srcRect,
-          blit,
-          _strokeTint.of(strokePaint!, glyphQuality),
-        );
-      }
     }
 
     // Fill Pass (Top)
     if (fillPaint != null) {
-      final cachedFill =
-          (shadowCachedFill != null && !shadowCachedFill.image.debugDisposed)
-          ? shadowCachedFill
-          : cache.getOrCreate(
-              text: text,
-              maxWidth: maxWidth,
-              maxHeight: maxHeight,
-              fontFamily: fontFamily,
-              fontSize: fontSize,
-              fontWeight: fontWeight,
-              fontStyle: fontStyle,
-              textLeading: textLeading,
-              letterSpacing: letterSpacing,
-              align: textAlign,
-              paintingStyle: 0, // Fill
-              strokeWidth: 0.0,
-              fontVariations: fontVariations,
-              fontVariationKey: fontVariationKey,
-            );
-
-      if (painterWidth == null) {
-        dx = _alignedX(x, cachedFill.width);
-      }
-
-      final dst = Rect.fromLTWH(
-        dx - cachedFill.leftPad,
-        y,
-        cachedFill.drawWidth,
-        cachedFill.height,
+      _drawPass(
+        canvas,
+        _raster(cache, 0, 0.0, phase, rasterScale),
+        fillPaint!,
+        fillGradient,
+        _fillTint,
+        glyphQuality,
+        boxX,
+        penX,
+        penY,
       );
-      // The raster is drawn at its own pixel size, so no texel is
-      // resampled: a fraction of a pixel past [dst], which still bounds the
-      // layer and the gradient.
-      final blit = Rect.fromLTWH(
-        dst.left,
-        dst.top,
-        cachedFill.blitWidth,
-        cachedFill.blitHeight,
-      );
-
-      if (fillPaint!.shader != null || fillGradient != null) {
-        _layerPaint
-          ..colorFilter = null
-          ..blendMode = fillPaint!.blendMode
-          ..maskFilter = fillPaint!.maskFilter
-          ..imageFilter = fillPaint!.imageFilter;
-        canvas.saveLayer(dst, _layerPaint);
-        canvas.drawImageRect(
-          cachedFill.image,
-          cachedFill.srcRect,
-          blit,
-          _maskPaint,
-        );
-        if (fillGradient != null) {
-          final sizeRect = Rect.fromLTWH(0, 0, dst.width, dst.height);
-          _gradientOverlayPaint
-            ..shader = _shaderFor(fillGradient!, sizeRect)
-            ..blendMode = ui.BlendMode.srcIn;
-          canvas.save();
-          canvas.translate(dst.left, dst.top);
-          canvas.drawRect(sizeRect, _gradientOverlayPaint);
-          canvas.restore();
-        } else {
-          _gradientOverlayPaint
-            ..shader = fillPaint!.shader
-            ..blendMode = ui.BlendMode.srcIn;
-          canvas.drawRect(dst, _gradientOverlayPaint);
-        }
-        canvas.restore();
-      } else {
-        canvas.drawImageRect(
-          cachedFill.image,
-          cachedFill.srcRect,
-          blit,
-          _fillTint.of(fillPaint!, glyphQuality),
-        );
-      }
     }
+  }
+
+  /// Blits [cached] with its pen at ([penX], [penY]), tinted by [paint] or,
+  /// through a layer, masked onto its shader or [gradient].
+  void _drawPass(
+    Canvas canvas,
+    Flut5CachedText cached,
+    Paint paint,
+    Gradient? gradient,
+    _GlyphTint tint,
+    FilterQuality glyphQuality,
+    double boxX,
+    double penX,
+    double penY,
+  ) {
+    // The raster is drawn at its own pixel size, so no texel is resampled.
+    final blit = Rect.fromLTWH(
+      penX - cached.rasterLeft,
+      penY - cached.rasterTop,
+      cached.blitWidth,
+      cached.blitHeight,
+    );
+    if (paint.shader == null && gradient == null) {
+      canvas.drawImageRect(
+        cached.image,
+        cached.srcRect,
+        blit,
+        tint.of(paint, glyphQuality),
+      );
+      return;
+    }
+    // The gradient spans the text's box; the layer covers the ink too.
+    final box = Rect.fromLTWH(
+      boxX - cached.leftPad,
+      y,
+      cached.drawWidth,
+      cached.height,
+    );
+    final layer = box.expandToInclude(blit);
+    _layerPaint
+      ..colorFilter = null
+      ..blendMode = paint.blendMode
+      ..maskFilter = paint.maskFilter
+      ..imageFilter = paint.imageFilter;
+    canvas.saveLayer(layer, _layerPaint);
+    canvas.drawImageRect(cached.image, cached.srcRect, blit, _maskPaint);
+    if (gradient != null) {
+      final sizeRect = Rect.fromLTWH(0, 0, box.width, box.height);
+      _gradientOverlayPaint
+        ..shader = _shaderFor(gradient, sizeRect)
+        ..blendMode = ui.BlendMode.srcIn;
+      canvas.save();
+      canvas.translate(box.left, box.top);
+      canvas.drawRect(
+        layer.shift(Offset(-box.left, -box.top)),
+        _gradientOverlayPaint,
+      );
+      canvas.restore();
+    } else {
+      _gradientOverlayPaint
+        ..shader = paint.shader
+        ..blendMode = ui.BlendMode.srcIn;
+      canvas.drawRect(layer, _gradientOverlayPaint);
+    }
+    canvas.restore();
   }
 }
 

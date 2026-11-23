@@ -13,6 +13,7 @@ import '../shape/flut5_stroke.dart';
 import 'flut5_font.dart';
 import 'flut5_text_cache.dart';
 import 'flut5_text_grid.dart';
+import 'flut5_text_shaping.dart';
 
 /// Cell count past which [Flut5Text.textToGrid] warns that the grid is big
 /// enough to be worth building once instead of every frame.
@@ -661,6 +662,8 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
   /// Each character is cached individually and composited at draw time.
   /// Ideal for text that changes every frame (scores, timers, counters).
   /// Respects [letterSpacing] and [textLeading] as composition-time values.
+  /// Text in scripts whose letters join or reorder, such as Arabic or
+  /// Devanagari, is drawn as a whole string instead, like [textStatic].
   void textDynamic(
     String content,
     double x,
@@ -675,6 +678,12 @@ mixin Flut5Text on Flut5Fill, Flut5Stroke {
     }
     if (renderQueue.isRecordingClip) {
       _appendTextToClipMask(content, x, y);
+      return;
+    }
+    // Scripts whose letters join or reorder, combining marks and emoji
+    // sequences only come out right shaped as one string.
+    if (flut5TextNeedsShaping(content)) {
+      textStatic(content, x, y, maxWidth, maxHeight);
       return;
     }
     final bool hasFill = fillColor != flut5Transparent;

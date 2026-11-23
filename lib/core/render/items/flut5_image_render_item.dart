@@ -56,15 +56,11 @@ class ImageRenderItem({
   Rect? get bounds => dst;
 
   @override
+  bool get keepsCanvasTransform => true;
+
+  @override
   void execute(Canvas canvas) {
-    final s = shadow;
-    if (s != null) {
-      // The image's own alpha is the silhouette: recoloured, spread and
-      // blurred by the shared raster-tint pipeline, so a PNG with
-      // transparency casts a shadow shaped like its content rather than a
-      // rectangular blob.
-      canvas.drawImageRect(image, src, dst.shift(s.offset), s.imageTintPaint);
-    }
+    shadow?.paintImage(canvas, image, src, dst);
     _blitPaint
       ..blendMode = blendMode
       ..filterQuality = filterQuality

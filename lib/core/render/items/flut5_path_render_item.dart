@@ -15,6 +15,9 @@ class PathRenderItem(
   late final Rect? bounds = path.getBounds();
 
   @override
+  bool get keepsCanvasTransform => true;
+
+  @override
   void execute(Canvas canvas) {
     final s = shadow;
     if (s != null) {

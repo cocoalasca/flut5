@@ -4,7 +4,15 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/widgets.dart';
 
+import '../../flut5_console.dart';
 import '../flut5_render_item.dart';
+
+/// One entry of [ImageAtlasRenderItem]'s padded-copy cache.
+final class _PaddedCopy(
+  final ui.Image image,
+  final int bytes,
+  var int lastUsedFrame,
+);
 
 /// A run of blits sampling the same bitmap. Compatible axis-aligned sprites
 /// use [Canvas.drawRawAtlas]; per-sprite rotations can keep individual image
@@ -65,15 +73,25 @@ class ImageAtlasRenderItem({
     ..[10] = 1
     ..[15] = 1;
 
-  /// Bounded LRU cache of 1px transparent-padded copies for images drawn as
-  /// rotated full-image atlas runs. A 1px transparent border lets
+  /// LRU cache of 1px transparent-padded copies for images drawn as rotated
+  /// full-image atlas runs. A 1px transparent border lets
   /// [Canvas.drawRawAtlas] antialias all four rotated quad edges in the GPU
   /// texture sampler in a single draw call instead of falling back to one
   /// `drawImageRect` per sprite.
+  ///
+  /// The entry limit doubles when a sketch draws more images than it holds,
+  /// up to [_paddedEntryCeiling] and [_paddedByteBudget]. Past those, a copy
+  /// still in use this frame is never evicted to make room for another: the
+  /// image draws sprite by sprite instead of re-copying every frame.
   static const int _maxPaddedExtent = 512;
-  static const int _maxPaddedEntries = 32;
-  static final LinkedHashMap<ui.Image, ui.Image> _paddedCache =
-      LinkedHashMap<ui.Image, ui.Image>.identity();
+  static const int _paddedEntryCeiling = 1024;
+  static const int _paddedByteBudget = 64 << 20;
+  static int _paddedEntryLimit = 32;
+  static int _paddedBytes = 0;
+  static int _paddedFrame = 0;
+  static bool _warnedPaddedBudget = false;
+  static final LinkedHashMap<ui.Image, _PaddedCopy> _paddedCache =
+      LinkedHashMap<ui.Image, _PaddedCopy>.identity();
   static Float32List _paddedTransforms = Float32List(64 * 4);
   static Float32List _paddedRects = Float32List(64 * 4);
   static final Paint _padCopyPaint = Paint()
@@ -89,17 +107,31 @@ class ImageAtlasRenderItem({
   /// Releases the cached 1px-padded copy for [source] when [source] is
   /// disposed or replaced. Called by `Flut5ImageHandles`.
   static void evictPadded(ui.Image source) {
-    _paddedCache.remove(source)?.dispose();
+    final copy = _paddedCache.remove(source);
+    if (copy == null) return;
+    _paddedBytes -= copy.bytes;
+    copy.image.dispose();
   }
 
   /// Clears all cached 1px-padded atlas copies.
   @visibleForTesting
   static void clearPaddedCache() {
-    for (final padded in _paddedCache.values) {
-      padded.dispose();
+    for (final copy in _paddedCache.values) {
+      copy.image.dispose();
     }
     _paddedCache.clear();
+    _paddedBytes = 0;
+    _paddedEntryLimit = 32;
+    _warnedPaddedBudget = false;
   }
+
+  /// How many padded copies are currently kept. Test-only.
+  @visibleForTesting
+  static int get debugPaddedCopyCount => _paddedCache.length;
+
+  /// Called once per frame by the render queue, so the cache can tell a copy
+  /// still in use from one that can go.
+  static void noteFrameEnded() => _paddedFrame++;
 
   static bool _isTransparentIdentityBlend(BlendMode mode) =>
       mode == BlendMode.srcOver ||
@@ -108,25 +140,59 @@ class ImageAtlasRenderItem({
       mode == BlendMode.screen ||
       mode == BlendMode.lighten;
 
-  static ui.Image _paddedCopy(ui.Image source) {
+  /// The padded copy of [source], or `null` when there is no room for one
+  /// without evicting a copy this frame is still drawing with.
+  static ui.Image? _paddedCopy(ui.Image source) {
     final hit = _paddedCache.remove(source);
     if (hit != null) {
-      _paddedCache[source] = hit;
-      return hit;
-    }
-    if (_paddedCache.length >= _maxPaddedEntries) {
-      final oldestKey = _paddedCache.keys.first;
-      _paddedCache.remove(oldestKey)?.dispose();
+      hit.lastUsedFrame = _paddedFrame;
+      _paddedCache[source] = hit; // now the newest
+      return hit.image;
     }
     final w = source.width;
     final h = source.height;
+    final bytes = (w + 2) * (h + 2) * 4;
+    if (!_makeRoomForPadded(bytes)) return null;
     final recorder = ui.PictureRecorder();
     Canvas(recorder).drawImage(source, const Offset(1, 1), _padCopyPaint);
     final picture = recorder.endRecording();
     final padded = picture.toImageSync(w + 2, h + 2);
     picture.dispose();
-    _paddedCache[source] = padded;
+    _paddedCache[source] = _PaddedCopy(padded, bytes, _paddedFrame);
+    _paddedBytes += bytes;
     return padded;
+  }
+
+  /// Grows the entry limit or evicts copies not used this frame, until
+  /// [bytes] more fit. False when that isn't possible.
+  static bool _makeRoomForPadded(int bytes) {
+    while (_paddedCache.length >= _paddedEntryLimit &&
+        _paddedEntryLimit < _paddedEntryCeiling) {
+      _paddedEntryLimit *= 2;
+    }
+    while (_paddedCache.length >= _paddedEntryLimit ||
+        _paddedBytes + bytes > _paddedByteBudget) {
+      if (_paddedCache.isEmpty) return false;
+      final oldestKey = _paddedCache.keys.first;
+      final oldest = _paddedCache[oldestKey]!;
+      if (oldest.lastUsedFrame == _paddedFrame) {
+        if (!_warnedPaddedBudget) {
+          _warnedPaddedBudget = true;
+          Flut5Console.printLater(
+            'image(): more distinct images are drawn rotated each frame than '
+            'the rotated-sprite cache can hold '
+            '(${_paddedByteBudget >> 20} MB), so some draw one at a time. '
+            'To batch them, pack them into one sprite sheet, or give them a '
+            '1px transparent border.',
+          );
+        }
+        return false;
+      }
+      _paddedCache.remove(oldestKey);
+      _paddedBytes -= oldest.bytes;
+      oldest.image.dispose();
+    }
+    return true;
   }
 
   static void _ensurePaddedCapacity(int floatCount) {
@@ -189,6 +255,7 @@ class ImageAtlasRenderItem({
     if (!hasRotated) return false;
 
     final padded = _paddedCopy(image);
+    if (padded == null) return false;
     _ensurePaddedCapacity(len);
     final pw = (w + 2).toDouble();
     final ph = (h + 2).toDouble();
@@ -227,6 +294,12 @@ class ImageAtlasRenderItem({
   /// built rather than recomputed from the float32 buffers.
   @override
   Rect? get bounds => _bounds;
+
+  @override
+  Rect? get inkBounds => _bounds;
+
+  @override
+  bool get keepsCanvasTransform => true;
 
   @override
   void execute(Canvas canvas) {

@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -9,6 +10,17 @@ import 'flut5_expiring_cache.dart';
 
 import '../core/flut5_console.dart';
 
+/// The font a run of per-glyph text is drawn in: everything about its style
+/// that picks a glyph raster, apart from the pass, phase and density.
+final class Flut5GlyphFont({
+  required final String family,
+  required final double size,
+  required final FontWeight weight,
+  required final FontStyle style,
+  final List<FontVariation>? variations,
+  final String variationKey = '',
+});
+
 /// One laid-out line of dynamic text.
 ///
 /// Holds only the drawable (non-whitespace) glyphs with their pen offsets —
@@ -17,6 +29,8 @@ import '../core/flut5_console.dart';
 /// to [width] and to the offsets of the glyphs that follow it.
 class Flut5TextLine._(
   /// Drawable glyphs in draw order. Whitespace is excluded (never blitted).
+  /// A glyph is one character, or several the font shapes into one, like an
+  /// "fi" ligature.
   final List<String> glyphs,
 
   /// Pen x-offset of each glyph in [glyphs], relative to the line start.
@@ -31,6 +45,7 @@ class Flut5TextLine._(
   final bool hasChars,
   final Int32List? _spacingIndices,
   final int _spacingGaps,
+  final List<_MeasuredToken>? _sourceTokens,
 ) {
   // Source character positions include whitespace, unlike the drawable
   // glyph list. They let unwrapped text apply spacing without retaining a
@@ -40,18 +55,13 @@ class Flut5TextLine._(
     Float64List offsets,
     double width,
     bool hasChars,
-  ) : this._(glyphs, offsets, width, hasChars, null, 0);
+  ) : this._(glyphs, offsets, width, hasChars, null, 0, null);
 
-  // The rasters of [glyphs], in order, as last drawn: one list for the fill
-  // pass and one for the stroke pass at [_strokeRastersWidth]. Each is only
-  // good while the cache has dropped no texture since
-  // ([Flut5TextCache.resolvedGlyphs] checks), so a dropped image is never
-  // drawn from here.
-  List<Flut5CachedText>? _fillRasters;
-  int _fillRastersGeneration = -1;
-  List<Flut5CachedText>? _strokeRasters;
-  int _strokeRastersGeneration = -1;
-  double _strokeRastersWidth = 0;
+  // The rasters of [glyphs] as drawn, for the fill pass and the stroke pass
+  // — see [Flut5TextCache.linePass]. Only good while the cache has dropped
+  // no texture since, so a dropped image is never drawn from here.
+  Flut5LineRasters? _fillRasters;
+  Flut5LineRasters? _strokeRasters;
 
   /// Internal: width after adding composition-time spacing to this layout.
   double widthWithSpacing(double spacing) => spacing == 0 || _spacingGaps == 0
@@ -59,11 +69,91 @@ class Flut5TextLine._(
       : width + _spacingGaps * spacing;
 
   /// Internal: glyph offset after adding composition-time spacing.
+  @pragma('vm:prefer-inline')
   double offsetWithSpacing(int index, double spacing) {
+    if (spacing == 0) return offsets[index];
     final position = _spacingIndices?[index] ?? 0;
-    return spacing == 0 || position == 0
-        ? offsets[index]
-        : offsets[index] + position * spacing;
+    return position == 0 ? offsets[index] : offsets[index] + position * spacing;
+  }
+
+  /// The line's characters in order, whitespace included.
+  late final String sourceText = _readSourceText();
+
+  String _readSourceText() {
+    final tokens = _sourceTokens;
+    if (tokens == null) return glyphs.join();
+    final text = StringBuffer();
+    for (final token in tokens) {
+      text.writeAll(token.chars);
+    }
+    return text.toString();
+  }
+}
+
+/// A line's glyph rasters for one pass and density: one slot per glyph and
+/// subpixel phase. Taken with [Flut5TextCache.linePass] and read with
+/// [Flut5TextCache.keptGlyph].
+final class Flut5LineRasters._(
+  int glyphCount,
+  final int _generation,
+  final double _strokeWidth,
+  final double _rasterScale,
+) {
+  final List<Flut5CachedText?> _rasters = List.filled(
+    glyphCount * Flut5TextCache.subpixelPhases,
+    null,
+  );
+
+  /// Which phase of each glyph was drawn last.
+  final Uint8List _lastPhases = Uint8List(glyphCount);
+}
+
+/// One answer of [Flut5TextCache.drawsNatively] and the style it was for.
+final class _AskedStyle() {
+  int frame = -1;
+  String family = '';
+  double size = 0;
+  FontWeight? weight;
+  FontStyle? style;
+  String variationKey = '';
+  int paintingStyle = 0;
+  double strokeWidth = 0;
+  double rasterScale = 0;
+  bool answer = false;
+
+  bool matches(
+    Flut5GlyphFont font,
+    int askedPaintingStyle,
+    double askedStrokeWidth,
+    double askedRasterScale,
+  ) =>
+      font.size == size &&
+      askedRasterScale == rasterScale &&
+      askedPaintingStyle == paintingStyle &&
+      askedStrokeWidth == strokeWidth &&
+      identical(font.weight, weight) &&
+      identical(font.style, style) &&
+      font.family == family &&
+      font.variationKey == variationKey;
+
+  void remember(
+    int askedFrame,
+    Flut5GlyphFont font,
+    int askedPaintingStyle,
+    double askedStrokeWidth,
+    double askedRasterScale,
+    bool askedAnswer,
+  ) {
+    frame = askedFrame;
+    family = font.family;
+    size = font.size;
+    weight = font.weight;
+    style = font.style;
+    variationKey = font.variationKey;
+    paintingStyle = askedPaintingStyle;
+    strokeWidth = askedStrokeWidth;
+    rasterScale = askedRasterScale;
+    answer = askedAnswer;
   }
 }
 
@@ -109,8 +199,24 @@ class Flut5CachedText(
   /// they are — drawn into those instead, the raster would be squeezed by
   /// that fraction and resampled.
   final double blitWidth,
-  final double blitHeight,
-) {
+  final double blitHeight, {
+
+  /// How far left of the text's pen origin the raster starts, in logical
+  /// pixels: a whole number of device pixels, so the raster stays on the
+  /// pixel grid when the origin is.
+  final double rasterLeft = 0,
+
+  /// How far above the top of the text's line box the raster starts, for
+  /// the ink that reaches past it: accents, swashes, a thick outline.
+  final double rasterTop = 0,
+
+  /// Pixels of [image] per logical pixel of text.
+  final double pixelsPerUnit = 1,
+
+  /// Which quarter of a device pixel past a whole pixel this raster's pen
+  /// sits at, as in `0..3`.
+  final int subpixelPhase = 0,
+}) {
   // advance width used for character spacing
   // image logical width; wider than width when glyphs overhang right
   // shift (logical px) to apply when drawing; non-zero for left overhang
@@ -169,7 +275,7 @@ class Flut5CachedText(
 /// [Flut5TextCache].
 class Flut5GlyphAtlasPage(final int generation) {
   static const int maxExtent = 1024;
-  static const int maxGlyphExtent = 256;
+  static const int maxGlyphExtent = 384;
   static const int gutter = 2;
 
   ui.Image? image;
@@ -178,6 +284,7 @@ class Flut5GlyphAtlasPage(final int generation) {
   int _cursorX = gutter;
   int _cursorY = gutter;
   int _shelfHeight = 0;
+  bool _retired = false;
   int _maxUsedX = gutter;
   int _maxUsedY = gutter;
   int _usedPixels = 0;
@@ -195,7 +302,7 @@ class Flut5GlyphAtlasSlot(
   final double bottom,
   final int generation,
 ) {
-  bool get isValid => page.generation == generation && page.image != null;
+  bool get isValid => page.generation == generation && !page._retired;
 }
 
 /// Pre-tokenized word-run representation of a string at a fixed font style,
@@ -264,6 +371,8 @@ class _TextCacheKey(
   var int paintingStyle,
   var double strokeWidth,
   var String fontVariationKey,
+  var int subpixelPhase,
+  var double rasterScale,
 ) {
   // 0 = fill, 1 = stroke
   /// Creates a mutable instance for reuse as a lookup key.
@@ -282,6 +391,8 @@ class _TextCacheKey(
         0,
         0,
         '',
+        0,
+        1,
       );
 
   /// Sets all fields in place — avoids allocating a new key for lookups.
@@ -299,6 +410,8 @@ class _TextCacheKey(
     int paintingStyle,
     double strokeWidth,
     String fontVariationKey,
+    int subpixelPhase,
+    double rasterScale,
   ) {
     this.text = text;
     this.maxWidth = maxWidth;
@@ -313,6 +426,8 @@ class _TextCacheKey(
     this.paintingStyle = paintingStyle;
     this.strokeWidth = strokeWidth;
     this.fontVariationKey = fontVariationKey;
+    this.subpixelPhase = subpixelPhase;
+    this.rasterScale = rasterScale;
   }
 
   /// Creates an immutable copy for map storage.
@@ -331,6 +446,8 @@ class _TextCacheKey(
         other.paintingStyle,
         other.strokeWidth,
         other.fontVariationKey,
+        other.subpixelPhase,
+        other.rasterScale,
       );
 
   @override
@@ -349,7 +466,9 @@ class _TextCacheKey(
           alignIndex == other.alignIndex &&
           paintingStyle == other.paintingStyle &&
           strokeWidth == other.strokeWidth &&
-          fontVariationKey == other.fontVariationKey;
+          fontVariationKey == other.fontVariationKey &&
+          subpixelPhase == other.subpixelPhase &&
+          rasterScale == other.rasterScale;
 
   @override
   int get hashCode => Object.hash(
@@ -366,6 +485,8 @@ class _TextCacheKey(
     paintingStyle,
     strokeWidth,
     fontVariationKey,
+    subpixelPhase,
+    rasterScale,
   );
 }
 
@@ -412,16 +533,21 @@ class Flut5TextCache._() {
   /// Internal end-of-frame maintenance, also usable by offscreen renderers.
   /// Expire after all canvases have used their textures, then start a new age.
   void finishFrame() {
+    _commitPendingAtlasPages();
     _followPixelRatio();
     _cache.expire(_timeoutFrames);
     _dropLayoutsNeverUsedAgain();
     _layoutCache.expire(_timeoutFrames);
     _tokenCache.expire(_timeoutFrames);
-    _kernCache.expire(_timeoutFrames);
+    _pairCache.expire(_timeoutFrames);
     _widthCache.expire(_timeoutFrames);
     _lineHeightCache.expire(_timeoutFrames);
+    _blockCache.expire(_timeoutFrames);
     _ascentDescentCache.expire(_timeoutFrames);
     _charStrings.expire(_timeoutFrames);
+    _recentStyles.expire(_styleMemoryFrames);
+    _framesWithNewStyles = _newStyleThisFrame ? _framesWithNewStyles + 1 : 0;
+    _newStyleThisFrame = false;
     _disposeRetiredAtlasImages();
     if (_cache.isEmpty && _atlasPages.isNotEmpty) {
       _clearAtlas(immediate: true);
@@ -429,6 +555,7 @@ class Flut5TextCache._() {
       _atlasNeedsCompaction = false;
       _clearAtlas(immediate: false);
     }
+    _growAtlasIfItFilled();
     // The mutable lookup key is scratch space, not a cache entry. Do not let
     // it retain the last measured string after all actual entries expire.
     _lookupKey.text = '';
@@ -441,7 +568,7 @@ class Flut5TextCache._() {
   Map<String, int> get debugEntryCounts => {
     'textures': _cache.length,
     'layouts': _layoutCache.length,
-    'kerning': _kernCache.length,
+    'kerning': _pairCache.length,
     'widths': _widthCache.length,
     'lineHeights': _lineHeightCache.length,
     'ascentDescent': _ascentDescentCache.length,
@@ -579,7 +706,14 @@ class Flut5TextCache._() {
   // `textDynamic` can blit hundreds of glyphs in a single `Canvas.drawRawAtlas`
   // call while keeping `cacheLength`, `cacheBytes`, `resolvedGlyphs`, and
   // timeout expiration unchanged.
-  static const int _maxAtlasPages = 8;
+  //
+  // Pages are only ever cleared between frames, never during a draw: a
+  // glyph that doesn't fit is drawn on its own, and the page limit grows for
+  // the next frame.
+  static const int _firstAtlasPageLimit = 8;
+  static const int _atlasPageBytes =
+      Flut5GlyphAtlasPage.maxExtent * Flut5GlyphAtlasPage.maxExtent * 4;
+  static const int _framesBetweenAtlasRebuilds = 120;
   static const int _maxRetiredAtlasImages = 16;
   static final Paint _atlasCopyPaint = Paint()
     ..blendMode = BlendMode.src
@@ -589,10 +723,41 @@ class Flut5TextCache._() {
   final List<ui.Image> _retiredAtlasImages = [];
   int _atlasGeneration = 0;
   bool _atlasNeedsCompaction = false;
+  int _atlasPageLimit = _firstAtlasPageLimit;
+  bool _atlasFilledThisFrame = false;
+  bool _atlasLimitWarned = false;
+  int _lastAtlasRebuildFrame = 0;
+
+  /// How many pages [maxCacheBytes] allows the atlas.
+  int get _atlasPageCeiling =>
+      math.max(_firstAtlasPageLimit, maxCacheBytes ~/ _atlasPageBytes);
+
+  /// After a frame with glyphs that didn't fit: more pages, or at the ceiling
+  /// a periodic rebuild so the pages hold what is in use now.
+  void _growAtlasIfItFilled() {
+    if (!_atlasFilledThisFrame) return;
+    _atlasFilledThisFrame = false;
+    final ceiling = _atlasPageCeiling;
+    if (_atlasPageLimit < ceiling) {
+      _atlasPageLimit = math.min(_atlasPageLimit * 2, ceiling);
+      return;
+    }
+    if (!_atlasLimitWarned) {
+      _atlasLimitWarned = true;
+      Flut5Console.printLater(
+        'text glyph atlas is full at $ceiling pages, so some glyphs draw one '
+        'at a time. $_quantizeAdvice',
+      );
+    }
+    if (_frame - _lastAtlasRebuildFrame >= _framesBetweenAtlasRebuilds) {
+      _lastAtlasRebuildFrame = _frame;
+      _clearAtlas(immediate: false);
+    }
+  }
 
   /// The device pixel ratio the currently cached glyph rasters and atlas pages
   /// were rasterized at.
-  double get pixelRatio => _cachedPixelRatio ?? 1.0;
+  double get pixelRatio => _cachedPixelRatio ??= _viewPixelRatio() ?? 1.0;
 
   void _disposeRetiredAtlasImages() {
     if (_retiredAtlasImages.isEmpty) return;
@@ -618,6 +783,7 @@ class Flut5TextCache._() {
     for (final page in _atlasPages) {
       _retireAtlasImage(page.image, immediate: immediate);
       page.image = null;
+      page._retired = true;
       page._pendingImages.clear();
       page._pendingSlots.clear();
     }
@@ -627,68 +793,50 @@ class Flut5TextCache._() {
     _atlasGeneration++;
   }
 
-  /// Packs a single [glyph] into the active atlas page if packable and not
-  /// already packed. Used only on the rare mid-line eviction fallback path.
-  void ensureGlyphPacked(Flut5CachedText glyph) {
+  /// The atlas slot of [glyph], reserving one if it has none; `null` when it
+  /// is too big for a page or every page is full, and draws on its own.
+  ///
+  /// The slot's pixels land on the page when the page is next drawn from
+  /// ([committedAtlasImage]), so a whole batch of new glyphs costs one page
+  /// update, not one per line.
+  Flut5GlyphAtlasSlot? atlasSlotFor(Flut5CachedText glyph) {
     final slot = glyph._atlasSlot;
-    if (slot != null && slot.isValid && slot.generation == _atlasGeneration) {
-      return;
+    if (slot != null && slot.isValid) return slot;
+    final image = glyph.image;
+    if (image.width > Flut5GlyphAtlasPage.maxGlyphExtent ||
+        image.height > Flut5GlyphAtlasPage.maxGlyphExtent) {
+      return glyph._atlasSlot = null;
     }
-    final w = glyph.image.width;
-    final h = glyph.image.height;
-    if (w <= 0 ||
-        h <= 0 ||
-        w > Flut5GlyphAtlasPage.maxGlyphExtent ||
-        h > Flut5GlyphAtlasPage.maxGlyphExtent) {
-      glyph._atlasSlot = null;
-      return;
-    }
-    glyph._atlasSlot = _reserveAtlasSlot(glyph.image, w, h);
-    final page = glyph._atlasSlot!.page;
-    if (page._pendingImages.isNotEmpty) _commitAtlasPage(page);
+    return glyph._atlasSlot = _reserveAtlasSlot(
+      image,
+      image.width,
+      image.height,
+    );
   }
 
-  /// Ensures every packable [Flut5ShadowRaster] in [shadows] has a valid
-  /// [Flut5GlyphAtlasSlot] on a committed [Flut5GlyphAtlasPage], batching all
-  /// newly packed shadow silhouettes into a single page commit.
-  void ensureShadowsAtlasPacked(List<Flut5ShadowRaster> shadows) {
-    if (shadows.isEmpty) return;
-    var hasUnpacked = false;
-    for (var i = 0; i < shadows.length; i++) {
-      final s = shadows[i];
-      final slot = s._atlasSlot;
-      if (slot != null && slot.isValid && slot.generation == _atlasGeneration) {
-        continue;
-      }
-      if (s.image.width <= Flut5GlyphAtlasPage.maxGlyphExtent &&
-          s.image.height <= Flut5GlyphAtlasPage.maxGlyphExtent) {
-        hasUnpacked = true;
-        break;
-      }
+  /// [atlasSlotFor], for a baked shadow silhouette.
+  Flut5GlyphAtlasSlot? atlasSlotForShadow(Flut5ShadowRaster shadow) {
+    final slot = shadow._atlasSlot;
+    if (slot != null && slot.isValid) return slot;
+    final image = shadow.image;
+    if (image.width > Flut5GlyphAtlasPage.maxGlyphExtent ||
+        image.height > Flut5GlyphAtlasPage.maxGlyphExtent) {
+      return shadow._atlasSlot = null;
     }
-    if (!hasUnpacked) return;
+    return shadow._atlasSlot = _reserveAtlasSlot(
+      image,
+      image.width,
+      image.height,
+    );
+  }
 
-    for (var i = 0; i < shadows.length; i++) {
-      final s = shadows[i];
-      final existing = s._atlasSlot;
-      if (existing != null &&
-          existing.generation == _atlasGeneration &&
-          (existing.page.image != null ||
-              existing.page._pendingImages.isNotEmpty)) {
-        continue;
-      }
-      final w = s.image.width;
-      final h = s.image.height;
-      if (w <= 0 ||
-          h <= 0 ||
-          w > Flut5GlyphAtlasPage.maxGlyphExtent ||
-          h > Flut5GlyphAtlasPage.maxGlyphExtent) {
-        s._atlasSlot = null;
-        continue;
-      }
-      s._atlasSlot = _reserveAtlasSlot(s.image, w, h);
-    }
+  /// The image of [page] with every glyph reserved on it so far.
+  ui.Image? committedAtlasImage(Flut5GlyphAtlasPage page) {
+    if (page._pendingImages.isNotEmpty) _commitAtlasPage(page);
+    return page.image;
+  }
 
+  void _commitPendingAtlasPages() {
     for (var i = 0; i < _atlasPages.length; i++) {
       final page = _atlasPages[i];
       if (page._pendingImages.isNotEmpty) _commitAtlasPage(page);
@@ -705,59 +853,7 @@ class Flut5TextCache._() {
         : size;
   }
 
-  /// Ensures every packable glyph in [glyphs] has a valid [Flut5GlyphAtlasSlot]
-  /// on a committed [Flut5GlyphAtlasPage]. Batches all newly packed glyphs per
-  /// page into a single `PictureRecorder` → `toImageSync` commit.
-  ///
-  /// Oversized glyphs (wider or taller than [Flut5GlyphAtlasPage.maxGlyphExtent])
-  /// are skipped (`glyph.atlasSlot == null`) so callers fall back to
-  /// `Canvas.drawImageRect`.
-  void ensureAtlasPacked(List<Flut5CachedText> glyphs) {
-    if (glyphs.isEmpty) return;
-    // Quick check: warm frames already have every glyph packed.
-    var hasUnpacked = false;
-    for (var i = 0; i < glyphs.length; i++) {
-      final g = glyphs[i];
-      final slot = g._atlasSlot;
-      if (slot != null && slot.isValid && slot.generation == _atlasGeneration) {
-        continue;
-      }
-      if (g.image.width <= Flut5GlyphAtlasPage.maxGlyphExtent &&
-          g.image.height <= Flut5GlyphAtlasPage.maxGlyphExtent) {
-        hasUnpacked = true;
-        break;
-      }
-    }
-    if (!hasUnpacked) return;
-
-    for (var i = 0; i < glyphs.length; i++) {
-      final g = glyphs[i];
-      final existing = g._atlasSlot;
-      if (existing != null &&
-          existing.generation == _atlasGeneration &&
-          (existing.page.image != null ||
-              existing.page._pendingImages.isNotEmpty)) {
-        continue;
-      }
-      final w = g.image.width;
-      final h = g.image.height;
-      if (w <= 0 ||
-          h <= 0 ||
-          w > Flut5GlyphAtlasPage.maxGlyphExtent ||
-          h > Flut5GlyphAtlasPage.maxGlyphExtent) {
-        g._atlasSlot = null;
-        continue;
-      }
-      g._atlasSlot = _reserveAtlasSlot(g.image, w, h);
-    }
-
-    for (var i = 0; i < _atlasPages.length; i++) {
-      final page = _atlasPages[i];
-      if (page._pendingImages.isNotEmpty) _commitAtlasPage(page);
-    }
-  }
-
-  Flut5GlyphAtlasSlot _reserveAtlasSlot(ui.Image image, int w, int h) {
+  Flut5GlyphAtlasSlot? _reserveAtlasSlot(ui.Image image, int w, int h) {
     const gutter = Flut5GlyphAtlasPage.gutter;
     const maxExtent = Flut5GlyphAtlasPage.maxExtent;
 
@@ -775,9 +871,9 @@ class Flut5TextCache._() {
       page._shelfHeight = 0;
     }
     if (page._cursorY + h + gutter > maxExtent) {
-      if (page._pendingImages.isNotEmpty) _commitAtlasPage(page);
-      if (_atlasPages.length >= _maxAtlasPages) {
-        _clearAtlas(immediate: false);
+      if (_atlasPages.length >= _atlasPageLimit) {
+        _atlasFilledThisFrame = true;
+        return null;
       }
       page = Flut5GlyphAtlasPage(_atlasGeneration);
       _atlasPages.add(page);
@@ -844,58 +940,217 @@ class Flut5TextCache._() {
     pendingSlots.clear();
   }
 
-  /// The rasters of [line]'s glyphs for the fill pass ([paintingStyle] `0`)
-  /// or the stroke pass at [strokeWidth], as [rememberGlyphs] last kept
-  /// them, each counted as used — what fetching every glyph with
-  /// [getOrCreate] would return, without hashing a key per glyph. `null`
-  /// when none are kept, or a texture has left the cache since: fetch the
-  /// glyphs one by one then, and hand them to [rememberGlyphs].
+  /// How many subpixel positions a glyph is rasterized for, along x. Text
+  /// engines place glyphs on quarters of a device pixel, so a raster for
+  /// each lands exactly where the engine's own glyph would.
+  static const int subpixelPhases = 4;
+
+  /// The rasters [line] keeps for one pass at one density, to read glyph by
+  /// glyph with [keptGlyph]. Good until a glyph is made, which may evict
+  /// others: take it again after [lineGlyph].
+  Flut5LineRasters linePass(
+    Flut5TextLine line,
+    int paintingStyle,
+    double strokeWidth,
+    double rasterScale,
+  ) {
+    final isFill = paintingStyle == 0;
+    final kept = isFill ? line._fillRasters : line._strokeRasters;
+    if (kept != null &&
+        kept._generation == _textureGeneration &&
+        kept._rasterScale == rasterScale &&
+        (isFill || kept._strokeWidth == strokeWidth)) {
+      return kept;
+    }
+    final fresh = Flut5LineRasters._(
+      line.glyphs.length,
+      _textureGeneration,
+      strokeWidth,
+      rasterScale,
+    );
+    if (isFill) {
+      line._fillRasters = fresh;
+    } else {
+      line._strokeRasters = fresh;
+    }
+    return fresh;
+  }
+
+  /// The raster [pass] holds for glyph [index] at [phase], counted as used,
+  /// or `null` when it hasn't been made yet: then ask [lineGlyph].
+  @pragma('vm:prefer-inline')
+  Flut5CachedText? keptGlyph(Flut5LineRasters pass, int index, int phase) {
+    pass._lastPhases[index] = phase;
+    final raster = pass._rasters[index * subpixelPhases + phase];
+    if (raster == null) return null;
+    final entry = raster._entry!;
+    if (entry.lastUsedFrame != _frame) _cache.touch(entry);
+    raster._lastUsedTick = ++_accessTick;
+    return raster;
+  }
+
+  /// The raster of glyph [index] of [line] for [phase] and [rasterScale],
+  /// counted as used. Kept with the line, so a glyph drawn again costs no
+  /// key hash.
+  Flut5CachedText lineGlyph(
+    Flut5TextLine line,
+    int index,
+    Flut5GlyphFont font, {
+    required int paintingStyle,
+    required double strokeWidth,
+    required int phase,
+    required double rasterScale,
+  }) {
+    final pass = linePass(line, paintingStyle, strokeWidth, rasterScale);
+    final kept = keptGlyph(pass, index, phase);
+    if (kept != null) return kept;
+    final raster = getOrCreate(
+      text: line.glyphs[index],
+      fontFamily: font.family,
+      fontSize: font.size,
+      fontWeight: font.weight,
+      fontStyle: font.style,
+      textLeading: null,
+      align: TextAlign.left,
+      paintingStyle: paintingStyle,
+      strokeWidth: strokeWidth,
+      fontVariations: font.variations,
+      fontVariationKey: font.variationKey,
+      subpixelPhase: phase,
+      rasterScale: rasterScale,
+    );
+    // Fetching may have evicted textures, some perhaps kept here. The next
+    // lookup then sees the new generation and starts over.
+    if (pass._generation == _textureGeneration) {
+      pass._rasters[index * subpixelPhases + phase] = raster;
+    }
+    return raster;
+  }
+
+  /// The rasters [line] last drew for the fill pass ([paintingStyle] `0`) or
+  /// the stroke pass at [strokeWidth], each counted as used. `null` when it
+  /// hasn't drawn that pass, or a texture has left the cache since.
   List<Flut5CachedText>? resolvedGlyphs(
     Flut5TextLine line,
     int paintingStyle,
     double strokeWidth,
   ) {
-    final List<Flut5CachedText>? rasters;
-    if (paintingStyle == 0) {
-      if (line._fillRastersGeneration != _textureGeneration) return null;
-      rasters = line._fillRasters;
-    } else {
-      if (line._strokeRastersGeneration != _textureGeneration ||
-          line._strokeRastersWidth != strokeWidth) {
-        return null;
-      }
-      rasters = line._strokeRasters;
-    }
-    if (rasters == null) return null;
-    for (var i = 0; i < rasters.length; i++) {
-      final raster = rasters[i];
+    final kept = paintingStyle == 0 ? line._fillRasters : line._strokeRasters;
+    if (kept == null || kept._generation != _textureGeneration) return null;
+    if (paintingStyle != 0 && kept._strokeWidth != strokeWidth) return null;
+    final rasters = <Flut5CachedText>[];
+    for (var i = 0; i < line.glyphs.length; i++) {
+      final raster = kept._rasters[i * subpixelPhases + kept._lastPhases[i]];
+      if (raster == null) return null;
       _cache.touch(raster._entry!);
       raster._lastUsedTick = ++_accessTick;
+      rasters.add(raster);
     }
     return rasters;
   }
 
-  /// Keeps [rasters] — [line]'s glyphs, in order, just fetched for the pass
-  /// [paintingStyle] / [strokeWidth] — for [resolvedGlyphs] to return next
-  /// time. [generation] is [textureGeneration] as it was before the first
-  /// was fetched: if a texture has left the cache since, one of [rasters]
-  /// may be it, and nothing is kept.
-  void rememberGlyphs(
-    Flut5TextLine line,
+  // ── Glyph density and native drawing ─────────────────────────────────
+
+  /// A glyph is rasterized for at most this many device pixels of font size
+  /// because of `scale()`; past it, text is drawn natively.
+  static const double _largestScaledFontPixels = 512;
+  static const double _smallestRasterScale = 1 / 16;
+
+  /// The density, relative to the display's, to rasterize text of [fontSize]
+  /// drawn at [scale], so its pixels land 1:1 on the device. In steps of
+  /// 1/1024, so rounding noise from a rotating transform doesn't make a new
+  /// raster every frame.
+  double rasterScaleFor(double fontSize, double scale) {
+    if (!scale.isFinite || scale <= 0) return 1;
+    var bounded = scale;
+    final devicePixels = fontSize * pixelRatio;
+    if (devicePixels > 0) {
+      final largest = math.max(1.0, _largestScaledFontPixels / devicePixels);
+      if (bounded > largest) bounded = largest;
+    }
+    if (bounded < _smallestRasterScale) bounded = _smallestRasterScale;
+    return (bounded * 1024).roundToDouble() / 1024;
+  }
+
+  // Sizes that animate make every glyph a new raster, every frame, to be
+  // used once. So a sketch that keeps introducing new styles frame after
+  // frame has its new ones drawn natively; a style is cached once it has
+  // been drawn in an earlier frame too.
+  static const int _styleMemoryFrames = 8;
+  static const int _framesToCallItAnimated = 3;
+  int _framesWithNewStyles = 0;
+  bool _newStyleThisFrame = false;
+
+  late final Flut5ExpiringCache<
+    (String, double, FontWeight, FontStyle, String, int, double, double),
+    int
+  >
+  _recentStyles = Flut5ExpiringCache(() => _frame);
+
+  /// Whether the sketch has been bringing in new text styles frame after
+  /// frame, as a size that animates does.
+  bool get stylesAreAnimating =>
+      _framesWithNewStyles >= _framesToCallItAnimated;
+
+  // The styles [drawsNatively] answered for last, so text in a few styles
+  // costs a few comparisons instead of a key hash each. Good for the frame
+  // they were asked in: an answer can't change until the frame ends.
+  static const int _askedStyleCount = 8;
+  final List<_AskedStyle> _askedStyles = List.generate(
+    _askedStyleCount,
+    (_) => _AskedStyle(),
+    growable: false,
+  );
+  int _nextAskedStyle = 0;
+
+  /// Whether text in this style should skip the glyph cache and be drawn
+  /// natively: because it is too large for a raster at [requestedScale], or
+  /// because the sketch's text sizes are animating and this one is new.
+  bool drawsNatively(
+    Flut5GlyphFont font,
     int paintingStyle,
     double strokeWidth,
-    List<Flut5CachedText> rasters,
-    int generation,
+    double rasterScale,
+    double requestedScale,
   ) {
-    if (generation != _textureGeneration) return;
-    if (paintingStyle == 0) {
-      line._fillRasters = rasters;
-      line._fillRastersGeneration = generation;
-    } else {
-      line._strokeRasters = rasters;
-      line._strokeRastersWidth = strokeWidth;
-      line._strokeRastersGeneration = generation;
+    if (requestedScale > rasterScale * 1.001) return true;
+    for (var i = 0; i < _askedStyleCount; i++) {
+      final asked = _askedStyles[i];
+      if (asked.frame == _frame &&
+          asked.matches(font, paintingStyle, strokeWidth, rasterScale)) {
+        return asked.answer;
+      }
     }
+    final style = (
+      font.family,
+      font.size,
+      font.weight,
+      font.style,
+      font.variationKey,
+      paintingStyle,
+      strokeWidth,
+      rasterScale,
+    );
+    final animated = stylesAreAnimating;
+    final firstFrame = _recentStyles[style];
+    final bool answer;
+    if (firstFrame == null) {
+      _recentStyles[style] = _frame;
+      _newStyleThisFrame = true;
+      answer = animated;
+    } else {
+      answer = animated && firstFrame == _frame;
+    }
+    _askedStyles[_nextAskedStyle].remember(
+      _frame,
+      font,
+      paintingStyle,
+      strokeWidth,
+      rasterScale,
+      answer,
+    );
+    _nextAskedStyle = (_nextAskedStyle + 1) % _askedStyleCount;
+    return answer;
   }
 
   /// Monotonic access counter used to stamp entries for LRU eviction.
@@ -946,15 +1201,16 @@ class Flut5TextCache._() {
     _textureGeneration++;
   }
 
-  /// Lightweight kern cache — stores only the offset double per character
-  /// pair. Record-keyed so a hash collision can never silently return the
-  /// wrong pair's kerning. No textLeading or letterSpacing — those are
+  /// Lightweight pair cache: per pair of glyphs, the kerning between them and
+  /// the width the second takes up next to the first, which tells whether
+  /// the font joins them. Record-keyed so a hash collision can never silently
+  /// return the wrong pair. No textLeading or letterSpacing — those are
   /// composition-time values.
   late final Flut5ExpiringCache<
     (String, String, String, double, FontWeight, FontStyle, String),
-    double
+    ({double kern, double secondWidth})
   >
-  _kernCache = Flut5ExpiringCache(() => _frame);
+  _pairCache = Flut5ExpiringCache(() => _frame);
 
   /// Lightweight width-only cache — stores a plain `double` per string/style.
   /// Used by [measureWidth] to avoid rasterizing a GPU texture just to read a
@@ -982,6 +1238,25 @@ class Flut5TextCache._() {
     (double, double)
   >
   _ascentDescentCache = Flut5ExpiringCache(() => _frame);
+
+  /// Whole-block measurements for [measureBlock].
+  late final Flut5ExpiringCache<
+    (
+      String,
+      double?,
+      double?,
+      String,
+      double,
+      FontWeight,
+      FontStyle,
+      double?,
+      double?,
+      TextAlign,
+      String,
+    ),
+    ({double width, double height})
+  >
+  _blockCache = Flut5ExpiringCache(() => _frame);
 
   /// Cached word-wrap layouts for the dynamic text pipeline. A hit makes
   /// per-frame layout a single hash read instead of re-tokenizing and
@@ -1062,6 +1337,8 @@ class Flut5TextCache._() {
     required double strokeWidth,
     List<FontVariation>? fontVariations,
     String fontVariationKey = '',
+    int subpixelPhase = 0,
+    double rasterScale = 1,
   }) {
     _lookupKey._set(
       text,
@@ -1077,6 +1354,8 @@ class Flut5TextCache._() {
       paintingStyle,
       strokeWidth,
       fontVariationKey,
+      subpixelPhase,
+      rasterScale,
     );
 
     final existing = _cache[_lookupKey];
@@ -1151,27 +1430,63 @@ class Flut5TextCache._() {
       drawWidth = inkRight - inkLeft + overscan * 2;
     }
 
-    final double pixelRatio = _cachedPixelRatio ??= _viewPixelRatio() ?? 1.0;
+    final pixelsPerUnit = pixelRatio * rasterScale;
+
+    // The raster reaches past the layout box for the ink that does: a
+    // stroke's miter tips (up to twice its width out), and accents or
+    // swashes above and below the line. Only a maxHeight box clips it.
+    final clipsToBox = maxHeight != null;
+    final strokeReach = paintingStyle == 0 ? 0.0 : strokeWidth * 2;
+    final double inkLeft;
+    final double inkRight;
+    final double inkTop;
+    final double inkBottom;
+    if (clipsToBox) {
+      inkLeft = leftPad;
+      inkRight = drawWidth - leftPad;
+      inkTop = 0;
+      inkBottom = height;
+    } else {
+      final extraStroke = maxWidth == null
+          ? math.max(0.0, strokeReach - strokeWidth)
+          : strokeReach + 2;
+      final verticalInk = fontSize * verticalInkReach + strokeReach + 1;
+      inkLeft = leftPad + extraStroke;
+      inkRight = drawWidth - leftPad + extraStroke;
+      inkTop = verticalInk;
+      inkBottom = height + verticalInk;
+    }
+    // Whole device pixels, so the raster keeps the grid it is drawn on. The
+    // spare pixel holds the shift of the last subpixel phase.
+    final leftPixels = (inkLeft * pixelsPerUnit).ceil();
+    final topPixels = (inkTop * pixelsPerUnit).ceil();
+    var iWidth = leftPixels + (inkRight * pixelsPerUnit).ceil() + 1;
+    var iHeight = topPixels + (inkBottom * pixelsPerUnit).ceil();
+    if (iWidth <= 0) iWidth = 1;
+    if (iHeight <= 0) iHeight = 1;
+    final rasterLeft = leftPixels / pixelsPerUnit;
+    final rasterTop = topPixels / pixelsPerUnit;
 
     // Rasterize Offline
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder);
 
     // Scale the canvas up by the pixel ratio for crisp rendering
-    canvas.scale(pixelRatio);
+    canvas.scale(pixelsPerUnit);
 
-    if (maxHeight != null || maxWidth != null) {
+    if (clipsToBox) {
       canvas.clipRect(Rect.fromLTWH(0, 0, width, height));
     }
 
-    // Shift right by leftPad so left-overhanging glyphs land inside the image
-    painter.paint(canvas, Offset(leftPad, 0));
+    // The pen goes a whole number of pixels in, plus this raster's phase.
+    painter.paint(
+      canvas,
+      Offset(
+        rasterLeft + subpixelPhase / (subpixelPhases * pixelsPerUnit),
+        rasterTop,
+      ),
+    );
     final picture = recorder.endRecording();
-
-    int iWidth = (drawWidth * pixelRatio).ceil();
-    int iHeight = (height * pixelRatio).ceil();
-    if (iWidth <= 0) iWidth = 1;
-    if (iHeight <= 0) iHeight = 1;
 
     final image = picture.toImageSync(iWidth, iHeight);
 
@@ -1184,8 +1499,12 @@ class Flut5TextCache._() {
       height,
       drawWidth,
       leftPad,
-      iWidth / pixelRatio,
-      iHeight / pixelRatio,
+      iWidth / pixelsPerUnit,
+      iHeight / pixelsPerUnit,
+      rasterLeft: rasterLeft,
+      rasterTop: rasterTop,
+      pixelsPerUnit: pixelsPerUnit,
+      subpixelPhase: subpixelPhase,
     );
     cachedText._lastUsedTick = ++_accessTick;
     _cache[key] = cachedText;
@@ -1195,6 +1514,11 @@ class Flut5TextCache._() {
 
     return cachedText;
   }
+
+  /// How far above and below the line box a raster reserves room for ink,
+  /// in ems. Fonts' accents and swashes reach past the line's metrics by up
+  /// to about a third of an em (measured across common and display fonts).
+  static const double verticalInkReach = 0.4;
 
   /// Most shadow silhouettes kept per text raster. A shadow that changes
   /// blur or spread every frame bakes anew each time; past this many, the
@@ -1221,7 +1545,7 @@ class Flut5TextCache._() {
     final hit = shadows[key];
     if (hit != null) return hit;
 
-    final ratio = _cachedPixelRatio ?? 1.0;
+    final ratio = text.pixelsPerUnit;
     // Whole pixels, so the glyphs keep the raster's pixel grid; two spare
     // for the filters' edge rounding.
     final padPx = (reach * ratio).ceil() + 2;
@@ -1287,6 +1611,9 @@ class Flut5TextCache._() {
       return;
     }
 
+    // Evicting frees images glyphs queued for the atlas may still need: get
+    // them onto their pages first.
+    _commitPendingAtlasPages();
     if (!_textureGrowthStopWarned) {
       _textureGrowthStopWarned = true;
       final reason = _cacheBytes > maxCacheBytes
@@ -1390,6 +1717,8 @@ class Flut5TextCache._() {
       0,
       0.0,
       fontVariationKey,
+      0,
+      1.0,
     );
     final existing = _cache[_lookupKey];
     if (existing != null) {
@@ -1429,6 +1758,61 @@ class Flut5TextCache._() {
     return width;
   }
 
+  /// The width and height of [text] laid out as one block, as the
+  /// whole-string pipeline draws it, without rasterizing a texture.
+  ({double width, double height}) measureBlock({
+    required String text,
+    double? maxWidth,
+    double? maxHeight,
+    required String fontFamily,
+    required double fontSize,
+    required FontWeight fontWeight,
+    required FontStyle fontStyle,
+    required double? textLeading,
+    double? letterSpacing,
+    required TextAlign align,
+    List<FontVariation>? fontVariations,
+    String fontVariationKey = '',
+  }) {
+    final key = (
+      text,
+      maxWidth,
+      maxHeight,
+      fontFamily,
+      fontSize,
+      fontWeight,
+      fontStyle,
+      textLeading,
+      letterSpacing,
+      align,
+      fontVariationKey,
+    );
+    final cached = _blockCache[key];
+    if (cached != null) return cached;
+    final painter = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: TextStyle(
+          fontFamily: fontFamily,
+          fontSize: fontSize,
+          fontWeight: fontWeight,
+          fontStyle: fontStyle,
+          fontVariations: fontVariations,
+          height: textLeading,
+          letterSpacing: letterSpacing,
+        ),
+      ),
+      textAlign: align,
+      textDirection: TextDirection.ltr,
+    )..layout(maxWidth: maxWidth ?? double.infinity);
+    final block = (
+      width: maxWidth ?? painter.width,
+      height: maxHeight ?? painter.height,
+    );
+    painter.dispose();
+    return _blockCache[key] = block;
+  }
+
   /// Returns the font's default line height for the given style without
   /// rasterizing a GPU texture.
   ///
@@ -1444,13 +1828,7 @@ class Flut5TextCache._() {
     List<FontVariation>? fontVariations,
     String fontVariationKey = '',
   }) {
-    final key = (
-      fontFamily,
-      fontSize,
-      fontWeight,
-      fontStyle,
-      fontVariationKey,
-    );
+    final key = (fontFamily, fontSize, fontWeight, fontStyle, fontVariationKey);
     final cached = _lineHeightCache[key];
     if (cached != null) return cached;
 
@@ -1488,13 +1866,7 @@ class Flut5TextCache._() {
     List<FontVariation>? fontVariations,
     String fontVariationKey = '',
   }) {
-    final key = (
-      fontFamily,
-      fontSize,
-      fontWeight,
-      fontStyle,
-      fontVariationKey,
-    );
+    final key = (fontFamily, fontSize, fontWeight, fontStyle, fontVariationKey);
     final cached = _ascentDescentCache[key];
     if (cached != null) return cached;
 
@@ -1677,11 +2049,22 @@ class Flut5TextCache._() {
         int i = 0;
         while (i < codePoints.length) {
           final tokenIsWhitespace = _isWhitespaceCodePoint(codePoints[i]);
-          final chars = <String>[];
+          var chars = <String>[];
           while (i < codePoints.length &&
               _isWhitespaceCodePoint(codePoints[i]) == tokenIsWhitespace) {
             chars.add(_charString(codePoints[i]));
             i++;
+          }
+          if (!tokenIsWhitespace) {
+            chars = _joinShapedGlyphs(
+              chars,
+              fontFamily,
+              fontSize,
+              fontWeight,
+              fontStyle,
+              fontVariations,
+              fontVariationKey,
+            );
           }
           final count = chars.length;
           final advances = Float64List(count);
@@ -1724,6 +2107,74 @@ class Flut5TextCache._() {
     return tokenized;
   }
 
+  /// [chars] with the runs the font shapes into one glyph, like an "fi"
+  /// ligature, merged into one entry — they have to be rasterized together.
+  ///
+  /// A pair is joined when its second character takes up a different width
+  /// next to the first than on its own: kerning moves a glyph but leaves its
+  /// width alone, and a ligature divides its width among its characters. A
+  /// three-letter ligature shows up as the last two also being divided
+  /// differently once the first is in front of them.
+  List<String> _joinShapedGlyphs(
+    List<String> chars,
+    String fontFamily,
+    double fontSize,
+    FontWeight fontWeight,
+    FontStyle fontStyle,
+    List<FontVariation>? fontVariations,
+    String fontVariationKey,
+  ) {
+    if (chars.length < 2) return chars;
+    ({double kern, double secondWidth}) pair(String a, String b) =>
+        _pairMetrics(
+          a: a,
+          b: b,
+          fontFamily: fontFamily,
+          fontSize: fontSize,
+          fontWeight: fontWeight,
+          fontStyle: fontStyle,
+          fontVariations: fontVariations,
+          fontVariationKey: fontVariationKey,
+        );
+    const widthTolerance = 0.02;
+    List<bool>? joinsNext;
+    for (var i = 0; i + 1 < chars.length; i++) {
+      final metrics = pair(chars[i], chars[i + 1]);
+      final alone = measureWidth(
+        text: chars[i + 1],
+        fontFamily: fontFamily,
+        fontSize: fontSize,
+        fontWeight: fontWeight,
+        fontStyle: fontStyle,
+        fontVariations: fontVariations,
+        fontVariationKey: fontVariationKey,
+      );
+      if ((metrics.secondWidth - alone).abs() <= widthTolerance) continue;
+      joinsNext ??= List<bool>.filled(chars.length - 1, false);
+      joinsNext[i] = true;
+      if (i > 0 && !joinsNext[i - 1]) {
+        final withFirst = pair('${chars[i - 1]}${chars[i]}', chars[i + 1]);
+        if ((withFirst.secondWidth - metrics.secondWidth).abs() >
+            widthTolerance) {
+          joinsNext[i - 1] = true;
+        }
+      }
+    }
+    if (joinsNext == null) return chars;
+    final glyphs = <String>[];
+    var glyph = chars.first;
+    for (var i = 1; i < chars.length; i++) {
+      if (joinsNext[i - 1]) {
+        glyph += chars[i];
+      } else {
+        glyphs.add(glyph);
+        glyph = chars[i];
+      }
+    }
+    glyphs.add(glyph);
+    return glyphs;
+  }
+
   /// Word-wrap layout over pre-tokenized word runs. Runs only on layout-cache
   /// misses.
   ///
@@ -1756,6 +2207,7 @@ class Flut5TextCache._() {
     var glyphs = <String>[];
     var offsets = <double>[];
     var spacingIndices = maxWidth == null ? <int>[] : null;
+    var lineTokens = <_MeasuredToken>[];
     double penX = 0.0;
     int lineCharCount = 0;
 
@@ -1768,8 +2220,10 @@ class Flut5TextCache._() {
           lineCharCount > 0,
           spacingIndices == null ? null : Int32List.fromList(spacingIndices!),
           lineCharCount > 0 ? lineCharCount - 1 : 0,
+          lineTokens,
         ),
       );
+      lineTokens = <_MeasuredToken>[];
       glyphs = <String>[];
       offsets = <double>[];
       spacingIndices = maxWidth == null ? <int>[] : null;
@@ -1800,6 +2254,7 @@ class Flut5TextCache._() {
         if (lineCharCount > 0) {
           penX += spacing + joinKerns[ti - 1];
         }
+        lineTokens.add(token);
         final chars = token.chars;
         final advances = token.advances;
         final internalKerns = token.internalKerns;
@@ -1835,6 +2290,28 @@ class Flut5TextCache._() {
     required FontStyle fontStyle,
     List<FontVariation>? fontVariations,
     String fontVariationKey = '',
+  }) => _pairMetrics(
+    a: a,
+    b: b,
+    fontFamily: fontFamily,
+    fontSize: fontSize,
+    fontWeight: fontWeight,
+    fontStyle: fontStyle,
+    fontVariations: fontVariations,
+    fontVariationKey: fontVariationKey,
+  ).kern;
+
+  /// The kerning between [a] and [b], and the width [b] takes up right after
+  /// [a], measured once from the shaped pair.
+  ({double kern, double secondWidth}) _pairMetrics({
+    required String a,
+    required String b,
+    required String fontFamily,
+    required double fontSize,
+    required FontWeight fontWeight,
+    required FontStyle fontStyle,
+    List<FontVariation>? fontVariations,
+    String fontVariationKey = '',
   }) {
     final key = (
       a,
@@ -1846,7 +2323,7 @@ class Flut5TextCache._() {
       fontVariationKey,
     );
 
-    final cached = _kernCache[key];
+    final cached = _pairCache[key];
     if (cached != null) return cached;
 
     // Measure the pair as a single string
@@ -1865,6 +2342,13 @@ class Flut5TextCache._() {
     )..layout();
 
     final pairWidth = painter.width;
+    final secondBoxes = painter.getBoxesForSelection(
+      TextSelection(baseOffset: a.length, extentOffset: a.length + b.length),
+    );
+    var secondWidth = 0.0;
+    for (final box in secondBoxes) {
+      secondWidth += box.right - box.left;
+    }
     painter.dispose();
 
     // Measure individual widths without rasterizing GPU textures (avoids
@@ -1890,10 +2374,12 @@ class Flut5TextCache._() {
       fontVariationKey: fontVariationKey,
     );
 
-    final offset = pairWidth - aWidth - bWidth;
-    _kernCache[key] = offset;
-
-    return offset;
+    final metrics = (
+      kern: pairWidth - aWidth - bWidth,
+      secondWidth: secondWidth,
+    );
+    _pairCache[key] = metrics;
+    return metrics;
   }
 
   void clear() {
@@ -1904,13 +2390,23 @@ class Flut5TextCache._() {
     _cache.clear();
     _cacheBytes = 0;
     _textureGeneration++;
+    _atlasPageLimit = _firstAtlasPageLimit;
+    _atlasFilledThisFrame = false;
+    _atlasLimitWarned = false;
+    _recentStyles.clear();
+    for (final asked in _askedStyles) {
+      asked.frame = -1;
+    }
+    _framesWithNewStyles = 0;
+    _newStyleThisFrame = false;
     for (final made in _newLayouts) {
       made.clear();
     }
     _tokenCache.clear();
-    _kernCache.clear();
+    _pairCache.clear();
     _widthCache.clear();
     _lineHeightCache.clear();
+    _blockCache.clear();
     _ascentDescentCache.clear();
     _layoutCache.clear();
     _charStrings.clear();

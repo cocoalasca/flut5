@@ -1,7 +1,7 @@
 import 'dart:math' as math;
 import 'dart:ui' show Offset, Rect;
 
-import 'package:flutter/foundation.dart' show immutable;
+import 'package:flutter/foundation.dart' show immutable, visibleForTesting;
 import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter/painting.dart' show EdgeInsets;
 
@@ -164,6 +164,14 @@ class _Flut5ContainerScrollState() {
   /// still pressed. Used so a touch that started *outside* the container and
   /// was dragged in does not get claimed mid-gesture.
   final Set<int> seenPointerIds = <int>{};
+
+  /// For a container without an `id`: its rect the last time it was drawn,
+  /// which is its key in the automatic scroll states.
+  (double, double, double, double)? autoKey;
+
+  /// The frame this state was last used in, so states of containers that are
+  /// gone can be let go of.
+  int lastUsedFrame = 0;
 }
 
 /// Read-only snapshot of a container opened by
@@ -331,7 +339,8 @@ class _Flut5ContainerFrame({
   /// `endContainer()`. Only meaningful in [Flut5ContainerOverflow.scroll] mode.
   required final int slot,
 
-  /// Scroll-state identity. Only set in [Flut5ContainerOverflow.scroll] mode.
+  /// The `id` arg identifying the scroll state, or `null` for a container
+  /// that gave none — see [Flut5ContainerMixin._autoScrollState].
   required final String? scrollId,
 
   /// Whether this container was opened inside a [Flut5ContainerMixin.beginLayout]
@@ -372,6 +381,25 @@ mixin Flut5ContainerMixin on Flut5Transform, Flut52DPrimitives, Flut5Clip {
   double _containerScrollInertia = 0.85;
   static const double _inertiaStopEpsilon = 0.05;
   final Map<String, _Flut5ContainerScrollState> _containerScrollStates = {};
+
+  // ── Scroll state of containers without an `id` ────────────────────────
+  //
+  // These are known by their rect while they stay put. One that moves or
+  // resizes has a new rect, so it takes over the state of the container that
+  // was drawn at the same place in the draw order last frame.
+  final Map<(double, double, double, double), _Flut5ContainerScrollState>
+  _autoScrollStates = {};
+  List<_Flut5ContainerScrollState> _autoScrollsLastFrame = [];
+  List<_Flut5ContainerScrollState> _autoScrollsThisFrame = [];
+  int _autoScrollFrame = -1;
+
+  /// How many scroll states of containers without an `id` are kept.
+  @visibleForTesting
+  int get debugAutoScrollStateCount => _autoScrollStates.length;
+
+  /// Frames a state of a container without an `id` outlives its last draw.
+  static const int _autoScrollLifetime = 600;
+  static const int _autoScrollSweepInterval = 120;
 
   /// How a scroll container reacts at the edge of its content. Defaults to
   /// [Flut5ContainerOverscroll.bounce].
@@ -626,13 +654,56 @@ mixin Flut5ContainerMixin on Flut5Transform, Flut52DPrimitives, Flut5Clip {
   void resetContainerScroll([String? id]) {
     if (id == null) {
       _containerScrollStates.clear();
+      _autoScrollStates.clear();
+      _autoScrollsLastFrame = [];
+      _autoScrollsThisFrame = [];
     } else {
       _containerScrollStates.remove(id);
     }
   }
 
-  _Flut5ContainerScrollState _updateContainerScroll(
-    String id,
+  /// The scroll state of a container with no `id` at this rect: the one it
+  /// has had here, else the one of the container drawn at this place in the
+  /// draw order last frame, so a moving container keeps its scroll position.
+  _Flut5ContainerScrollState _autoScrollState(
+    double x,
+    double y,
+    double w,
+    double h,
+  ) {
+    if (frameCount != _autoScrollFrame) {
+      _autoScrollFrame = frameCount;
+      final finished = _autoScrollsLastFrame..clear();
+      _autoScrollsLastFrame = _autoScrollsThisFrame;
+      _autoScrollsThisFrame = finished;
+      if (frameCount % _autoScrollSweepInterval == 0) {
+        _autoScrollStates.removeWhere(
+          (_, state) => frameCount - state.lastUsedFrame > _autoScrollLifetime,
+        );
+      }
+    }
+    final key = (x, y, w, h);
+    var state = _autoScrollStates[key];
+    if (state == null) {
+      final place = _autoScrollsThisFrame.length;
+      if (place < _autoScrollsLastFrame.length) {
+        final moved = _autoScrollsLastFrame[place];
+        if (moved.lastUsedFrame != frameCount) {
+          _autoScrollStates.remove(moved.autoKey);
+          state = moved;
+        }
+      }
+      state ??= _Flut5ContainerScrollState();
+      state.autoKey = key;
+      _autoScrollStates[key] = state;
+    }
+    state.lastUsedFrame = frameCount;
+    _autoScrollsThisFrame.add(state);
+    return state;
+  }
+
+  void _updateContainerScroll(
+    _Flut5ContainerScrollState state,
     double x,
     double y,
     double w,
@@ -640,11 +711,6 @@ mixin Flut5ContainerMixin on Flut5Transform, Flut52DPrimitives, Flut5Clip {
     Rect? contentBounds,
     Flut5ContainerOverscroll mode,
   ) {
-    final state = _containerScrollStates.putIfAbsent(
-      id,
-      () => _Flut5ContainerScrollState(),
-    );
-
     final activeTouches = touches;
     final currentIds = <int>{for (final t in activeTouches) t.id};
 
@@ -787,7 +853,6 @@ mixin Flut5ContainerMixin on Flut5Transform, Flut52DPrimitives, Flut5Clip {
     }
 
     state.seenPointerIds.addAll(currentIds);
-    return state;
   }
 
   /// Applies a drag delta with rubber-band resistance: movement inside
@@ -1213,8 +1278,9 @@ mixin Flut5ContainerMixin on Flut5Transform, Flut52DPrimitives, Flut5Clip {
   ///   with rounded corners of that radius and the clip uses the same radius
   ///   so the inner content matches.
   /// * `'id'` → `String`; identity used for the scroll state map. When
-  ///   omitted, the container is keyed by its `(x, y, w, h)` rect, which is
-  ///   only stable if the container does not move.
+  ///   omitted, the container is known by its `(x, y, w, h)` rect and, if that
+  ///   changes, by its place in the draw order. Give containers that come and
+  ///   go between frames an `id` so they keep their own scroll position.
   /// * `'pointerDown'` / `'pointerUp'` / `'pointerMove'` / `'pointerDragged'` →
   ///   `void Function(SketchPointerEvent)`, the container-scoped mirrors of the
   ///   sketch's pointer handlers. Each fires only for events whose location
@@ -1380,10 +1446,11 @@ mixin Flut5ContainerMixin on Flut5Transform, Flut52DPrimitives, Flut5Clip {
       // slot here, let the content record unshifted, then endContainer()
       // measures and back-fills the translate.
       final idArg = args?['id'];
-      scrollId = (idArg is String) ? idArg : '${x}_${y}_${w}_$h';
+      scrollId = idArg is String ? idArg : null;
 
       renderQueue.flushPending();
       slot = renderQueue.itemCount;
+      renderQueue.beginScrollContent(w, h);
     }
 
     _containerStack.add(
@@ -1472,11 +1539,19 @@ mixin Flut5ContainerMixin on Flut5Transform, Flut52DPrimitives, Flut5Clip {
 
     if (frame.overflow == Flut5ContainerOverflow.scroll) {
       renderQueue.flushPending();
+      renderQueue.endScrollContent();
       final contentBounds = frame.overscroll == Flut5ContainerOverscroll.free
           ? null
           : renderQueue.contentBoundsFrom(frame.slot);
-      final state = _updateContainerScroll(
-        frame.scrollId!,
+      final scrollId = frame.scrollId;
+      final state = scrollId != null
+          ? _containerScrollStates.putIfAbsent(
+              scrollId,
+              () => _Flut5ContainerScrollState(),
+            )
+          : _autoScrollState(frame.x, frame.y, frame.w, frame.h);
+      _updateContainerScroll(
+        state,
         frame.x,
         frame.y,
         frame.w,
@@ -1485,6 +1560,11 @@ mixin Flut5ContainerMixin on Flut5Transform, Flut52DPrimitives, Flut5Clip {
         frame.overscroll,
       );
 
+      // The offset is final now, so what it leaves outside the clip can go.
+      renderQueue.cullOutside(
+        frame.slot,
+        Rect.fromLTWH(-state.offsetX, -state.offsetY, frame.w, frame.h),
+      );
       renderQueue.insertAt(
         frame.slot,
         TransformRenderItem.translate(state.offsetX, state.offsetY),

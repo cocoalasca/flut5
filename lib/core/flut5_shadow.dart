@@ -1,7 +1,9 @@
+import 'dart:ui' as ui show Image;
 import 'dart:ui' show ImageFilter;
 
 import 'package:flutter/widgets.dart';
 
+import '../image/flut5_image_shadows.dart';
 import '../text/flut5_text_cache.dart';
 import 'flut5_engine_colors.dart';
 import 'render/flut5_render_queue.dart';
@@ -104,18 +106,79 @@ class Flut5ShadowSpec(
     );
   }
 
-  /// Draws the shadow of the white text raster [text] laid out at [dst]: the
-  /// raster recoloured, spread and blurred, shifted by [offset].
+  /// Draws the shadow of the white text raster [text] whose box is at [dst]
+  /// (its left edge [Flut5CachedText.leftPad] before the pen, its top the top
+  /// of the line): the raster recoloured, spread and blurred, shifted by
+  /// [offset].
   ///
   /// Filtering every glyph every frame cost ~0.15 ms of GPU time per glyph
   /// on Impeller (150 shadowed characters: 22 ms a frame). A spread or
   /// blurred shadow is instead baked once into a silhouette kept with the
   /// raster ([Flut5TextCache.bakedShadow]), so a frame only blits it.
   void paintText(Canvas canvas, Flut5CachedText text, Rect dst) {
-    final at = dst.shift(offset);
+    final left = dst.left + text.leftPad - text.rasterLeft + offset.dx;
+    final top = dst.top - text.rasterTop + offset.dy;
     final baked = resolveBakedShadow(text);
     if (baked == null) {
-      canvas.drawImageRect(text.image, text.srcRect, at, textTintPaint);
+      canvas.drawImageRect(
+        text.image,
+        text.srcRect,
+        Rect.fromLTWH(left, top, text.blitWidth, text.blitHeight),
+        textTintPaint,
+      );
+      return;
+    }
+    canvas.drawImageRect(
+      baked.image,
+      baked.srcRect,
+      Rect.fromLTWH(
+        left - baked.pad,
+        top - baked.pad,
+        baked.size.width,
+        baked.size.height,
+      ),
+      textTintPaint,
+    );
+  }
+
+  /// Tint paint for image shadows: recolours a bitmap — or the spread and
+  /// blurred silhouette [paintImage] bakes from one — to the shadow color.
+  /// Sampled at the [FilterQuality.medium] images blit with.
+  late final Paint imageTintPaint = Paint()
+    ..colorFilter = ColorFilter.mode(color, BlendMode.srcIn)
+    ..filterQuality = FilterQuality.medium;
+
+  /// Layer paint for a soft image shadow drawn live, see [paintImage].
+  late final Paint _imageLayerPaint = Paint()..imageFilter = _silhouetteFilter;
+
+  /// Draws the shadow of [src] of [image] laid out at [dst]. A bitmap's own
+  /// alpha is the silhouette, so a transparent PNG casts a soft shadow shaped
+  /// like its content rather than a rectangular blob.
+  ///
+  /// A spread or blurred shadow takes an offscreen pass. It is baked once the
+  /// same draw repeats ([Flut5ImageShadows]), so a frame only blits it; a draw
+  /// that doesn't repeat, like a sprite whose size animates, is filtered live.
+  void paintImage(Canvas canvas, ui.Image image, Rect src, Rect dst) {
+    final at = dst.shift(offset);
+    final filter = _silhouetteFilter;
+    if (filter == null) {
+      canvas.drawImageRect(image, src, at, imageTintPaint);
+      return;
+    }
+    final reach = spread + (blur > 0 ? 3 * _blurSigma : 0);
+    final baked = Flut5ImageShadows.silhouette(
+      image: image,
+      src: src,
+      size: Size(dst.width.abs(), dst.height.abs()),
+      pixelRatio: Flut5TextCache.instance.pixelRatio,
+      filterKey: (blur, spread),
+      filter: filter,
+      reach: reach,
+    );
+    if (baked == null) {
+      canvas.saveLayer(at.inflate(reach + 2), _imageLayerPaint);
+      canvas.drawImageRect(image, src, at, imageTintPaint);
+      canvas.restore();
       return;
     }
     canvas.drawImageRect(
@@ -127,43 +190,8 @@ class Flut5ShadowSpec(
         baked.size.width,
         baked.size.height,
       ),
-      textTintPaint,
+      imageTintPaint,
     );
-  }
-
-  /// Tint paint for image shadows: recolours the bitmap to the shadow color,
-  /// then applies spread and blur — see [_buildRasterTintPaint]. Sampled at
-  /// the [FilterQuality.medium] images blit with. A bitmap's own alpha is the
-  /// silhouette, so a transparent PNG casts a shadow shaped like its content
-  /// rather than a rectangular blob.
-  late final Paint imageTintPaint = _buildRasterTintPaint(FilterQuality.medium);
-
-  /// Builds a shadow paint that recolours a bitmap to the shadow color, then
-  /// applies spread and blur.
-  /// Spread is realized as a morphological [ImageFilter.dilate] composed
-  /// inside the blur (grow first, soften after — CSS order), so no extra
-  /// rasters are generated; when spread is `0` the cheaper [MaskFilter] blur
-  /// is used instead.
-  Paint _buildRasterTintPaint(FilterQuality quality) {
-    final p = Paint()
-      ..colorFilter = ColorFilter.mode(color, BlendMode.srcIn)
-      ..filterQuality = quality;
-    if (spread > 0) {
-      final dilate = ImageFilter.dilate(radiusX: spread, radiusY: spread);
-      p.imageFilter = blur > 0
-          ? ImageFilter.compose(
-              outer: ImageFilter.blur(
-                sigmaX: _blurSigma,
-                sigmaY: _blurSigma,
-                tileMode: TileMode.decal,
-              ),
-              inner: dilate,
-            )
-          : dilate;
-    } else {
-      p.maskFilter = _blurFilter;
-    }
-    return p;
   }
 
   // One-entry memo for [strokeShadowPaint]. Specs are identity-stable across

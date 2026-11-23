@@ -18,6 +18,9 @@ class MultiPointRenderItem(
   late final Rect? bounds = _coordBounds(coords);
 
   @override
+  bool get keepsCanvasTransform => true;
+
+  @override
   void execute(Canvas canvas) {
     if (coords.isEmpty) return;
     final s = shadow;

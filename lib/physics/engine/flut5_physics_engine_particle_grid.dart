@@ -82,6 +82,24 @@ final class _ParticleGrid() {
   /// Unclamped integer cell row for [y] in [isHashed] mode.
   int hashRowAt(double y) => ((y - _top) * _cellsPerPixel).floor();
 
+  /// Whether walking the hashed cells under this box is cheaper than walking
+  /// every filed particle, and its corners can be turned into cell numbers.
+  /// Also false for infinite or not-a-number coordinates.
+  bool hashedBoxIsWalkable(
+    double minX,
+    double minY,
+    double maxX,
+    double maxY,
+  ) {
+    final columnsAcross = (maxX - minX) * _cellsPerPixel + 1;
+    final rowsAcross = (maxY - minY) * _cellsPerPixel + 1;
+    return columnsAcross * rowsAcross <= filedCount &&
+        ((minX - _left) * _cellsPerPixel).abs() <= _maxHashCoord &&
+        ((maxX - _left) * _cellsPerPixel).abs() <= _maxHashCoord &&
+        ((minY - _top) * _cellsPerPixel).abs() <= _maxHashCoord &&
+        ((maxY - _top) * _cellsPerPixel).abs() <= _maxHashCoord;
+  }
+
   /// The column [x] falls in, or the nearest one if it is outside the grid.
   int columnAt(double x) => _nearestCell((x - _left) * _cellsPerPixel, columns);
 

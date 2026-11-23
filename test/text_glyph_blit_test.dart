@@ -50,8 +50,11 @@ Future<Uint8List> _pixels(
 
 /// Expects [drawn] to be [expected], pixel for pixel. The raster is tinted
 /// on its way to the canvas, which on Impeller rounds an edge pixel's alpha
-/// one level differently now and then; on Skia the bytes are identical. A
-/// raster drawn at the wrong size is off by a hundred levels or more.
+/// one level differently now and then; on Skia the bytes are identical. The
+/// software GPU `flutter test --enable-impeller` runs on also samples a large
+/// atlas page a few levels off on steep edges (real Metal doesn't: measured
+/// byte-identical). A raster drawn at the wrong size is off by a hundred
+/// levels or more.
 void _expectSamePixels(Uint8List drawn, Uint8List expected, {String? reason}) {
   expect(drawn.length, expected.length);
   var worst = 0;
@@ -59,10 +62,16 @@ void _expectSamePixels(Uint8List drawn, Uint8List expected, {String? reason}) {
     final difference = (drawn[i] - expected[i]).abs();
     if (difference > worst) worst = difference;
   }
-  expect(worst, lessThanOrEqualTo(1), reason: reason);
+  final tolerance = ui.ImageFilter.isShaderFilterSupported ? 4 : 1;
+  expect(worst, lessThanOrEqualTo(tolerance), reason: reason);
 }
 
-Flut5CachedText _glyph(String text, double size, {double strokeWidth = 0}) =>
+Flut5CachedText _glyph(
+  String text,
+  double size, {
+  double strokeWidth = 0,
+  int phase = 0,
+}) =>
     Flut5TextCache.instance.getOrCreate(
       text: text,
       fontFamily: _family,
@@ -73,6 +82,7 @@ Flut5CachedText _glyph(String text, double size, {double strokeWidth = 0}) =>
       align: TextAlign.left,
       paintingStyle: strokeWidth == 0 ? 0 : 1,
       strokeWidth: strokeWidth,
+      subpixelPhase: phase,
     );
 
 TextPainter _painter(String text, double size) => TextPainter(
@@ -233,9 +243,13 @@ void main() {
       await draw(engine, text);
 
       final kept = cache.resolvedGlyphs(lineOf(text, 22), 0, 0)!;
-      expect(kept, hasLength(6));
+      final glyphs = lineOf(text, 22).glyphs;
+      expect(kept, hasLength(glyphs.length));
       for (var i = 0; i < kept.length; i++) {
-        expect(kept[i], same(_glyph(text[i], 22)));
+        expect(
+          kept[i],
+          same(_glyph(glyphs[i], 22, phase: kept[i].subpixelPhase)),
+        );
       }
       // The stroke pass keeps its own, per stroke width.
       expect(cache.resolvedGlyphs(lineOf(text, 22), 1, 2), isNull);
@@ -244,7 +258,17 @@ void main() {
         ..strokeWeight(2);
       await draw(engine, text);
       final stroked = cache.resolvedGlyphs(lineOf(text, 22), 1, 2)!;
-      expect(stroked.first, same(_glyph('W', 22, strokeWidth: 2)));
+      expect(
+        stroked.first,
+        same(
+          _glyph(
+            'W',
+            22,
+            strokeWidth: 2,
+            phase: stroked.first.subpixelPhase,
+          ),
+        ),
+      );
       expect(cache.resolvedGlyphs(lineOf(text, 22), 1, 3), isNull);
     });
 

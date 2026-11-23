@@ -327,20 +327,151 @@ mixin _PhysicsParticles {
     }
   }
 
-  /// Collides each particle too big for [grid]'s cells with every other
-  /// particle, each pair once.
+  /// Collides each particle too big for [grid]'s cells with the filed
+  /// particles around it, and then the big ones with each other.
   void _collideLargeParticles(_ParticleGrid grid) {
-    final count = _particles.length;
+    if (grid.largeCount == 0) return;
     final largeParticles = grid.largeParticles;
     for (var slot = 0; slot < grid.largeCount; slot++) {
-      final large = largeParticles[slot];
-      for (var other = 0; other < count; other++) {
-        if (other == large) continue;
-        // Two large ones meet when the older of them goes through the list.
-        if (other < large && grid.isLarge(other)) continue;
-        _collideIfTouching(large, other);
+      _collideLargeWithFiled(largeParticles[slot], grid);
+    }
+    _collideLargeWithLarge(grid);
+  }
+
+  /// Collides the large particle [large] with the filed particles in the
+  /// cells it can reach.
+  void _collideLargeWithFiled(int large, _ParticleGrid grid) {
+    final x = _collisionX[large], y = _collisionY[large];
+    // A filed particle's edge is at most half a cell from its center. The
+    // other half is for particles that pushes earlier in this pass moved
+    // since they were filed.
+    final reach = _collisionRadius[large] + grid.cellSize;
+    if (!grid.isHashed) {
+      final firstColumn = grid.columnAt(x - reach);
+      final lastColumn = grid.columnAt(x + reach);
+      final lastRow = grid.rowAt(y + reach);
+      final cellStarts = grid.cellStarts;
+      final columns = grid.columns;
+      for (var row = grid.rowAt(y - reach); row <= lastRow; row++) {
+        // Cells side by side are side by side in the list too.
+        final runStart = cellStarts[row * columns + firstColumn];
+        final runEnd = cellStarts[row * columns + lastColumn + 1];
+        if (runStart < runEnd) {
+          _collideWithRun(large, grid.filedParticles, runStart, runEnd);
+        }
+      }
+      return;
+    }
+    if (!grid.hashedBoxIsWalkable(x - reach, y - reach, x + reach, y + reach)) {
+      final filed = grid.filedParticles;
+      for (var slot = 0; slot < grid.filedCount; slot++) {
+        _collideIfTouching(large, filed[slot]);
+      }
+      return;
+    }
+    final firstColumn = grid.hashColumnAt(x - reach);
+    final lastColumn = grid.hashColumnAt(x + reach);
+    final lastRow = grid.hashRowAt(y + reach);
+    final hashHeads = grid.hashHeads;
+    final hashNext = grid.hashNext;
+    final cellX = grid.cellX;
+    final cellY = grid.cellY;
+    for (var row = grid.hashRowAt(y - reach); row <= lastRow; row++) {
+      for (var column = firstColumn; column <= lastColumn; column++) {
+        for (
+          var filed = hashHeads[grid.hashSlot(column, row)];
+          filed >= 0;
+          filed = hashNext[filed]
+        ) {
+          if (cellX[filed] == column && cellY[filed] == row) {
+            _collideIfTouching(large, filed);
+          }
+        }
       }
     }
+  }
+
+  /// The large particles, kept in order along [_largeSweepsAlongY]'s axis
+  /// between passes so re-sorting them is close to one walk of the list.
+  Int32List _largeSweepOrder = Int32List(0);
+  int _largeSweepCount = 0;
+  bool _largeSweepsAlongY = false;
+
+  /// Collides the large particles with each other, sweeping along whichever
+  /// axis they are more spread out on so a tall column stays cheap too.
+  void _collideLargeWithLarge(_ParticleGrid grid) {
+    final count = grid.largeCount;
+    if (count < 2) return;
+    _refreshLargeSweepOrder(grid);
+    final order = _largeSweepOrder;
+    final radius = _collisionRadius;
+    final along = _largeSweepsAlongY ? _collisionY : _collisionX;
+    for (var i = 1; i < count; i++) {
+      final particle = order[i];
+      final start = along[particle] - radius[particle];
+      var j = i - 1;
+      while (j >= 0 && along[order[j]] - radius[order[j]] > start) {
+        order[j + 1] = order[j];
+        j--;
+      }
+      order[j + 1] = particle;
+    }
+    for (var i = 0; i < count; i++) {
+      final a = order[i];
+      for (var j = i + 1; j < count; j++) {
+        final b = order[j];
+        if (along[b] - radius[b] > along[a] + radius[a]) break;
+        _collideIfTouching(a, b);
+      }
+    }
+  }
+
+  /// Brings [_largeSweepOrder] in line with [grid]'s large particles, and
+  /// picks the sweep axis. Swaps axis only on a clear difference: every swap
+  /// costs a full re-sort.
+  void _refreshLargeSweepOrder(_ParticleGrid grid) {
+    final count = grid.largeCount;
+    final large = grid.largeParticles;
+    var lowX = double.infinity, highX = double.negativeInfinity;
+    var lowY = double.infinity, highY = double.negativeInfinity;
+    for (var slot = 0; slot < count; slot++) {
+      final particle = large[slot];
+      final x = _collisionX[particle], y = _collisionY[particle];
+      if (x < lowX) lowX = x;
+      if (x > highX) highX = x;
+      if (y < lowY) lowY = y;
+      if (y > highY) highY = y;
+    }
+    final spreadX = highX - lowX, spreadY = highY - lowY;
+    var orderIsStale = _largeSweepCount != count;
+    if (_largeSweepsAlongY ? spreadX > spreadY * 1.25 : spreadY > spreadX * 1.25) {
+      _largeSweepsAlongY = !_largeSweepsAlongY;
+      orderIsStale = true;
+    }
+    if (!orderIsStale) {
+      // Removing a particle shifts the indices after it, so an old entry can
+      // point past the end of the list.
+      final particleCount = _particles.length;
+      for (var i = 0; i < count; i++) {
+        final particle = _largeSweepOrder[i];
+        if (particle >= particleCount || !grid.isLarge(particle)) {
+          orderIsStale = true;
+          break;
+        }
+      }
+    }
+    if (!orderIsStale) return;
+    if (_largeSweepOrder.length < count) {
+      _largeSweepOrder = Int32List(count * 2);
+    }
+    _largeSweepOrder.setRange(0, count, large);
+    _largeSweepCount = count;
+    final radius = _collisionRadius;
+    final along = _largeSweepsAlongY ? _collisionY : _collisionX;
+    // A full sort: insertion sort from creation order would be quadratic.
+    Int32List.sublistView(_largeSweepOrder, 0, count).sort(
+      (a, b) => (along[a] - radius[a]).compareTo(along[b] - radius[b]),
+    );
   }
 
   /// Resolves the collision between particles [a] and [b] if they overlap.

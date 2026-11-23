@@ -393,9 +393,29 @@ void main() {
         engine.renderQueue.clear();
       }
 
-      expect(engine.textCacheLength, initialGlyphs);
-      expect(engine.textCacheBytes, initialBytes);
+      // Spacing moves glyphs across subpixel positions, so a glyph may gain
+      // its other phases — but never a raster per animation value.
+      final warmGlyphs = engine.textCacheLength;
+      final warmBytes = engine.textCacheBytes;
+      expect(
+        warmGlyphs,
+        lessThanOrEqualTo(initialGlyphs * Flut5TextCache.subpixelPhases),
+      );
+      expect(warmBytes, greaterThanOrEqualTo(initialBytes));
       expect(engine.textLayoutCacheLength, initialLayouts);
+
+      for (var frame = 1; frame <= 80; frame++) {
+        engine
+          ..letterSpacing(frame * 0.17)
+          ..textLeading(20.0 + frame * 0.25)
+          ..textDynamic('Hello\nWorld', 10, 10);
+        final recorder = ui.PictureRecorder();
+        engine.renderQueue.execute(Canvas(recorder));
+        recorder.endRecording().dispose();
+        engine.renderQueue.clear();
+      }
+      expect(engine.textCacheLength, warmGlyphs);
+      expect(engine.textCacheBytes, warmBytes);
     });
 
     test('textLeading called before textSize keeps exact pixel spacing', () async {
@@ -416,6 +436,8 @@ void main() {
         return _renderQueue(e.renderQueue);
       }
 
+      // Warm the glyph atlas first, so both draws sample the same pages.
+      await drawOrder(true);
       _expectPixelsMatch(await drawOrder(true), await drawOrder(false));
     });
   });
