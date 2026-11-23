@@ -11,6 +11,9 @@ class PointRenderItem(
   Rect? get bounds => Rect.fromCircle(center: center, radius: radius);
 
   @override
+  bool get keepsCanvasTransform => true;
+
+  @override
   void execute(Canvas canvas) {
     if (strokePaint != null) canvas.drawCircle(center, radius, strokePaint!);
   }

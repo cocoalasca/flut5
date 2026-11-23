@@ -74,3 +74,69 @@ bool _supplementaryNeedsShaping(int codePoint) {
   // Emoji tag sequences and supplementary variation selectors.
   return codePoint >= 0xE0000 && codePoint <= 0xE0FFF;
 }
+
+/// Whether [text] contains any glyph that renders as a multi-color bitmap
+/// emoji (`Emoji_Presentation=Yes` or SMP emoji blocks), so the fill pass
+/// preserves its native palette rather than tinting it to a solid silhouette.
+bool flut5HasColorEmoji(String text) {
+  for (var i = 0; i < text.length; i++) {
+    final unit = text.codeUnitAt(i);
+    if (unit < 0x231A) continue;
+    if (unit >= 0xD800 && unit <= 0xDBFF && i + 1 < text.length) {
+      final low = text.codeUnitAt(i + 1);
+      if (low >= 0xDC00 && low <= 0xDFFF) {
+        final codePoint = 0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00);
+        if (codePoint >= 0x1F000 && codePoint <= 0x1FAFF) return true;
+        i++;
+      }
+      continue;
+    }
+    if (_isBmpColorEmoji(unit)) return true;
+  }
+  return false;
+}
+
+bool _isBmpColorEmoji(int u) {
+  if (u <= 0x23FA) {
+    return u == 0x231A ||
+        u == 0x231B ||
+        (u >= 0x23E9 && u <= 0x23F3) ||
+        (u >= 0x23F8 && u <= 0x23FA);
+  }
+  if (u == 0x25FD || u == 0x25FE) return true;
+  if (u >= 0x2614 && u <= 0x26FD) {
+    return u <= 0x2615 ||
+        (u >= 0x2648 && u <= 0x2653) ||
+        u == 0x267F ||
+        u == 0x2693 ||
+        u == 0x26A1 ||
+        u == 0x26AA ||
+        u == 0x26AB ||
+        u == 0x26BD ||
+        u == 0x26BE ||
+        u == 0x26C4 ||
+        u == 0x26C5 ||
+        u == 0x26CE ||
+        u == 0x26D4 ||
+        u == 0x26EA ||
+        u == 0x26F2 ||
+        u == 0x26F3 ||
+        u == 0x26F5 ||
+        u == 0x26FA ||
+        u == 0x26FD;
+  }
+  if (u >= 0x2705 && u <= 0x27BF) {
+    return u == 0x2705 ||
+        u == 0x270A ||
+        u == 0x270B ||
+        u == 0x2728 ||
+        u == 0x274C ||
+        u == 0x274E ||
+        (u >= 0x2753 && u <= 0x2755) ||
+        u == 0x2757 ||
+        (u >= 0x2795 && u <= 0x2797) ||
+        u == 0x27B0 ||
+        u == 0x27BF;
+  }
+  return u == 0x2B1B || u == 0x2B1C || u == 0x2B50 || u == 0x2B55;
+}

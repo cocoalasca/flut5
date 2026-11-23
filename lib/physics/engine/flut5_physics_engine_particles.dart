@@ -394,6 +394,7 @@ mixin _PhysicsParticles {
   /// The large particles, kept in order along [_largeSweepsAlongY]'s axis
   /// between passes so re-sorting them is close to one walk of the list.
   Int32List _largeSweepOrder = Int32List(0);
+  Float64List _largeSweepMin = Float64List(0);
   int _largeSweepCount = 0;
   bool _largeSweepsAlongY = false;
 
@@ -406,6 +407,10 @@ mixin _PhysicsParticles {
     final order = _largeSweepOrder;
     final radius = _collisionRadius;
     final along = _largeSweepsAlongY ? _collisionY : _collisionX;
+    if (_largeSweepMin.length < count) {
+      _largeSweepMin = Float64List(order.length);
+    }
+    final minEdge = _largeSweepMin;
     for (var i = 1; i < count; i++) {
       final particle = order[i];
       final start = along[particle] - radius[particle];
@@ -416,12 +421,25 @@ mixin _PhysicsParticles {
       }
       order[j + 1] = particle;
     }
+    // Snapshot pre-sweep leading edges: resolving earlier pairs mutates
+    // positions in place, so the break guard subtracts the maximum leftward
+    // displacement observed so far instead of assuming sorted order holds.
+    for (var i = 0; i < count; i++) {
+      final particle = order[i];
+      minEdge[i] = along[particle] - radius[particle];
+    }
+    var maxLeftShift = 0.0;
     for (var i = 0; i < count; i++) {
       final a = order[i];
+      final minA = minEdge[i];
       for (var j = i + 1; j < count; j++) {
+        if (minEdge[j] - maxLeftShift > along[a] + radius[a]) break;
         final b = order[j];
-        if (along[b] - radius[b] > along[a] + radius[a]) break;
         _collideIfTouching(a, b);
+        final shiftA = minA - (along[a] - radius[a]);
+        if (shiftA > maxLeftShift) maxLeftShift = shiftA;
+        final shiftB = minEdge[j] - (along[b] - radius[b]);
+        if (shiftB > maxLeftShift) maxLeftShift = shiftB;
       }
     }
   }

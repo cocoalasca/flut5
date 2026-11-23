@@ -145,13 +145,87 @@ class Flut5RenderQueue() {
   static const int _clearCrossingCredit = 4;
   static const int _restingTextCrossingCount = 1024;
 
-  // ── Per-frame Float32List arena (reduces per-flush TypedData churn) ───
-  // Sliced via Float32List.sublistView; the queue drops its reference on
-  // clear() so items retained past a frame remain immutable.
+  // ── Per-frame TypedData arenas & batch pools ──────────────────────────
+  // Sliced via sublistView; the queue drops its reference on clear() so items
+  // retained past a frame remain immutable.
   Float32List? _frameArena;
   int _frameArenaOffset = 0;
   int _frameArenaTotal = 0;
   int _lastFrameArenaFloats = 0;
+
+  Int32List? _intFrameArena;
+  int _intFrameArenaOffset = 0;
+  int _intFrameArenaTotal = 0;
+  int _lastIntFrameArena = 0;
+
+  static const int _maxPooledCoordBatches = 64;
+  static const int _maxPooledImageBatches = 32;
+  final List<_OpenCoordBatch> _coordBatchPool = [];
+  final List<_OpenImageBatch> _imageBatchPool = [];
+
+  _OpenCoordBatch _takeCoordBatch(Paint paint, Flut5ShadowSpec? shadow) {
+    if (_coordBatchPool.isNotEmpty) {
+      return _coordBatchPool.removeLast()..reset(paint, shadow);
+    }
+    return _OpenCoordBatch()..reset(paint, shadow);
+  }
+
+  void _releaseCoordBatches(List<_OpenCoordBatch> batches) {
+    for (final batch in batches) {
+      batch.clearRefs();
+      if (_coordBatchPool.length < _maxPooledCoordBatches) {
+        _coordBatchPool.add(batch);
+      }
+    }
+    batches.clear();
+  }
+
+  _OpenImageBatch _takeImageBatch({
+    required ui.Image image,
+    required BlendMode blendMode,
+    required FilterQuality filterQuality,
+    required Rect firstSrc,
+    required Rect firstDst,
+    required _FoldTransform? firstFold,
+    required Color? firstTint,
+    required Rect bounds,
+    required bool hasRotation,
+  }) {
+    if (_imageBatchPool.isNotEmpty) {
+      return _imageBatchPool.removeLast()..reset(
+        image: image,
+        blendMode: blendMode,
+        filterQuality: filterQuality,
+        firstSrc: firstSrc,
+        firstDst: firstDst,
+        firstFold: firstFold,
+        firstTint: firstTint,
+        bounds: bounds,
+        hasRotation: hasRotation,
+      );
+    }
+    return _OpenImageBatch()..reset(
+      image: image,
+      blendMode: blendMode,
+      filterQuality: filterQuality,
+      firstSrc: firstSrc,
+      firstDst: firstDst,
+      firstFold: firstFold,
+      firstTint: firstTint,
+      bounds: bounds,
+      hasRotation: hasRotation,
+    );
+  }
+
+  void _releaseImageBatches(List<_OpenImageBatch> batches) {
+    for (final batch in batches) {
+      batch.clearRefs();
+      if (_imageBatchPool.length < _maxPooledImageBatches) {
+        _imageBatchPool.add(batch);
+      }
+    }
+    batches.clear();
+  }
 
   Float32List _allocArenaCopy(Float32List src, int length) {
     var arena = _frameArena;
@@ -169,6 +243,24 @@ class Flut5RenderQueue() {
     _frameArenaOffset = end;
     _frameArenaTotal += length;
     return Float32List.sublistView(arena, start, end);
+  }
+
+  Int32List _allocIntArenaCopy(Int32List src, int length) {
+    var arena = _intFrameArena;
+    if (arena == null || _intFrameArenaOffset + length > arena.length) {
+      var cap = _lastIntFrameArena;
+      if (cap < 64) cap = 64;
+      if (cap > 16384) cap = 16384;
+      if (length > cap) cap = length;
+      arena = _intFrameArena = Int32List(cap);
+      _intFrameArenaOffset = 0;
+    }
+    final start = _intFrameArenaOffset;
+    final end = start + length;
+    arena.setRange(start, end, src);
+    _intFrameArenaOffset = end;
+    _intFrameArenaTotal += length;
+    return Int32List.sublistView(arena, start, end);
   }
 
   // ── Pending shape path (rects, ovals, arcs merged into one Path) ──────
@@ -1046,8 +1138,8 @@ class Flut5RenderQueue() {
   // outlive it in the fold either. Scopes nest but cannot cross.
 
   /// Each open scope, innermost last: the fold-stack depth just above its
-  /// own entry, and its kind.
-  final List<({int depth, bool pixelate})> _scopes = [];
+  /// own entry, its kind, and its opening index in [_items].
+  final List<({int depth, bool pixelate, int beginIndex})> _scopes = [];
 
   /// How many of [_scopes] are pixelate scopes.
   int _pixelateScopes = 0;
@@ -1096,7 +1188,10 @@ class Flut5RenderQueue() {
   void beginBlur(double sigma) {
     final blurs = sigma.isFinite && sigma > 0;
     _beginScope(
-      BlurBeginRenderItem(blurs ? _layerPaintFor(sigma) : null),
+      BlurBeginRenderItem(
+        blurs ? _layerPaintFor(sigma) : null,
+        sigma: blurs ? sigma : 0,
+      ),
       pixelate: false,
     );
   }
@@ -1118,7 +1213,8 @@ class Flut5RenderQueue() {
     _materializeTransforms();
     flushPending();
     pushTransform();
-    _scopes.add((depth: _foldDepth, pixelate: pixelate));
+    final beginIndex = _items.length;
+    _scopes.add((depth: _foldDepth, pixelate: pixelate, beginIndex: beginIndex));
     if (pixelate) _pixelateScopes++;
     _items.add(marker);
   }
@@ -1153,7 +1249,50 @@ class Flut5RenderQueue() {
     if (pixelate) _pixelateScopes--;
     popTransform();
     flushPending();
+    if (!pixelate && BlurRenderItem.boundLayers) {
+      final beginItem = _items[scope.beginIndex];
+      if (beginItem is BlurBeginRenderItem && beginItem.layerPaint != null) {
+        final result = _blurScopeContentBounds(scope.beginIndex);
+        beginItem.emptyScope = result.empty;
+        beginItem.contentBounds = result.bounds;
+      }
+    }
     _items.add(marker);
+  }
+
+  /// Paint bounds of everything inside the blur scope at [beginIndex], in the
+  /// scope's entry coordinates, or `(bounds: null, empty: false)` if any child
+  /// has unknown/unbounded extent (backgrounds, nested scopes, or items without
+  /// bounds). Distinguishes an empty scope from a zero-area hairline whose
+  /// stroke/AA/blur still paints.
+  ({Rect? bounds, bool empty}) _blurScopeContentBounds(int beginIndex) {
+    final stack = <Matrix4>[];
+    Matrix4? current;
+    Rect? painted;
+    for (var i = beginIndex + 1; i < _items.length; i++) {
+      final item = _items[i];
+      if (item is TransformRenderItem) {
+        current = _appliedTo(current, item, stack);
+        continue;
+      }
+      if (item is ClipRenderItem) continue;
+      if (item is BackgroundRenderItem ||
+          item is BlurBeginRenderItem ||
+          item is BlurEndRenderItem ||
+          item is PixelateBeginRenderItem ||
+          item is PixelateEndRenderItem) {
+        return (bounds: null, empty: false);
+      }
+      final bounds = flut5PaintBounds(item, 0);
+      if (bounds == null) return (bounds: null, empty: false);
+      final placed = current == null
+          ? bounds
+          : MatrixUtils.transformRect(current, bounds);
+      painted = painted == null ? placed : painted.expandToInclude(placed);
+    }
+    return painted == null
+        ? (bounds: null, empty: true)
+        : (bounds: painted, empty: false);
   }
 
   /// Closes every scope still open, with a one-time warning — the replay
@@ -1435,7 +1574,7 @@ class Flut5RenderQueue() {
       return false;
     }
 
-    final parked = _OpenCoordBatch(prevPaint, _pendingPointShadow);
+    final parked = _takeCoordBatch(prevPaint, _pendingPointShadow);
     parked.addSlice(_pointBuffer, _pointCount);
     _openPointBatchOfPaint[prevPaint] = newest;
     _openPointBatches.add(parked);
@@ -1613,7 +1752,7 @@ class Flut5RenderQueue() {
       return false;
     }
 
-    final parked = _OpenCoordBatch(prevPaint, _pendingLineShadow);
+    final parked = _takeCoordBatch(prevPaint, _pendingLineShadow);
     parked.addSlice(_lineBuffer, _lineCount);
     _openLineBatchOfPaint[prevPaint] = newest;
     _openLineBatches.add(parked);
@@ -2228,7 +2367,7 @@ class Flut5RenderQueue() {
     }
 
     final prevImage = _pendingAtlasImage!;
-    final parked = _OpenImageBatch(
+    final parked = _takeImageBatch(
       image: prevImage,
       blendMode: _pendingAtlasBlend,
       filterQuality: _pendingAtlasFilterQuality,
@@ -2287,9 +2426,9 @@ class Flut5RenderQueue() {
       for (final batch in _openImageBatches) {
         if (batch.count == 1) {
           final item = ImageRenderItem(
-            image: batch.image,
-            src: batch.firstSrc,
-            dst: batch.firstDst,
+            image: batch.image!,
+            src: batch.firstSrc!,
+            dst: batch.firstDst!,
             blendMode: batch.blendMode,
             tint: batch.firstTint,
             filterQuality: batch.filterQuality,
@@ -2302,21 +2441,21 @@ class Flut5RenderQueue() {
           final len = batch.count * 4;
           _items.add(
             ImageAtlasRenderItem(
-              image: batch.image,
+              image: batch.image!,
               transforms: _allocArenaCopy(batch.transforms, len),
               preserveRotatedEdges: batch.hasRotation,
               rects: _allocArenaCopy(batch.rects, len),
               blendMode: batch.blendMode,
               colors: batch.hasTint
-                  ? batch.colors.sublist(0, batch.count)
+                  ? _allocIntArenaCopy(batch.colors, batch.count)
                   : null,
               filterQuality: batch.filterQuality,
-              bounds: batch.bounds,
+              bounds: batch.bounds!,
             ),
           );
         }
       }
-      _openImageBatches.clear();
+      _releaseImageBatches(_openImageBatches);
       _openImageBatchOfImage.clear();
       _laterImageBoxes.clear();
     }
@@ -2342,7 +2481,9 @@ class Flut5RenderQueue() {
           preserveRotatedEdges: _atlasHasRotation,
           rects: _allocArenaCopy(_atlasRects, len),
           blendMode: _pendingAtlasBlend,
-          colors: _atlasHasTint ? _atlasColors.sublist(0, _atlasCount) : null,
+          colors: _atlasHasTint
+              ? _allocIntArenaCopy(_atlasColors, _atlasCount)
+              : null,
           filterQuality: _pendingAtlasFilterQuality,
           bounds: _atlasBounds!,
         ),
@@ -2806,18 +2947,16 @@ class Flut5RenderQueue() {
   }) {
     if (text.isEmpty) return;
 
-    final singlePassFill = fillPaint != null && strokePaint == null;
     final singlePassStroke = strokePaint != null && fillPaint == null;
-    final activePaint = singlePassFill
-        ? fillPaint
-        : (singlePassStroke ? strokePaint : null);
+    final dualPass = fillPaint != null && strokePaint != null;
     final canBatch =
-        activePaint != null &&
+        (fillPaint != null || strokePaint != null) &&
         _blurLayer == null &&
         maxHeight == null &&
         fillGradient == null &&
         strokeGradient == null &&
-        _plainPaint(activePaint);
+        (fillPaint == null || _plainPaint(fillPaint)) &&
+        (strokePaint == null || _plainPaint(strokePaint));
 
     if (canBatch) {
       _flushPoints();
@@ -2841,9 +2980,12 @@ class Flut5RenderQueue() {
           textAlign: textAlign,
           textLeading: textLeading,
           letterSpacing: letterSpacing,
-          color: activePaint.color,
+          color: singlePassStroke ? strokePaint.color : fillPaint!.color,
           paintingStyle: singlePassStroke ? 1 : 0,
-          strokeWidth: singlePassStroke ? activePaint.strokeWidth : 0.0,
+          strokeWidth: (singlePassStroke || dualPass)
+              ? strokePaint.strokeWidth
+              : 0.0,
+          strokeColor: dualPass ? strokePaint.color : null,
           foldA: _foldA,
           foldB: _foldB,
           foldDx: _foldDx,
@@ -3052,13 +3194,16 @@ class Flut5RenderQueue() {
     );
   }
 
-  // The paint of the last label queued on its own. Queued paints are never
-  // changed, so labels in one colour can share it — and, by sharing it, the
-  // tint built from it.
+  // The paints of the last label queued on its own. Queued paints are never
+  // changed, so labels in one colour can share them — and, by sharing them, the
+  // tint built from them.
   Paint? _lonePaint;
   Color? _lonePaintColor;
   int _lonePaintStyle = 0;
   double _lonePaintStrokeWidth = 0;
+  Paint? _loneStrokePaint;
+  Color? _loneStrokeColor;
+  double _loneStrokeWidth = 0;
 
   Paint _lonePaintFor(Flut5TextDynamicEntry entry) {
     final kept = _lonePaint;
@@ -3079,6 +3224,21 @@ class Flut5RenderQueue() {
       ..strokeWidth = entry.strokeWidth;
   }
 
+  Paint _loneStrokePaintFor(Color color, double strokeWidth) {
+    final kept = _loneStrokePaint;
+    if (kept != null &&
+        strokeWidth == _loneStrokeWidth &&
+        color == _loneStrokeColor) {
+      return kept;
+    }
+    _loneStrokeColor = color;
+    _loneStrokeWidth = strokeWidth;
+    return _loneStrokePaint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = strokeWidth;
+  }
+
   void _flushText() {
     if (_pendingTextEntries.isEmpty) return;
     _pendingTextBoxes.clear();
@@ -3086,7 +3246,16 @@ class Flut5RenderQueue() {
     if (_pendingTextEntries.length == 1) {
       final e = _pendingTextEntries.removeLast();
       if (e.foldA == 1.0 && e.foldB == 0.0) {
-        final paint = _lonePaintFor(e);
+        final Paint? fillPaint;
+        final Paint? strokePaint;
+        if (e.strokeColor != null) {
+          fillPaint = _lonePaintFor(e);
+          strokePaint = _loneStrokePaintFor(e.strokeColor!, e.strokeWidth);
+        } else {
+          final paint = _lonePaintFor(e);
+          fillPaint = e.paintingStyle == 0 ? paint : null;
+          strokePaint = e.paintingStyle == 1 ? paint : null;
+        }
         _items.add(
           TextDynamicRenderItem(
             text: e.text,
@@ -3100,8 +3269,8 @@ class Flut5RenderQueue() {
             textAlign: e.textAlign,
             textLeading: e.textLeading,
             letterSpacing: e.letterSpacing,
-            fillPaint: e.paintingStyle == 0 ? paint : null,
-            strokePaint: e.paintingStyle == 1 ? paint : null,
+            fillPaint: fillPaint,
+            strokePaint: strokePaint,
             shadow: e.shadow,
             fontVariations: e.fontVariations,
             fontVariationKey: e.fontVariationKey,
@@ -3281,7 +3450,10 @@ class Flut5RenderQueue() {
   /// scopes (whose content spreads), and when they aren't draws at all.
   void cullOutside(int startIndex, Rect viewport) {
     final items = _items;
+    final paddedViewport = viewport.inflate(_cullPad);
     final stack = <Matrix4>[];
+    final pushStarts = <int>[];
+    final pushHasContent = <bool>[];
     Matrix4? current;
     var scopeDepth = 0;
     var kept = startIndex;
@@ -3290,28 +3462,57 @@ class Flut5RenderQueue() {
       var survivor = item;
       if (item is TransformRenderItem) {
         current = _appliedTo(current, item, stack);
+        if (scopeDepth == 0) {
+          if (item.type == TransformType.push) {
+            pushStarts.add(kept);
+            pushHasContent.add(false);
+            items[kept++] = item;
+            continue;
+          }
+          if (item.type == TransformType.pop && pushStarts.isNotEmpty) {
+            final pushAt = pushStarts.removeLast();
+            final hasContent = pushHasContent.removeLast();
+            if (!hasContent) {
+              kept = pushAt;
+              continue;
+            }
+            if (pushHasContent.isNotEmpty) {
+              pushHasContent[pushHasContent.length - 1] = true;
+            }
+          }
+        }
       } else if (item is PixelateBeginRenderItem ||
           item is BlurBeginRenderItem) {
+        if (scopeDepth == 0 && pushHasContent.isNotEmpty) {
+          pushHasContent[pushHasContent.length - 1] = true;
+        }
         scopeDepth++;
       } else if (item is PixelateEndRenderItem || item is BlurEndRenderItem) {
         scopeDepth--;
       } else if (scopeDepth == 0 &&
           item is! ClipRenderItem &&
           item is! BackgroundRenderItem) {
-        final visible = _inViewport(item, viewport, current);
+        final visible = _inViewport(item, paddedViewport, current);
         if (visible == null) continue;
         survivor = visible;
+        if (pushHasContent.isNotEmpty) {
+          pushHasContent[pushHasContent.length - 1] = true;
+        }
+      } else if (item is BackgroundRenderItem &&
+          scopeDepth == 0 &&
+          pushHasContent.isNotEmpty) {
+        pushHasContent[pushHasContent.length - 1] = true;
       }
       items[kept++] = survivor;
     }
     items.length = kept;
   }
 
-  /// [item] if any of it can land in [viewport], a narrower text batch if
-  /// only some of its entries can, or `null` when none can.
+  /// [item] if any of it can land in [paddedViewport], a narrowed batch if
+  /// only some of its entries/sprites/points/lines can, or `null` when none can.
   Flut5RenderItem? _inViewport(
     Flut5RenderItem item,
-    Rect viewport,
+    Rect paddedViewport,
     Matrix4? transform,
   ) {
     bool shows(Rect? paint) {
@@ -3319,7 +3520,18 @@ class Flut5RenderQueue() {
       final placed = transform == null
           ? paint
           : MatrixUtils.transformRect(transform, paint);
-      return placed.overlaps(viewport);
+      return placed.overlaps(paddedViewport);
+    }
+
+    bool whollyInside(Rect? paint) {
+      if (paint == null) return false;
+      final placed = transform == null
+          ? paint
+          : MatrixUtils.transformRect(transform, paint);
+      return placed.left >= paddedViewport.left &&
+          placed.right <= paddedViewport.right &&
+          placed.top >= paddedViewport.top &&
+          placed.bottom <= paddedViewport.bottom;
     }
 
     if (item is TextDynamicBatchRenderItem) {
@@ -3327,7 +3539,7 @@ class Flut5RenderQueue() {
       var showing = 0;
       final visible = <Flut5TextDynamicEntry>[];
       for (var i = 0; i < entries.length; i++) {
-        if (shows(entries[i].inkBounds().inflate(_cullPad))) {
+        if (shows(entries[i].inkBounds())) {
           visible.add(entries[i]);
           showing++;
         }
@@ -3337,7 +3549,177 @@ class Flut5RenderQueue() {
           ? item
           : TextDynamicBatchRenderItem(visible);
     }
-    return shows(flut5PaintBounds(item, _cullPad)) ? item : null;
+    if (item is ImageAtlasRenderItem) {
+      final box = item.bounds;
+      if (box != null) {
+        if (!shows(box)) return null;
+        if (item.spriteCount <= 2 || whollyInside(box)) return item;
+      }
+      final t = item.transforms;
+      final r = item.rects;
+      final c = item.colors;
+      final count = item.spriteCount;
+      final keepIndices = <int>[];
+      Rect? nextBounds;
+      for (var s = 0; s < count; s++) {
+        final o = s * 4;
+        final scos = t[o];
+        final ssin = t[o + 1];
+        final tx = t[o + 2];
+        final ty = t[o + 3];
+        final sw = r[o + 2] - r[o];
+        final sh = r[o + 3] - r[o + 1];
+        final Rect spriteBox;
+        if (ssin == 0.0) {
+          final x1 = tx + scos * sw;
+          final y1 = ty + scos * sh;
+          spriteBox = Rect.fromLTRB(
+            math.min(tx, x1),
+            math.min(ty, y1),
+            math.max(tx, x1),
+            math.max(ty, y1),
+          );
+        } else {
+          final ux = scos * sw, uy = ssin * sw;
+          final vx = -ssin * sh, vy = scos * sh;
+          final x1 = tx + ux, y1 = ty + uy;
+          final x2 = tx + ux + vx, y2 = ty + uy + vy;
+          final x3 = tx + vx, y3 = ty + vy;
+          spriteBox = Rect.fromLTRB(
+            math.min(math.min(tx, x1), math.min(x2, x3)),
+            math.min(math.min(ty, y1), math.min(y2, y3)),
+            math.max(math.max(tx, x1), math.max(x2, x3)),
+            math.max(math.max(ty, y1), math.max(y2, y3)),
+          );
+        }
+        if (shows(spriteBox)) {
+          keepIndices.add(s);
+          nextBounds = nextBounds == null
+              ? spriteBox
+              : nextBounds.expandToInclude(spriteBox);
+        }
+      }
+      if (keepIndices.isEmpty) return null;
+      if (keepIndices.length == count) return item;
+      final keptCount = keepIndices.length;
+      final outT = Float32List(keptCount * 4);
+      final outR = Float32List(keptCount * 4);
+      final outC = c == null ? null : Int32List(keptCount);
+      for (var k = 0; k < keptCount; k++) {
+        final srcIdx = keepIndices[k];
+        final sOff = srcIdx * 4;
+        final dOff = k * 4;
+        outT[dOff] = t[sOff];
+        outT[dOff + 1] = t[sOff + 1];
+        outT[dOff + 2] = t[sOff + 2];
+        outT[dOff + 3] = t[sOff + 3];
+        outR[dOff] = r[sOff];
+        outR[dOff + 1] = r[sOff + 1];
+        outR[dOff + 2] = r[sOff + 2];
+        outR[dOff + 3] = r[sOff + 3];
+        if (outC != null) outC[k] = c![srcIdx];
+      }
+      return ImageAtlasRenderItem(
+        image: item.image,
+        transforms: outT,
+        rects: outR,
+        preserveRotatedEdges: item.preserveRotatedEdges,
+        blendMode: item.blendMode,
+        colors: outC,
+        filterQuality: item.filterQuality,
+        bounds: nextBounds!,
+      );
+    }
+    if (item is MultiPointRenderItem) {
+      final paintBox = flut5PaintBounds(item, 0);
+      if (paintBox == null) return item;
+      if (!shows(paintBox)) return null;
+      final coords = item.coords;
+      if (coords.length <= 2 || whollyInside(paintBox)) return item;
+      final (offL, offT, offR, offB) = _coordReachOffsets(
+        item.pointPaint,
+        item.shadow,
+      );
+      final out = Float32List(coords.length);
+      var outLen = 0;
+      for (var idx = 0; idx + 1 < coords.length; idx += 2) {
+        final px = coords[idx];
+        final py = coords[idx + 1];
+        if (shows(Rect.fromLTRB(px + offL, py + offT, px + offR, py + offB))) {
+          out[outLen++] = px;
+          out[outLen++] = py;
+        }
+      }
+      if (outLen == 0) return null;
+      if (outLen == coords.length) return item;
+      return MultiPointRenderItem(
+        _allocArenaCopy(out, outLen),
+        item.pointPaint,
+        shadow: item.shadow,
+      );
+    }
+    if (item is MultiLineRenderItem) {
+      final paintBox = flut5PaintBounds(item, 0);
+      if (paintBox == null) return item;
+      if (!shows(paintBox)) return null;
+      final coords = item.coords;
+      if (coords.length <= 4 || whollyInside(paintBox)) return item;
+      final (offL, offT, offR, offB) = _coordReachOffsets(
+        item.linePaint,
+        item.shadow,
+      );
+      final out = Float32List(coords.length);
+      var outLen = 0;
+      for (var idx = 0; idx + 3 < coords.length; idx += 4) {
+        final x1 = coords[idx];
+        final y1 = coords[idx + 1];
+        final x2 = coords[idx + 2];
+        final y2 = coords[idx + 3];
+        if (shows(
+          Rect.fromLTRB(
+            math.min(x1, x2) + offL,
+            math.min(y1, y2) + offT,
+            math.max(x1, x2) + offR,
+            math.max(y1, y2) + offB,
+          ),
+        )) {
+          out[outLen++] = x1;
+          out[outLen++] = y1;
+          out[outLen++] = x2;
+          out[outLen++] = y2;
+        }
+      }
+      if (outLen == 0) return null;
+      if (outLen == coords.length) return item;
+      return MultiLineRenderItem(
+        _allocArenaCopy(out, outLen),
+        item.linePaint,
+        shadow: item.shadow,
+      );
+    }
+    return shows(flut5PaintBounds(item, 0)) ? item : null;
+  }
+
+  static (double, double, double, double) _coordReachOffsets(
+    Paint stroke,
+    Flut5ShadowSpec? shadow,
+  ) {
+    final reach = flut5StrokeReach(stroke, stroke.strokeWidth);
+    if (shadow == null) return (-reach, -reach, reach, reach);
+    final spreadReach = flut5StrokeReach(
+      stroke,
+      stroke.strokeWidth + shadow.spread * 2,
+    );
+    final halo = shadow.blur > 0
+        ? 3 * Shadow.convertRadiusToSigma(shadow.blur)
+        : 0.0;
+    final totalShadow = spreadReach + halo;
+    return (
+      math.min(-reach, shadow.offset.dx - totalShadow),
+      math.min(-reach, shadow.offset.dy - totalShadow),
+      math.max(reach, shadow.offset.dx + totalShadow),
+      math.max(reach, shadow.offset.dy + totalShadow),
+    );
   }
 
   /// Anti-aliasing margin for [cullOutside], in logical pixels.
@@ -3710,14 +4092,14 @@ class Flut5RenderQueue() {
     _pointBoxFiledCount = 0;
     _pendingPointPaint = null;
     _pendingPointShadow = null;
-    _openPointBatches.clear();
+    _releaseCoordBatches(_openPointBatches);
     _openPointBatchOfPaint.clear();
     _laterPointBoxes.clear();
     _lineCount = 0;
     _lineBoxFiledCount = 0;
     _pendingLinePaint = null;
     _pendingLineShadow = null;
-    _openLineBatches.clear();
+    _releaseCoordBatches(_openLineBatches);
     _openLineBatchOfPaint.clear();
     _laterLineBoxes.clear();
     _pendingShapePath = null;
@@ -3748,7 +4130,7 @@ class Flut5RenderQueue() {
     _atlasFirstSrc = null;
     _atlasFirstDst = null;
     _atlasFirstFold = null;
-    _openImageBatches.clear();
+    _releaseImageBatches(_openImageBatches);
     _openImageBatchOfImage.clear();
     _laterImageBoxes.clear();
     _newestAtlasBoxCount = 0;
@@ -3766,11 +4148,15 @@ class Flut5RenderQueue() {
     _foldDepth = 0;
     _unmaterializedFolds = 0;
     _canvasLinear = false;
-    // Drop the frame arena reference so retained items remain immutable.
+    // Drop the frame arena references so retained items remain immutable.
     _lastFrameArenaFloats = _frameArenaTotal;
     _frameArena = null;
     _frameArenaOffset = 0;
     _frameArenaTotal = 0;
+    _lastIntFrameArena = _intFrameArenaTotal;
+    _intFrameArena = null;
+    _intFrameArenaOffset = 0;
+    _intFrameArenaTotal = 0;
     _lastBackground = null;
     _hasOpaqueFullCanvasBg = false;
     _scopes.clear();
@@ -4153,12 +4539,12 @@ class Flut5RenderQueue() {
         _items.add(
           MultiPointRenderItem(
             _allocArenaCopy(batch.coords, batch.count),
-            batch.paint,
+            batch.paint!,
             shadow: batch.shadow,
           ),
         );
       }
-      _openPointBatches.clear();
+      _releaseCoordBatches(_openPointBatches);
       _openPointBatchOfPaint.clear();
       _laterPointBoxes.clear();
     }
@@ -4188,12 +4574,12 @@ class Flut5RenderQueue() {
         _items.add(
           MultiLineRenderItem(
             _allocArenaCopy(batch.coords, batch.count),
-            batch.paint,
+            batch.paint!,
             shadow: batch.shadow,
           ),
         );
       }
-      _openLineBatches.clear();
+      _releaseCoordBatches(_openLineBatches);
       _openLineBatchOfPaint.clear();
       _laterLineBoxes.clear();
     }
@@ -4290,10 +4676,25 @@ extension Flut5PaintCloner on Paint {
 
 /// Parked point or line batch kept open behind newer paint batches so
 /// non-overlapping multi-colour points and lines coalesce into one draw call
-/// per paint.
-class _OpenCoordBatch(final Paint paint, final Flut5ShadowSpec? shadow) {
+/// per paint. Pooled across flushes so multi-colour point/line frames avoid
+/// per-flush object and typed-array churn.
+class _OpenCoordBatch() {
+  Paint? paint;
+  Flut5ShadowSpec? shadow;
   Float32List coords = Float32List(16);
   int count = 0;
+
+  void reset(Paint paint, Flut5ShadowSpec? shadow) {
+    this.paint = paint;
+    this.shadow = shadow;
+    count = 0;
+  }
+
+  void clearRefs() {
+    paint = null;
+    shadow = null;
+    count = 0;
+  }
 
   void _ensure(int needed) {
     if (coords.length >= needed) return;
@@ -4327,22 +4728,58 @@ class _OpenCoordBatch(final Paint paint, final Flut5ShadowSpec? shadow) {
 
 /// Parked image atlas batch kept open behind newer texture batches so
 /// non-overlapping interleaved sprites of the same [ui.Image] coalesce.
-class _OpenImageBatch({
-  required final ui.Image image,
-  required final BlendMode blendMode,
-  required final FilterQuality filterQuality,
-  required final Rect firstSrc,
-  required final Rect firstDst,
-  required final _FoldTransform? firstFold,
-  required final Color? firstTint,
-  required var Rect bounds,
-  required var bool hasRotation,
-}) {
+/// Pooled across flushes; [clearRefs] drops image/fold/tint handles on return.
+class _OpenImageBatch() {
+  ui.Image? image;
+  BlendMode blendMode = BlendMode.srcOver;
+  FilterQuality filterQuality = FilterQuality.medium;
+  Rect? firstSrc;
+  Rect? firstDst;
+  _FoldTransform? firstFold;
+  Color? firstTint;
+  Rect? bounds;
+  bool hasRotation = false;
   Float32List transforms = Float32List(16);
   Float32List rects = Float32List(16);
   Int32List colors = Int32List(0);
   bool hasTint = false;
   int count = 0;
+
+  void reset({
+    required ui.Image image,
+    required BlendMode blendMode,
+    required FilterQuality filterQuality,
+    required Rect firstSrc,
+    required Rect firstDst,
+    required _FoldTransform? firstFold,
+    required Color? firstTint,
+    required Rect bounds,
+    required bool hasRotation,
+  }) {
+    this.image = image;
+    this.blendMode = blendMode;
+    this.filterQuality = filterQuality;
+    this.firstSrc = firstSrc;
+    this.firstDst = firstDst;
+    this.firstFold = firstFold;
+    this.firstTint = firstTint;
+    this.bounds = bounds;
+    this.hasRotation = hasRotation;
+    hasTint = false;
+    count = 0;
+  }
+
+  void clearRefs() {
+    image = null;
+    firstSrc = null;
+    firstDst = null;
+    firstFold = null;
+    firstTint = null;
+    bounds = null;
+    hasRotation = false;
+    hasTint = false;
+    count = 0;
+  }
 
   void _ensure(int sprites) {
     final needed = sprites * 4;
@@ -4423,7 +4860,7 @@ class _OpenImageBatch({
       colors[count] = tint?.toARGB32() ?? 0xFFFFFFFF;
     }
     if (rotated) hasRotation = true;
-    bounds = bounds.expandToInclude(placed);
+    bounds = bounds!.expandToInclude(placed);
     count++;
   }
 }
@@ -4521,6 +4958,10 @@ class _TransformedImageRenderItem(
 
   @override
   Rect? get inkBounds => bounds;
+
+  @override
+  bool get keepsCanvasTransform => true;
+
   late final Float64List _matrix = fold.matrix;
 
   @override

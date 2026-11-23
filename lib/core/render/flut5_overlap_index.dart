@@ -96,7 +96,11 @@ class Flut5OverlapIndex() {
     final cx1 = ((r + _maxHalfW) / _cellW).floor();
     final cy0 = ((t - _maxHalfH) / _cellH).floor();
     final cy1 = ((b + _maxHalfH) / _cellH).floor();
-    if ((cx1 - cx0 + 1) * (cy1 - cy0 + 1) > _maxCells) return true;
+    final spanX = cx1 - cx0 + 1;
+    final spanY = cy1 - cy0 + 1;
+    if (spanX > _maxCells || spanY > _maxCells || spanX * spanY > _maxCells) {
+      return true;
+    }
     final heads = _heads, next = _next;
     int tests = 0;
     for (int cx = cx0; cx <= cx1; cx++) {
@@ -157,10 +161,23 @@ class Flut5OverlapIndex() {
         _cellH = math.max(_maxHalfH * 4, 1.0);
         _regrid(_firstSlots);
       }
-    } else if (_count > (_mask + 1) >> 1) {
-      _regrid((_mask + 1) * 2);
     } else {
-      _file(i);
+      var needsRegrid = false;
+      if (_maxHalfW * 2 > _cellW || _maxHalfH * 2 > _cellH) {
+        _cellW = math.max(_cellW * 2, math.max(_maxHalfW * 4, 1.0));
+        _cellH = math.max(_cellH * 2, math.max(_maxHalfH * 4, 1.0));
+        needsRegrid = true;
+      }
+      var slots = _mask + 1;
+      if (_count > (slots >> 1)) {
+        slots *= 2;
+        needsRegrid = true;
+      }
+      if (needsRegrid) {
+        _regrid(slots);
+      } else {
+        _file(i);
+      }
     }
   }
 

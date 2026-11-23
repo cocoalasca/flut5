@@ -35,6 +35,13 @@ class BlurRenderItem(
   /// Whether layers need explicit bounds — false on Impeller.
   static final bool _boundLayers = !ui.ImageFilter.isShaderFilterSupported;
 
+  /// Exposed to [Flut5RenderQueue] so Skia/Web blur scopes only compute
+  /// content bounds when layer bounding is active.
+  static bool get boundLayers => _boundLayers;
+
+  @override
+  bool get keepsCanvasTransform => true;
+
   @override
   void execute(Canvas canvas) {
     canvas.saveLayer(_boundLayers ? _layerBounds(canvas) : null, layerPaint);
@@ -51,14 +58,8 @@ class BlurRenderItem(
   /// device pixels are added, measured in this canvas's units by its
   /// smallest scale.
   Rect? _layerBounds(Canvas canvas) {
-    final m = canvas.getTransform();
-    // Smallest singular value of the 2×2 part: the shortest a unit can get.
-    final a = m[0], b = m[1], c = m[4], d = m[5];
-    final sum = a * a + b * b + c * c + d * d;
-    final det = a * d - b * c;
-    final root = math.sqrt(math.max(0.0, sum * sum - 4 * det * det));
-    final minScale = math.sqrt(math.max(0.0, (sum - root) / 2));
-    if (!(minScale > 1e-6) || !minScale.isFinite) return null;
+    final minScale = _minCanvasScale(canvas);
+    if (minScale == null) return null;
     final aa = 2 / minScale;
     Rect? result;
     for (final item in items) {
@@ -68,6 +69,16 @@ class BlurRenderItem(
     }
     return result?.inflate(3 * sigma);
   }
+}
+
+double? _minCanvasScale(Canvas canvas) {
+  final m = canvas.getTransform();
+  final a = m[0], b = m[1], c = m[4], d = m[5];
+  final sum = a * a + b * b + c * c + d * d;
+  final det = a * d - b * c;
+  final root = math.sqrt(math.max(0.0, sum * sum - 4 * det * det));
+  final minScale = math.sqrt(math.max(0.0, (sum - root) / 2));
+  return (minScale > 1e-6 && minScale.isFinite) ? minScale : null;
 }
 
 Rect? _unionBounds(List<Flut5RenderItem> items) {
@@ -84,15 +95,43 @@ Rect? _unionBounds(List<Flut5RenderItem> items) {
 /// [BlurEndRenderItem] draws into one layer that [layerPaint] blurs as a
 /// whole when it closes. With a `null` paint (radius `0`) the scope only
 /// saves, so it still balances.
-class BlurBeginRenderItem(final Paint? layerPaint) extends Flut5RenderItem {
+class BlurBeginRenderItem(
+  final Paint? layerPaint, {
+  final double sigma = 0,
+}) extends Flut5RenderItem {
+  /// Paint bounds accumulated inside this scope (set on scope close on Skia/Web),
+  /// in the coordinate space active at this item. `null` falls back to an
+  /// unbounded layer unless [emptyScope] is true.
+  Rect? contentBounds;
+
+  /// Whether the scope contained zero paintable items (as distinct from a
+  /// zero-area hairline whose geometry still inflates by stroke/AA/sigma).
+  bool emptyScope = false;
+
+  @override
+  bool get keepsCanvasTransform => true;
+
   @override
   void execute(Canvas canvas) {
     final paint = layerPaint;
     if (paint == null) {
       canvas.save();
     } else {
-      canvas.saveLayer(null, paint);
+      canvas.saveLayer(
+        BlurRenderItem._boundLayers ? _scopeLayerBounds(canvas) : null,
+        paint,
+      );
     }
+  }
+
+  Rect? _scopeLayerBounds(Canvas canvas) {
+    if (emptyScope) return Rect.zero;
+    final content = contentBounds;
+    if (content == null) return null;
+    final minScale = _minCanvasScale(canvas);
+    if (minScale == null) return null;
+    // sqrt2 accounts for AA margin around rotated inner geometry.
+    return content.inflate((2 * math.sqrt2) / minScale + 3 * sigma);
   }
 }
 

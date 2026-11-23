@@ -135,6 +135,15 @@ class Flut5ExpiringCache<K, V>(
       onExpire?.call(entry.value);
     }
   }
+
+  /// Drops least-recently-used entries until at most [maxEntries] remain.
+  void trimOldest(int maxEntries) {
+    while (_entries.length > maxEntries && _oldestFirst.isNotEmpty) {
+      final entry = _oldestFirst.first;
+      remove(entry.key);
+      onExpire?.call(entry.value);
+    }
+  }
 }
 
 /// One key and value of a [Flut5ExpiringCache], linked in order of last

@@ -14,6 +14,9 @@ class RectRenderItem(
   Rect? get bounds => rrect?.outerRect ?? rect;
 
   @override
+  bool get keepsCanvasTransform => true;
+
+  @override
   void execute(Canvas canvas) {
     final s = shadow;
     if (s != null) {

@@ -126,6 +126,11 @@ abstract final class Flut5ImageShadows() {
     return fresh;
   }
 
+  static final Paint _whiteMaskPaint = Paint()
+    ..colorFilter = const ColorFilter.mode(Color(0xFFFFFFFF), BlendMode.srcIn)
+    ..filterQuality = FilterQuality.medium;
+  static final Paint _bakeLayerPaint = Paint();
+
   static Flut5BakedImageShadow? _bake(
     ui.Image image,
     Rect src,
@@ -143,30 +148,24 @@ abstract final class Flut5ImageShadows() {
     if (width > _largestBakedExtent || height > _largestBakedExtent) {
       return null;
     }
+    final logicalW = width / pixelRatio;
+    final logicalH = height / pixelRatio;
     final recorder = ui.PictureRecorder();
-    Canvas(recorder)
+    _bakeLayerPaint.imageFilter = filter;
+    Canvas(recorder, Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()))
       ..scale(pixelRatio)
-      ..saveLayer(null, Paint()..imageFilter = filter)
+      ..saveLayer(Rect.fromLTWH(0, 0, logicalW, logicalH), _bakeLayerPaint)
       ..drawImageRect(
         image,
         src,
         Rect.fromLTWH(pad, pad, size.width, size.height),
-        Paint()
-          ..colorFilter = const ColorFilter.mode(
-            Color(0xFFFFFFFF),
-            BlendMode.srcIn,
-          )
-          ..filterQuality = FilterQuality.medium,
+        _whiteMaskPaint,
       )
       ..restore();
     final picture = recorder.endRecording();
     final baked = picture.toImageSync(width, height);
     picture.dispose();
-    return Flut5BakedImageShadow(
-      baked,
-      pad,
-      Size(width / pixelRatio, height / pixelRatio),
-    );
+    return Flut5BakedImageShadow(baked, pad, Size(logicalW, logicalH));
   }
 
   /// Drops the oldest entries until both budgets fit. The newest entry —

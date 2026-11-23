@@ -162,7 +162,10 @@ final class _AskedStyle() {
 /// Deliberately stores no [Flut5CachedText] references — texture eviction in
 /// the main cache can never leave a stale image inside a layout. Glyph
 /// advances are font metrics, so they stay valid even after eviction.
-class Flut5TextLayout(final List<Flut5TextLine> lines) {
+class Flut5TextLayout(
+  final List<Flut5TextLine> lines, {
+  final bool hasLigatures = false,
+}) {
   /// LRU bookkeeping — last [Flut5TextCache._accessTick] this layout was used.
   int _lastUsedTick = 0;
 
@@ -173,7 +176,7 @@ class Flut5TextLayout(final List<Flut5TextLine> lines) {
 }
 
 /// Composite key for cached layouts:
-/// (text, fontFamily, fontSize, fontWeight, fontStyle, letterSpacing, maxWidth, fontVariationKey).
+/// (text, fontFamily, fontSize, fontWeight, fontStyle, letterSpacing, maxWidth, fontVariationKey, allowLigatures).
 typedef _LayoutKey = (
   String,
   String,
@@ -183,6 +186,19 @@ typedef _LayoutKey = (
   double,
   double?,
   String,
+  bool,
+);
+
+/// Composite key for pre-tokenized text runs:
+/// (text, fontFamily, fontSize, fontWeight, fontStyle, fontVariationKey, joinLigatures).
+typedef _TokenKey = (
+  String,
+  String,
+  double,
+  FontWeight,
+  FontStyle,
+  String,
+  bool,
 );
 
 class Flut5CachedText(
@@ -275,7 +291,7 @@ class Flut5CachedText(
 /// [Flut5TextCache].
 class Flut5GlyphAtlasPage(final int generation) {
   static const int maxExtent = 1024;
-  static const int maxGlyphExtent = 384;
+  static const int maxGlyphExtent = 512;
   static const int gutter = 2;
 
   ui.Image? image;
@@ -326,7 +342,13 @@ class _TokenizedSegment(
   final Float64List joinKerns,
 );
 
-class _TokenizedText(final List<_TokenizedSegment> segments);
+class _TokenizedText(
+  final List<_TokenizedSegment> segments, {
+  final bool hasLigatures = false,
+}) {
+  int _createdFrame = 0;
+  bool _usedAgain = false;
+}
 
 /// A text raster's shadow silhouette, baked once — see
 /// [Flut5TextCache.bakedShadow].
@@ -538,6 +560,7 @@ class Flut5TextCache._() {
     _cache.expire(_timeoutFrames);
     _dropLayoutsNeverUsedAgain();
     _layoutCache.expire(_timeoutFrames);
+    _dropTokensNeverUsedAgain();
     _tokenCache.expire(_timeoutFrames);
     _pairCache.expire(_timeoutFrames);
     _widthCache.expire(_timeoutFrames);
@@ -654,6 +677,10 @@ class Flut5TextCache._() {
 
   /// Number of layouts currently cached.
   int get layoutCacheLength => _layoutCache.length;
+
+  /// Number of pre-tokenized string entries currently cached. Test-only.
+  @visibleForTesting
+  int get debugTokenCacheLength => _tokenCache.length;
 
   /// One-time flags for the cache-overflow warnings. Overflow can happen
   /// thousands of times per frame while thrashing, so each cache warns once
@@ -1204,10 +1231,9 @@ class Flut5TextCache._() {
   /// Lightweight pair cache: per pair of glyphs, the kerning between them and
   /// the width the second takes up next to the first, which tells whether
   /// the font joins them. Record-keyed so a hash collision can never silently
-  /// return the wrong pair. No textLeading or letterSpacing — those are
-  /// composition-time values.
+  /// return the wrong pair. Last element is `allowLigatures`.
   late final Flut5ExpiringCache<
-    (String, String, String, double, FontWeight, FontStyle, String),
+    (String, String, String, double, FontWeight, FontStyle, String, bool),
     ({double kern, double secondWidth})
   >
   _pairCache = Flut5ExpiringCache(() => _frame);
@@ -1265,13 +1291,10 @@ class Flut5TextCache._() {
       Flut5ExpiringCache(() => _frame);
 
   /// Pre-tokenized and pre-measured word runs keyed by `(text, fontFamily,
-  /// fontSize, fontWeight, fontStyle, fontVariationKey)`. Speeds up
-  /// wrapped-text re-layout when `letterSpacing` or `maxWidth` animates.
-  late final Flut5ExpiringCache<
-    (String, String, double, FontWeight, FontStyle, String),
-    _TokenizedText
-  >
-  _tokenCache = Flut5ExpiringCache(() => _frame);
+  /// fontSize, fontWeight, fontStyle, fontVariationKey, joinLigatures)`.
+  /// Speeds up wrapped-text re-layout when `letterSpacing` or `maxWidth` animates.
+  late final Flut5ExpiringCache<_TokenKey, _TokenizedText> _tokenCache =
+      Flut5ExpiringCache(() => _frame);
 
   // A string that changes every frame — a counter, a timer, a paragraph
   // whose width or wrapped spacing is animated — makes a new layout each
@@ -1286,6 +1309,10 @@ class Flut5TextCache._() {
     _newLayoutTrialFrames,
     (_) => [],
   );
+  final List<List<(_TokenKey, _TokenizedText)>> _newTokens = List.generate(
+    _newLayoutTrialFrames,
+    (_) => [],
+  );
 
   /// Ends the trial of the layouts made [_newLayoutTrialFrames] - 1 frames
   /// ago, dropping the ones never used in a later frame.
@@ -1296,6 +1323,18 @@ class Flut5TextCache._() {
       // one was evicted.
       if (!layout._usedAgain && identical(_layoutCache.peek(key), layout)) {
         _layoutCache.remove(key);
+      }
+    }
+    tried.clear();
+  }
+
+  /// Ends the trial of the tokenizations made [_newLayoutTrialFrames] - 1
+  /// frames ago, dropping the ones never used in a later frame.
+  void _dropTokensNeverUsedAgain() {
+    final tried = _newTokens[(_frame + 1) % _newLayoutTrialFrames];
+    for (final (key, tokenized) in tried) {
+      if (!tokenized._usedAgain && identical(_tokenCache.peek(key), tokenized)) {
+        _tokenCache.remove(key);
       }
     }
     tried.clear();
@@ -1810,7 +1849,10 @@ class Flut5TextCache._() {
       height: maxHeight ?? painter.height,
     );
     painter.dispose();
-    return _blockCache[key] = block;
+    _blockCache[key] = block;
+    final cap = math.max(layoutGrowthLimit, 4096);
+    if (_blockCache.length > cap) _blockCache.trimOldest(cap - (cap >> 3));
+    return block;
   }
 
   /// Returns the font's default line height for the given style without
@@ -1908,7 +1950,9 @@ class Flut5TextCache._() {
     double? maxWidth,
     List<FontVariation>? fontVariations,
     String fontVariationKey = '',
+    bool? allowLigatures,
   }) {
+    final useLigatures = allowLigatures ?? (letterSpacing == 0.0);
     final key = (
       text,
       fontFamily,
@@ -1918,6 +1962,7 @@ class Flut5TextCache._() {
       letterSpacing,
       maxWidth,
       fontVariationKey,
+      useLigatures,
     );
     final existing = _layoutCache[key];
     if (existing != null) {
@@ -1936,6 +1981,7 @@ class Flut5TextCache._() {
       maxWidth,
       fontVariations,
       fontVariationKey,
+      joinLigatures: useLigatures,
     );
     layout._lastUsedTick = ++_accessTick;
     layout._createdFrame = _frame;
@@ -2005,8 +2051,9 @@ class Flut5TextCache._() {
     FontWeight fontWeight,
     FontStyle fontStyle,
     List<FontVariation>? fontVariations,
-    String fontVariationKey,
-  ) {
+    String fontVariationKey, {
+    required bool joinLigatures,
+  }) {
     final key = (
       text,
       fontFamily,
@@ -2014,9 +2061,13 @@ class Flut5TextCache._() {
       fontWeight,
       fontStyle,
       fontVariationKey,
+      joinLigatures,
     );
     final cached = _tokenCache[key];
-    if (cached != null) return cached;
+    if (cached != null) {
+      if (cached._createdFrame != _frame) cached._usedAgain = true;
+      return cached;
+    }
 
     double advance(String ch) => measureWidth(
       text: ch,
@@ -2028,7 +2079,7 @@ class Flut5TextCache._() {
       fontVariationKey: fontVariationKey,
     );
 
-    double kern(String a, String b) => getKernOffset(
+    double kern(String a, String b) => _pairMetrics(
       a: a,
       b: b,
       fontFamily: fontFamily,
@@ -2037,10 +2088,12 @@ class Flut5TextCache._() {
       fontStyle: fontStyle,
       fontVariations: fontVariations,
       fontVariationKey: fontVariationKey,
-    );
+      allowLigatures: joinLigatures,
+    ).kern;
 
     final rawSegments = text.split('\n');
     final segments = <_TokenizedSegment>[];
+    var foundLigature = false;
     for (int s = 0; s < rawSegments.length; s++) {
       final segment = rawSegments[s];
       final tokens = <_MeasuredToken>[];
@@ -2056,7 +2109,7 @@ class Flut5TextCache._() {
             i++;
           }
           if (!tokenIsWhitespace) {
-            chars = _joinShapedGlyphs(
+            final joined = _joinShapedGlyphs(
               chars,
               fontFamily,
               fontSize,
@@ -2064,7 +2117,10 @@ class Flut5TextCache._() {
               fontStyle,
               fontVariations,
               fontVariationKey,
+              allowLigatures: joinLigatures,
             );
+            if (joined.hasLigatures) foundLigature = true;
+            chars = joined.glyphs;
           }
           final count = chars.length;
           final advances = Float64List(count);
@@ -2102,40 +2158,52 @@ class Flut5TextCache._() {
       segments.add(_TokenizedSegment(tokens, joinKerns));
     }
 
-    final tokenized = _TokenizedText(segments);
+    final tokenized = _TokenizedText(segments, hasLigatures: foundLigature)
+      .._createdFrame = _frame;
     _tokenCache[key] = tokenized;
+    _newTokens[_frame % _newLayoutTrialFrames].add((key, tokenized));
+    final tokenCap = math.max(layoutGrowthLimit, 4096);
+    if (_tokenCache.length > tokenCap) {
+      _tokenCache.trimOldest(tokenCap - (tokenCap >> 3));
+    }
     return tokenized;
   }
 
   /// [chars] with the runs the font shapes into one glyph, like an "fi"
-  /// ligature, merged into one entry — they have to be rasterized together.
+  /// ligature or a combining diacritic, merged into one entry — they have to be
+  /// rasterized together. When [allowLigatures] is `false`, optional `'liga'`
+  /// and `'clig'` joins are disabled so ligatures split under non-zero spacing
+  /// while combining marks remain attached to their base glyph.
   ///
-  /// A pair is joined when its second character takes up a different width
-  /// next to the first than on its own: kerning moves a glyph but leaves its
-  /// width alone, and a ligature divides its width among its characters. A
-  /// three-letter ligature shows up as the last two also being divided
-  /// differently once the first is in front of them.
-  List<String> _joinShapedGlyphs(
+  /// Also reports [hasLigatures]: whether any merged run in this token was an
+  /// optional ligature (that splits when [allowLigatures] is `false`) rather than
+  /// a combining-mark cluster.
+  ({List<String> glyphs, bool hasLigatures}) _joinShapedGlyphs(
     List<String> chars,
     String fontFamily,
     double fontSize,
     FontWeight fontWeight,
     FontStyle fontStyle,
     List<FontVariation>? fontVariations,
-    String fontVariationKey,
-  ) {
-    if (chars.length < 2) return chars;
-    ({double kern, double secondWidth}) pair(String a, String b) =>
-        _pairMetrics(
-          a: a,
-          b: b,
-          fontFamily: fontFamily,
-          fontSize: fontSize,
-          fontWeight: fontWeight,
-          fontStyle: fontStyle,
-          fontVariations: fontVariations,
-          fontVariationKey: fontVariationKey,
-        );
+    String fontVariationKey, {
+    required bool allowLigatures,
+  }) {
+    if (chars.length < 2) return (glyphs: chars, hasLigatures: false);
+    ({double kern, double secondWidth}) pair(
+      String a,
+      String b, {
+      bool? ligatures,
+    }) => _pairMetrics(
+      a: a,
+      b: b,
+      fontFamily: fontFamily,
+      fontSize: fontSize,
+      fontWeight: fontWeight,
+      fontStyle: fontStyle,
+      fontVariations: fontVariations,
+      fontVariationKey: fontVariationKey,
+      allowLigatures: ligatures ?? allowLigatures,
+    );
     const widthTolerance = 0.02;
     List<bool>? joinsNext;
     for (var i = 0; i + 1 < chars.length; i++) {
@@ -2160,7 +2228,40 @@ class Flut5TextCache._() {
         }
       }
     }
-    if (joinsNext == null) return chars;
+    if (joinsNext == null) return (glyphs: chars, hasLigatures: false);
+    var hasLigatures = false;
+    if (allowLigatures) {
+      for (var i = 0; i < joinsNext.length; i++) {
+        if (!joinsNext[i]) continue;
+        final alone = measureWidth(
+          text: chars[i + 1],
+          fontFamily: fontFamily,
+          fontSize: fontSize,
+          fontWeight: fontWeight,
+          fontStyle: fontStyle,
+          fontVariations: fontVariations,
+          fontVariationKey: fontVariationKey,
+        );
+        final noLiga = pair(chars[i], chars[i + 1], ligatures: false);
+        if ((noLiga.secondWidth - alone).abs() <= widthTolerance) {
+          hasLigatures = true;
+          break;
+        }
+        if (i > 0 && joinsNext[i - 1]) {
+          final tripleNoLiga = pair(
+            '${chars[i - 1]}${chars[i]}',
+            chars[i + 1],
+            ligatures: false,
+          );
+          if ((tripleNoLiga.secondWidth - noLiga.secondWidth).abs() <=
+                  widthTolerance &&
+              (tripleNoLiga.secondWidth - alone).abs() <= widthTolerance) {
+            hasLigatures = true;
+            break;
+          }
+        }
+      }
+    }
     final glyphs = <String>[];
     var glyph = chars.first;
     for (var i = 1; i < chars.length; i++) {
@@ -2172,7 +2273,7 @@ class Flut5TextCache._() {
       }
     }
     glyphs.add(glyph);
-    return glyphs;
+    return (glyphs: glyphs, hasLigatures: hasLigatures);
   }
 
   /// Word-wrap layout over pre-tokenized word runs. Runs only on layout-cache
@@ -2191,8 +2292,9 @@ class Flut5TextCache._() {
     double spacing,
     double? maxWidth,
     List<FontVariation>? fontVariations,
-    String fontVariationKey,
-  ) {
+    String fontVariationKey, {
+    required bool joinLigatures,
+  }) {
     final tokenized = _getOrCreateTokenized(
       text,
       fontFamily,
@@ -2201,6 +2303,7 @@ class Flut5TextCache._() {
       fontStyle,
       fontVariations,
       fontVariationKey,
+      joinLigatures: joinLigatures,
     );
 
     final lines = <Flut5TextLine>[];
@@ -2273,7 +2376,7 @@ class Flut5TextCache._() {
     }
 
     if (lineCharCount > 0 || lines.isEmpty) flush();
-    return Flut5TextLayout(lines);
+    return Flut5TextLayout(lines, hasLigatures: tokenized.hasLigatures);
   }
 
   /// Returns the kerning offset between [a] and [b] for the given font config.
@@ -2312,6 +2415,7 @@ class Flut5TextCache._() {
     required FontStyle fontStyle,
     List<FontVariation>? fontVariations,
     String fontVariationKey = '',
+    bool allowLigatures = true,
   }) {
     final key = (
       a,
@@ -2321,6 +2425,7 @@ class Flut5TextCache._() {
       fontWeight,
       fontStyle,
       fontVariationKey,
+      allowLigatures,
     );
 
     final cached = _pairCache[key];
@@ -2336,6 +2441,9 @@ class Flut5TextCache._() {
           fontWeight: fontWeight,
           fontStyle: fontStyle,
           fontVariations: fontVariations,
+          fontFeatures: allowLigatures
+              ? null
+              : const [ui.FontFeature.disable('liga'), ui.FontFeature.disable('clig')],
         ),
       ),
       textDirection: TextDirection.ltr,
@@ -2400,6 +2508,9 @@ class Flut5TextCache._() {
     _framesWithNewStyles = 0;
     _newStyleThisFrame = false;
     for (final made in _newLayouts) {
+      made.clear();
+    }
+    for (final made in _newTokens) {
       made.clear();
     }
     _tokenCache.clear();

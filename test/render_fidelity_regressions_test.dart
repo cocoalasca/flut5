@@ -5,6 +5,7 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
+import 'package:flut5/core/render/flut5_overlap_index.dart';
 import 'package:flut5/core/render/flut5_paint_bounds.dart';
 import 'package:flut5/flut5.dart';
 import 'package:flut5/image/flut5_image_shadows.dart';
@@ -1035,5 +1036,641 @@ void main() {
         expect(lower.position.y - upper.position.y, greaterThan(9.5));
       }
     });
+
+    test('polygon-particle collision handles extreme and NaN polygon bounds safely', () {
+      final world = Flut5PhysicsEngine()..particleCollision();
+      // Spread particles to trigger hashed spatial mode.
+      world.createParticle(0, 0).radius = 2;
+      world.createParticle(1e7, 0).radius = 2;
+      final poly = world.createRect(1e11, 1e11, 20, 20);
+      expect(world.update, returnsNormally);
+      poly.position.setValues(double.nan, double.nan, 0);
+      expect(world.update, returnsNormally);
+    });
+
+    test('large-particle sweep detects collisions after mid-sweep pushes', () {
+      final world = Flut5PhysicsEngine()..particleCollision(iterations: 1);
+      // Four overlapping large particles along X where collision 0-1 pushes 1
+      // past 2 while particle 3 is slightly farther right: mid-sweep position
+      // mutations must never skip pair checks via a stale early break.
+      final p0 = world.createParticle(0, 0)..radius = 20;
+      final p1 = world.createParticle(10, 0)..radius = 20;
+      final p2 = world.createParticle(45, 0)..radius = 20;
+      final p3 = world.createParticle(84, 0)..radius = 20;
+      for (var i = 0; i < 6; i++) {
+        world.createParticle(1000 + i * 20.0, 0).radius = 2;
+      }
+      world.update();
+      // p1 overlapped p2, pushing p2 right toward p3 so p2 & p3 must react.
+      expect(p0.position.x, lessThan(0));
+      expect(p3.position.x, greaterThanOrEqualTo(84));
+      expect(p1.position.x, isNot(10));
+      expect(p2.position.x, isNot(45));
+    });
+
+    test('polygon sweep axis flip finds all overlaps cleanly', () {
+      final world = Flut5PhysicsEngine();
+      // Start wider horizontally, then arrange overlapping pairs vertically.
+      world.createRect(0, 0, 10, 10);
+      world.createRect(500, 0, 10, 10);
+      world.update();
+      final a = world.createRect(0, 200, 20, 20);
+      final b = world.createRect(0, 210, 20, 20);
+      for (var f = 0; f < 25; f++) {
+        world.update();
+      }
+      expect((b.position.y - a.position.y).abs(), greaterThan(19.0));
+    });
   });
+
+  group('Fidelity and optimization regressions', () {
+    test('Flut5OverlapIndex regrids when larger shapes follow tiny ones and guards overflow', () {
+      final index = Flut5OverlapIndex();
+      for (var i = 0; i < 20; i++) {
+        index.add(i * 10.0, 0, i * 10.0 + 2, 2);
+      }
+      // Large shape widens _maxHalfW/_maxHalfH after grid was sized for 2x2.
+      index.add(0, 50, 200, 250);
+      expect(index.overlaps(250, 100, 252, 102), isFalse);
+      expect(index.overlaps(100, 100, 120, 120), isTrue);
+
+      // Tiny cell width near 1e9 must not overflow signed int and hang.
+      final extreme = Flut5OverlapIndex();
+      for (var i = 0; i < 20; i++) {
+        extreme.add(i * 2.0, 0, i * 2.0 + 0.5, 0.5);
+      }
+      expect(extreme.overlaps(-9e8, -9e8, 9e8, 9e8), isTrue);
+    });
+
+    test('ligatures split cleanly when letterSpacing != 0 and stay 1 layout without ligatures', () async {
+      final tightLayout = cache.getOrCreateLayout(
+        text: 'first office',
+        fontFamily: _family,
+        fontSize: 30,
+        fontWeight: FontWeight.normal,
+        fontStyle: FontStyle.normal,
+        letterSpacing: 0.0,
+      );
+      expect(tightLayout.hasLigatures, isTrue);
+      expect(tightLayout.lines.single.glyphs, contains('fi'));
+
+      final spacedLayout = cache.getOrCreateLayout(
+        text: 'first office',
+        fontFamily: _family,
+        fontSize: 30,
+        fontWeight: FontWeight.normal,
+        fontStyle: FontStyle.normal,
+        letterSpacing: 4.0,
+      );
+      expect(spacedLayout.lines.single.glyphs, isNot(contains('fi')));
+      expect(spacedLayout.lines.single.glyphs, isNot(contains('ffi')));
+      expect(
+        spacedLayout.lines.single.glyphs.take(5).toList(),
+        ['f', 'i', 'r', 's', 't'],
+      );
+
+      final spacedEngine = _textEngine(30)
+        ..letterSpacing(4.0)
+        ..textDynamic('first office', 6, 6);
+      final width = (320 * _ratio).round(), height = (70 * _ratio).round();
+      final drawn = await _render(
+        width,
+        height,
+        spacedEngine.renderQueue.execute,
+        scale: _ratio,
+      );
+      final expectedPainter = TextPainter(
+        text: const TextSpan(
+          text: 'first office',
+          style: TextStyle(
+            fontFamily: _family,
+            fontSize: 30,
+            color: _white,
+            letterSpacing: 4.0,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      final expected = await _render(
+        width,
+        height,
+        (c) => expectedPainter.paint(c, const Offset(4, 6)),
+        scale: _ratio,
+      );
+      expectedPainter.dispose();
+      expect(
+        _worst(drawn, expected),
+        lessThanOrEqualTo(
+          ui.ImageFilter.isShaderFilterSupported ? 6 : _textTolerance,
+        ),
+      );
+
+      cache.clear();
+      final anim = _textEngine(18);
+      for (var i = 0; i < 50; i++) {
+        anim
+          ..letterSpacing(i * 0.15)
+          ..textDynamic('Hello\nWorld', 10, 10);
+        final rec = ui.PictureRecorder();
+        anim.renderQueue.execute(Canvas(rec));
+        rec.endRecording().dispose();
+        anim.renderQueue.clear();
+      }
+      expect(cache.layoutCacheLength, 1);
+
+      cache.clear();
+      final combinedAnim = Flut5Engine()
+        ..noStroke()
+        ..fill(_white)
+        ..textFont('sans-serif')
+        ..textSize(21);
+      for (var i = 0; i < 20; i++) {
+        final combinedLayout = cache.getOrCreateLayout(
+          text: 'e\u0301AV',
+          fontFamily: 'sans-serif',
+          fontSize: 21,
+          fontWeight: FontWeight.normal,
+          fontStyle: FontStyle.normal,
+          letterSpacing: 0.0,
+        );
+        expect(combinedLayout.hasLigatures, isFalse);
+        expect(combinedLayout.lines.single.glyphs, ['e\u0301', 'A', 'V']);
+        combinedAnim
+          ..letterSpacing(i * 0.25)
+          ..textDynamic('e\u0301AV', 10, 10);
+        final rec = ui.PictureRecorder();
+        combinedAnim.renderQueue.execute(Canvas(rec));
+        rec.endRecording().dispose();
+        combinedAnim.renderQueue.clear();
+      }
+      expect(cache.layoutCacheLength, 1);
+    });
+
+    test('color emoji keep non-monochrome presentation while flut5TextNeedsShaping stays false', () async {
+      expect(flut5TextNeedsShaping('😀'), isFalse);
+      expect(flut5HasColorEmoji('😀'), isTrue);
+      expect(flut5HasColorEmoji('⌚'), isTrue);
+      expect(flut5HasColorEmoji('★'), isFalse);
+      expect(flut5HasColorEmoji('Hello'), isFalse);
+
+      // Dynamic path: color emoji preserves native RGB rather than srcIn-tinting
+      // to pure blue, while alpha still modulates brightness; monochrome
+      // symbols like '★' keep full fill tinting.
+      final opaqueEmojiEngine = Flut5Engine()
+        ..noStroke()
+        ..fill(const Color(0xFF0000FF))
+        ..textSize(24)
+        ..textDynamic('😀', 8, 8);
+      final opaqueEmojiPx = await _render(
+        64,
+        64,
+        opaqueEmojiEngine.renderQueue.execute,
+        clear: _black,
+      );
+      var maxEmojiRG = 0;
+      for (var i = 0; i < opaqueEmojiPx.length; i += 4) {
+        final m = math.max(opaqueEmojiPx[i], opaqueEmojiPx[i + 1]);
+        if (m > maxEmojiRG) maxEmojiRG = m;
+      }
+      expect(maxEmojiRG, greaterThan(200));
+
+      final halfAlphaEmojiEngine = Flut5Engine()
+        ..noStroke()
+        ..fill(const Color(0x800000FF))
+        ..textSize(24)
+        ..textDynamic('😀', 8, 8);
+      final halfAlphaEmojiPx = await _render(
+        64,
+        64,
+        halfAlphaEmojiEngine.renderQueue.execute,
+        clear: _black,
+      );
+      var maxHalfRG = 0;
+      for (var i = 0; i < halfAlphaEmojiPx.length; i += 4) {
+        final m = math.max(halfAlphaEmojiPx[i], halfAlphaEmojiPx[i + 1]);
+        if (m > maxHalfRG) maxHalfRG = m;
+      }
+      expect(maxHalfRG, lessThan(maxEmojiRG));
+      expect(maxHalfRG, greaterThan(80));
+
+      final starEngine = Flut5Engine()
+        ..noStroke()
+        ..fill(const Color(0xFF0000FF))
+        ..textSize(24)
+        ..textDynamic('★', 8, 8);
+      final starPx = await _render(
+        64,
+        64,
+        starEngine.renderQueue.execute,
+        clear: _black,
+      );
+      var hasPureBlueStar = false;
+      for (var i = 0; i < starPx.length; i += 4) {
+        if (starPx[i + 2] > 200) {
+          expect(starPx[i], lessThanOrEqualTo(5));
+          expect(starPx[i + 1], lessThanOrEqualTo(5));
+          hasPureBlueStar = true;
+        }
+      }
+      expect(hasPureBlueStar, isTrue);
+
+      // Static path: strings with color emoji bypass monochrome BlendMode.srcIn
+      // texture tinting and paint cleanly through TextPainter, while monochrome
+      // strings continue using the texture cache.
+      cache.clear();
+      final staticEmojiEngine = Flut5Engine()
+        ..noStroke()
+        ..fill(const Color(0xFF0000FF))
+        ..textSize(24)
+        ..textStatic('Hi 😀', 8, 8);
+      final actualStatic = await _render(
+        96,
+        64,
+        staticEmojiEngine.renderQueue.execute,
+        clear: _black,
+      );
+      expect(cache.cacheLength, 0);
+      final nativePainter = TextPainter(
+        text: const TextSpan(
+          text: 'Hi 😀',
+          style: TextStyle(
+            fontFamily: 'sans-serif',
+            fontSize: 24,
+            color: Color(0xFF0000FF),
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      final expectedStatic = await _render(
+        96,
+        64,
+        (c) => nativePainter.paint(c, const Offset(8, 8)),
+        clear: _black,
+      );
+      nativePainter.dispose();
+      expect(_worst(actualStatic, expectedStatic), 0);
+
+      final staticStarEngine = Flut5Engine()
+        ..noStroke()
+        ..fill(const Color(0xFF0000FF))
+        ..textSize(24)
+        ..textStatic('★', 8, 8);
+      await _render(64, 64, staticStarEngine.renderQueue.execute, clear: _black);
+      expect(cache.cacheLength, greaterThan(0));
+    });
+
+    test('outlined + filled textDynamic coalesces into 1 batch and matches unbatched pixels', () async {
+      final batched = _textEngine(20)
+        ..fill(Colors.amber)
+        ..stroke(Colors.indigo)
+        ..strokeWeight(3);
+      final single = _textEngine(20)
+        ..fill(Colors.amber)
+        ..stroke(Colors.indigo)
+        ..strokeWeight(3);
+
+      for (final (text, x, y) in [
+        ('One', 10.0, 10.0),
+        ('Two', 120.0, 10.0),
+        ('Tight\nPair', 10.0, 50.0),
+      ]) {
+        batched
+          ..textLeading(0.85 * 20)
+          ..textDynamic(text, x, y);
+        single.renderQueue.enqueue(
+          TextDynamicRenderItem(
+            text: text,
+            x: x,
+            y: y,
+            fontFamily: _family,
+            fontSize: 20,
+            fontWeight: FontWeight.normal,
+            fontStyle: FontStyle.normal,
+            textAlign: TextAlign.left,
+            textLeading: 0.85,
+            fillPaint: Paint()..color = Colors.amber,
+            strokePaint: Paint()
+              ..color = Colors.indigo
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 3,
+          ),
+        );
+      }
+      batched.renderQueue.flushPending();
+      expect(batched.renderQueue.items, hasLength(1));
+      expect(batched.renderQueue.items.single, isA<TextDynamicBatchRenderItem>());
+      final actual = await _render(240, 120, batched.renderQueue.execute);
+      final expected = await _render(240, 120, single.renderQueue.execute);
+      expect(_worst(actual, expected), lessThanOrEqualTo(_textTolerance));
+    });
+
+    test('large glyphs up to 512px pack into the glyph atlas', () {
+      final large = cache.getOrCreate(
+        text: 'A',
+        fontFamily: _family,
+        fontSize: 68,
+        fontWeight: FontWeight.normal,
+        fontStyle: FontStyle.normal,
+        textLeading: null,
+        align: TextAlign.left,
+        paintingStyle: 0,
+        strokeWidth: 0,
+      );
+      expect(
+        math.max(large.image.width, large.image.height),
+        greaterThan(384),
+      );
+      expect(large.image.width, lessThanOrEqualTo(512));
+      expect(large.image.height, lessThanOrEqualTo(512));
+      expect(cache.atlasSlotFor(large), isNotNull);
+    });
+
+    test('textStatic animating sizes stop minting GPU textures via drawsNatively', () {
+      void drawFrame(int f) {
+        final e = _textEngine(16);
+        for (var i = 0; i < 6; i++) {
+          e
+            ..textSize(16 + (f + 1) * 0.43 + i)
+            ..textStatic('StaticAnim', 4, 4.0 + i * 20);
+        }
+        final rec = ui.PictureRecorder();
+        e.renderQueue.execute(Canvas(rec));
+        rec.endRecording().dispose();
+        e.renderQueue.clear();
+        cache.finishFrame();
+      }
+
+      for (var f = 0; f < 5; f++) {
+        drawFrame(f);
+      }
+      final settled = cache.cacheLength;
+      for (var f = 5; f < 25; f++) {
+        drawFrame(f);
+      }
+      expect(cache.cacheLength, settled);
+    });
+
+    test('changing wrapped strings expire from _tokenCache after 8-frame trial', () {
+      for (var f = 0; f < 30; f++) {
+        cache.getOrCreateLayout(
+          text: 'Changing wrapped text $f',
+          fontFamily: _family,
+          fontSize: 16,
+          fontWeight: FontWeight.normal,
+          fontStyle: FontStyle.normal,
+          letterSpacing: 0,
+          maxWidth: 120,
+        );
+        cache.finishFrame();
+      }
+      expect(cache.debugTokenCacheLength, lessThanOrEqualTo(9));
+    });
+
+    test('baked image shadows scale up with canvas scale()', () async {
+      Flut5ImageShadows.clear();
+      addTearDown(Flut5ImageShadows.clear);
+      final r = ui.PictureRecorder();
+      Canvas(r).drawRect(
+        const Rect.fromLTWH(2, 2, 16, 16),
+        Paint()..color = Colors.red,
+      );
+      final img = await r.endRecording().toImage(20, 20);
+      addTearDown(img.dispose);
+
+      Flut5Engine drawAt3x() => Flut5Engine()
+        ..scale(3)
+        ..shadow(2, 2, 4, const Color(0xCC000000))
+        ..renderQueue.appendImage(
+          img,
+          const Rect.fromLTWH(0, 0, 20, 20),
+          const Rect.fromLTWH(4, 4, 20, 20),
+          BlendMode.srcOver,
+        );
+
+      // Frame 1 registers key; frame 2 bakes at canvasScale * pixelRatio.
+      for (var i = 0; i < 2; i++) {
+        final e = drawAt3x();
+        final rec = ui.PictureRecorder();
+        e.renderQueue.execute(Canvas(rec));
+        rec.endRecording().dispose();
+        e.renderQueue.clear();
+      }
+      expect(Flut5ImageShadows.debugBytes, greaterThan(40 * 40 * 4 * 4));
+    });
+
+    test('beginBlur scope bounding matches unbounded saveLayer under transforms', () async {
+      void scene(Flut5Engine e) => e
+        ..noFill()
+        ..stroke(Colors.cyan)
+        ..strokeWeight(4)
+        ..beginBlur(6)
+        ..push()
+        ..translate(40, 40)
+        ..rotate(0.4)
+        ..rect(-15, -15, 30, 30)
+        ..pop()
+        ..rect(90, 60, 30, 30)
+        ..endBlur();
+
+      final e = Flut5Engine();
+      scene(e);
+      e.renderQueue.flushPending();
+      final actual = await _render(200, 150, (c) {
+        c.scale(0.75);
+        e.renderQueue.execute(c);
+      });
+      final expected = await _render(200, 150, (c) {
+        c.scale(0.75);
+        c.saveLayer(
+          null,
+          Paint()
+            ..imageFilter = ui.ImageFilter.blur(
+              sigmaX: 6,
+              sigmaY: 6,
+              tileMode: TileMode.decal,
+            ),
+        );
+        final unblurred = Flut5Engine()
+          ..noFill()
+          ..stroke(Colors.cyan)
+          ..strokeWeight(4)
+          ..push()
+          ..translate(40, 40)
+          ..rotate(0.4)
+          ..rect(-15, -15, 30, 30)
+          ..pop()
+          ..rect(90, 60, 30, 30);
+        unblurred.renderQueue.execute(c);
+        c.restore();
+      });
+      expect(actual, expected);
+    });
+
+    test('Flut5Image single-strip border check and getRegion handle transparency cleanly', () async {
+      final rec = ui.PictureRecorder();
+      Canvas(rec).drawRect(
+        const Rect.fromLTWH(2, 2, 12, 12),
+        Paint()..color = Colors.green,
+      );
+      final src = await rec.endRecording().toImage(16, 16);
+      final png = (await src.toByteData(format: ui.ImageByteFormat.png))!
+          .buffer
+          .asUint8List();
+      src.dispose();
+
+      final loaded = await Flut5Image.load(png);
+      expect(loaded.hasTransparentBorder, isTrue);
+
+      final sub = loaded.getRegion(0, 0, 16, 16);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(sub.hasTransparentBorder, isTrue);
+      sub.dispose();
+      loaded.dispose();
+    });
+
+    test('scroll cullOutside strips empty push scopes and narrows point/line/atlas items', () async {
+      final rec = ui.PictureRecorder();
+      Canvas(rec).drawRect(const Rect.fromLTWH(0, 0, 10, 10), Paint()..color = Colors.red);
+      final tile = Flut5Image.fromUiImage(await rec.endRecording().toImage(10, 10));
+      addTearDown(tile.dispose);
+
+      final e = Flut5Engine()
+        ..noStroke()
+        ..fill(Colors.white);
+      // Offscreen empty push/clip subtree: stripped completely.
+      e.push();
+      e.translate(0, 500);
+      e.clipRect(0, 0, 50, 50);
+      e.rect(0, 0, 20, 20);
+      e.pop();
+      // Multi-point with 1 visible + 1 offscreen.
+      e.stroke(Colors.red);
+      e.strokeWeight(2);
+      e.point(10, 10);
+      e.point(10, 600);
+      // Image atlas with 1 visible + 2 offscreen.
+      e.image(tile, 5, 5);
+      e.image(tile, 5, 500);
+      e.image(tile, 5, 600);
+
+      e.renderQueue.flushPending();
+      e.renderQueue.cullOutside(0, const Rect.fromLTWH(0, 0, 100, 100));
+
+      expect(
+        e.renderQueue.items.whereType<TransformRenderItem>(),
+        isEmpty,
+      );
+      expect(
+        e.renderQueue.items.whereType<ClipRenderItem>(),
+        isEmpty,
+      );
+      final pts = e.renderQueue.items.whereType<MultiPointRenderItem>().single;
+      expect(pts.coords.length, 2);
+      final img = e.renderQueue.items.whereType<ImageAtlasRenderItem>();
+      final singleImg = e.renderQueue.items.whereType<ImageRenderItem>();
+      expect(img.length + singleImg.length, 1);
+      if (img.isNotEmpty) expect(img.single.spriteCount, 1);
+    });
+
+    test('rotated opaque sprites bypass padded atlas under materialized non-uniform scale', () async {
+      final rec = ui.PictureRecorder();
+      Canvas(rec).drawRect(
+        const Rect.fromLTWH(0, 0, 16, 16),
+        Paint()..color = Colors.orange,
+      );
+      final raw = await rec.endRecording().toImage(16, 16);
+      final tile = Flut5Image.fromUiImage(raw);
+      addTearDown(tile.dispose);
+
+      ImageAtlasRenderItem.debugPaddedAtlasDraws = 0;
+      final e = Flut5Engine()
+        ..scale(2, 3)
+        ..rotate(0.4)
+        ..image(tile, 0, 0)
+        ..translate(30, 0)
+        ..image(tile, 0, 0);
+      await _render(160, 160, e.renderQueue.execute);
+      expect(ImageAtlasRenderItem.debugPaddedAtlasDraws, 0);
+    });
+
+    test('default-mode trail capture keeps crisp logical-grid text snapping', () async {
+      final sketch = _DefaultTrailTextSketch();
+      addTearDown(() {
+        sketch.dispose();
+        Flut5Engine.current = null;
+      });
+      sketch.isReady = true;
+      sketch.setup();
+      final e = sketch.flut5;
+      e.textFont(_family);
+      final painter = Flut5Painter(sketch: sketch);
+
+      Future<Uint8List> paintFrame() async {
+        final rec = ui.PictureRecorder();
+        final c = Canvas(rec)..drawColor(_black, BlendMode.src);
+        painter.paint(c, const Size(160, 60));
+        final p = rec.endRecording();
+        final im = await p.toImage(160, 60);
+        p.dispose();
+        final bytes = (await im.toByteData())!.buffer.asUint8List();
+        im.dispose();
+        return bytes;
+      }
+
+      // Frame 1 (non-capture, frameCount=1) and Frame 2 (capture, frameCount=2).
+      final nonCapture = await paintFrame();
+      final capture = await paintFrame();
+      // Compare against plain logical reference without trail downscale.
+      final ref = _textEngine(18)
+        ..background(const Color(0x01000000))
+        ..fill(_white)
+        ..text('TrailSnap', 10.37, 20.5);
+      final expected = await _render(160, 60, ref.renderQueue.execute);
+      expect(_worst(nonCapture, expected), lessThanOrEqualTo(2));
+      expect(_worst(capture, expected), lessThanOrEqualTo(2));
+    });
+
+    test('auto-scroll sweep runs even when frames skip multiples of 120', () {
+      final e = Flut5Engine()..containerOverflow(Flut5ContainerOverflow.scroll);
+      // Frame 1: create two unnamed scroll containers.
+      e.advanceEnvironmentFrame(16);
+      e.beginContainer(0, 0, 40, 40);
+      e.endContainer();
+      e.beginContainer(60, 0, 40, 40);
+      e.endContainer();
+      expect(e.debugAutoScrollStateCount, 2);
+
+      // Jump past 600+120 frames without landing on a multiple of 120 while
+      // only drawing the second container; the first must be evicted.
+      for (var f = 2; f <= 725; f++) {
+        e.advanceEnvironmentFrame(f * 16);
+        e.renderQueue.clear();
+        if (f >= 725) {
+          e.beginContainer(60, 0, 40, 40);
+          e.endContainer();
+        }
+      }
+      expect(e.debugAutoScrollStateCount, 1);
+    });
+  });
+}
+
+class _DefaultTrailTextSketch() extends Flut5Sketch {
+  @override
+  void setup() {
+    useLayeredTrails = false;
+    useSyncSnapshotCapture = true;
+    frameSnapshotInterval = 2;
+    frameSnapshotResolutionFactor = 0.8;
+    frameSnapshotResolutionFactorMax = 0.8;
+  }
+
+  @override
+  void draw() {
+    background(const Color(0x01000000));
+    fill(Colors.white);
+    noStroke();
+    textSize(18);
+    text('TrailSnap', 10.37, 20.5);
+  }
 }

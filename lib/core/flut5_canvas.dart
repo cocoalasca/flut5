@@ -828,17 +828,16 @@ class Flut5Painter({required final Flut5Sketch sketch, super.repaint})
         final scaleX = physicalWidth / width;
         final scaleY = physicalHeight / height;
 
-        // Layered display draws the foreground alone, so without this the same
-        // item list is walked twice on every capture frame — once into the
-        // recording, once onto the screen. Record it once into a logical-space
-        // picture and replay that into both targets, halving the Dart-side
-        // dispatch on capture frames (the dominant cost in debug JIT, where
-        // each item.execute is a megamorphic call).
+        // Record the foreground once in logical space so BOTH layered and
+        // non-layered paths replay the queue only once per capture frame and
+        // keep Flut5GlyphGrid subpixel snapping consistent between capture and
+        // non-capture frames (avoiding text thickness flicker when
+        // captureScale != pixelRatio).
         //
         // Only valid while every background precedes all content: the split
         // runs backgrounds as a group ahead of the foreground, which reorders
         // a frame that interleaves them. Otherwise fall back to two replays.
-        final splitReplay = layered && queue.backgroundsPrecedeContent;
+        final splitReplay = queue.backgroundsPrecedeContent;
         final foreground = splitReplay
             ? _recordForegroundPicture(queue, currentLogicalSize)
             : null;
@@ -858,10 +857,22 @@ class Flut5Painter({required final Flut5Sketch sketch, super.repaint})
           // snapshot, which itself incorporates the bg fade at rebuild time).
           // The recorded picture is used purely for the snapshot rebuild.
           _paintLayeredForeground(canvas, engine, queue, foreground);
+        } else if (foreground != null) {
+          // Legacy split display: snapshot blit + bg fade + logical foreground
+          // (exact screen pixel snapping, zero duplicate queue replay).
+          if (previousSnapshot != null && previousSnapshotLogicalSize != null) {
+            _drawSnapshot(
+              canvas,
+              previousSnapshot,
+              previousSnapshotLogicalSize,
+              dpr,
+            );
+          }
+          queue.executeBackground(canvas);
+          canvas.drawPicture(foreground);
         } else {
-          // Legacy path: display is the full recorded picture (snapshot blit +
-          // bg fade + shapes), guaranteeing the on-screen pixels match what the
-          // next snapshot will contain even when rebuilds lag.
+          // Non-split fallback (background after content): display the full
+          // recorded picture.
           _drawPhysicalPicture(canvas, picture, scaleX, scaleY);
         }
         engine.beginFrameSnapshotCapture(

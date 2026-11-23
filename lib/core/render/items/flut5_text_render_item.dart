@@ -2,6 +2,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/widgets.dart';
 import 'package:flut5/text/flut5_text_cache.dart';
+import 'package:flut5/text/flut5_text_shaping.dart';
 
 import '../flut5_render_item.dart';
 import '../../flut5_shadow.dart';
@@ -140,6 +141,80 @@ class TextRenderItem({
     rasterScale: rasterScale,
   );
 
+  late final Flut5GlyphFont _font = Flut5GlyphFont(
+    family: fontFamily,
+    size: fontSize,
+    weight: fontWeight,
+    style: fontStyle,
+    variations: fontVariations,
+    variationKey: fontVariationKey,
+  );
+
+  static bool _isPlainPaint(Paint paint) =>
+      paint.blendMode == ui.BlendMode.srcOver &&
+      paint.shader == null &&
+      paint.maskFilter == null &&
+      paint.colorFilter == null &&
+      paint.imageFilter == null;
+
+  bool get _mayDrawNatively =>
+      maxHeight == null &&
+      shadow == null &&
+      fillGradient == null &&
+      strokeGradient == null;
+
+  bool get _hasPlainPaints =>
+      (fillPaint == null || _isPlainPaint(fillPaint!)) &&
+      (strokePaint == null || _isPlainPaint(strokePaint!));
+
+  void _paintNatively(Canvas canvas) {
+    final limit = maxWidth ?? double.infinity;
+    final stroke = strokePaint;
+    if (stroke != null) {
+      final painter = TextPainter(
+        text: TextSpan(
+          text: text,
+          style: TextStyle(
+            fontFamily: fontFamily,
+            fontSize: fontSize,
+            fontWeight: fontWeight,
+            fontStyle: fontStyle,
+            fontVariations: fontVariations,
+            foreground: stroke,
+            height: textLeading,
+            letterSpacing: letterSpacing,
+          ),
+        ),
+        textAlign: textAlign,
+        textDirection: TextDirection.ltr,
+      )..layout(maxWidth: limit);
+      painter.paint(canvas, Offset(_alignedX(x, maxWidth ?? painter.width), y));
+      painter.dispose();
+    }
+    final fill = fillPaint;
+    if (fill != null) {
+      final painter = TextPainter(
+        text: TextSpan(
+          text: text,
+          style: TextStyle(
+            fontFamily: fontFamily,
+            fontSize: fontSize,
+            fontWeight: fontWeight,
+            fontStyle: fontStyle,
+            fontVariations: fontVariations,
+            foreground: fill,
+            height: textLeading,
+            letterSpacing: letterSpacing,
+          ),
+        ),
+        textAlign: textAlign,
+        textDirection: TextDirection.ltr,
+      )..layout(maxWidth: limit);
+      painter.paint(canvas, Offset(_alignedX(x, maxWidth ?? painter.width), y));
+      painter.dispose();
+    }
+  }
+
   @override
   bool get keepsCanvasTransform => true;
 
@@ -150,7 +225,28 @@ class TextRenderItem({
     _maskPaint.filterQuality = glyphQuality;
 
     final grid = Flut5GlyphGrid.of(canvas, cache.pixelRatio);
-    final rasterScale = cache.rasterScaleFor(fontSize, grid.canvasScale);
+    final requestedScale = grid.canvasScale;
+    final rasterScale = cache.rasterScaleFor(fontSize, requestedScale);
+
+    if (_mayDrawNatively && _hasPlainPaints) {
+      final fillGoesNative =
+          fillPaint != null &&
+          cache.drawsNatively(_font, 0, 0, rasterScale, requestedScale);
+      final strokeGoesNative =
+          strokePaint != null &&
+          cache.drawsNatively(
+            _font,
+            1,
+            strokePaint!.strokeWidth,
+            rasterScale,
+            requestedScale,
+          );
+      if (fillGoesNative || strokeGoesNative || flut5HasColorEmoji(text)) {
+        _paintNatively(canvas);
+        return;
+      }
+    }
+
     final aligned = grid.isAligned(1, 0);
     final boxX = _alignedX(x, _block.width);
 

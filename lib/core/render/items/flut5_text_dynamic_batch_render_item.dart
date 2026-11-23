@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/widgets.dart';
 import 'package:flut5/text/flut5_text_cache.dart';
+import 'package:flut5/text/flut5_text_shaping.dart';
 
 import '../../flut5_shadow.dart';
 import '../flut5_overlap_index.dart';
@@ -81,6 +82,37 @@ final class Flut5GlyphGrid._() {
     _lastReadCanvas = _readsStayValid ? canvas : null;
     _lastReadPixelRatio = pixelRatio;
     return _shared;
+  }
+
+  /// Sketch-level scale on [canvas] relative to the current replay base,
+  /// quantized to 1/64 so rotation noise does not churn offscreen shadow bakes.
+  static double effectiveScaleFor(Canvas canvas) {
+    final m = canvas.getTransform();
+    final a = m[0], b = m[1], c = m[4], d = m[5];
+    final sx = math.sqrt(a * a + b * b);
+    final sy = math.sqrt(c * c + d * d);
+    final mag = math.max(sx, sy);
+    if (!mag.isFinite || mag <= 0) return 1.0;
+    final base = _replayScale > 0 ? _replayScale : mag;
+    final scale = (mag / base).clamp(0.125, 8.0);
+    return (scale * 64).roundToDouble() / 64;
+  }
+
+  /// Squared uniform scale added onto [canvas] on top of the current replay
+  /// base, or `-1` when the canvas transform is non-uniform or skewed.
+  static double canvasLinearScaleSq(Canvas canvas) {
+    final m = canvas.getTransform();
+    if (m[3] != 0 || m[7] != 0 || m[15] != 1) return -1;
+    final a = m[0], b = m[1], c = m[4], d = m[5];
+    final sx2 = a * a + b * b;
+    final sy2 = c * c + d * d;
+    if (!(sx2 > 0) || !sx2.isFinite || !(sy2 > 0) || !sy2.isFinite) return -1;
+    final dot = a * c + b * d;
+    if (dot.abs() > math.max(sx2, sy2) * 1e-4) return -1;
+    if ((sx2 - sy2).abs() > math.max(sx2, sy2) * 1e-4) return -1;
+    final base = _replayScale > 0 ? _replayScale : math.sqrt(sx2);
+    if (!(base > 0) || !base.isFinite) return -1;
+    return sx2 / (base * base);
   }
 
   /// How much the sketch's transforms on the canvas scale text, so rasters
@@ -202,6 +234,15 @@ class Flut5GlyphAtlasBlitter._() {
   static final Paint _atlasPaint = Paint();
   static final Paint _tintPaint = Paint();
   static Color? _tintPaintColor;
+  static final Paint _emojiDirectPaint = Paint();
+  static int? _emojiDirectAlpha;
+  static FilterQuality? _emojiDirectQuality;
+  static final Flut5OverlapIndex _runBoxes = Flut5OverlapIndex();
+  static final Float64List _scratchMatrix = Float64List(16)
+    ..[10] = 1
+    ..[15] = 1;
+  static final Paint _nativeFillPaint = Paint();
+  static final Paint _nativeStrokePaint = Paint()..style = PaintingStyle.stroke;
 
   /// Sets the sampling for sprites queued from now on.
   static void setQuality(FilterQuality quality) {
@@ -295,27 +336,14 @@ class Flut5GlyphAtlasBlitter._() {
       );
       return;
     }
+    _scratchMatrix[0] = foldA;
+    _scratchMatrix[1] = foldB;
+    _scratchMatrix[4] = -foldB;
+    _scratchMatrix[5] = foldA;
+    _scratchMatrix[12] = translateX;
+    _scratchMatrix[13] = translateY;
     canvas.save();
-    canvas.transform(
-      Float64List.fromList([
-        foldA,
-        foldB,
-        0,
-        0,
-        -foldB,
-        foldA,
-        0,
-        0,
-        0,
-        0,
-        1,
-        0,
-        translateX,
-        translateY,
-        0,
-        1,
-      ]),
-    );
+    canvas.transform(_scratchMatrix);
     canvas.drawImageRect(
       image,
       source,
@@ -323,6 +351,23 @@ class Flut5GlyphAtlasBlitter._() {
       paint,
     );
     canvas.restore();
+  }
+
+  static Paint _emojiPaint(int argb, FilterQuality quality) {
+    final alpha = (argb >> 24) & 0xFF;
+    if (alpha != _emojiDirectAlpha || quality != _emojiDirectQuality) {
+      _emojiDirectAlpha = alpha;
+      _emojiDirectQuality = quality;
+      _emojiDirectPaint
+        ..filterQuality = quality
+        ..colorFilter = alpha >= 255
+            ? null
+            : ColorFilter.mode(
+                Color.fromARGB(alpha, 255, 255, 255),
+                ui.BlendMode.modulate,
+              );
+    }
+    return _emojiDirectPaint;
   }
 
   // What [_entryTint] tints to, set per entry so that a batch hands out one
@@ -366,6 +411,7 @@ class Flut5GlyphAtlasBlitter._() {
     required int? spriteColor,
     required Paint Function() directPaint,
     bool useAtlas = true,
+    bool isShadow = false,
     double foldA = 1,
     double foldB = 0,
     double foldDx = 0,
@@ -381,6 +427,8 @@ class Flut5GlyphAtlasBlitter._() {
     final tinted = spriteColor != null;
     if (_queued > 0 && _queuedTinted != tinted) flush(canvas);
     _queuedTinted = tinted;
+    final checkEmoji =
+        !isShadow && paintingStyle == 0 && tinted && useAtlas;
     // Room for the whole line, so the buffers stay put through the loop.
     _reserveSprites(_queued + glyphCount);
     final transforms = _transforms, rects = _rects, colors = _colors;
@@ -416,6 +464,7 @@ class Flut5GlyphAtlasBlitter._() {
         translateY = foldB * left + foldA * top + foldDy;
       }
       final slot = useAtlas ? cache.atlasSlotFor(raster) : null;
+      final preserveEmoji = checkEmoji && flut5HasColorEmoji(line.glyphs[i]);
       if (slot != null) {
         if (raster.pixelsPerUnit != pixelsPerUnit) {
           pixelsPerUnit = raster.pixelsPerUnit;
@@ -436,7 +485,11 @@ class Flut5GlyphAtlasBlitter._() {
         rects[offset + 1] = slot.top;
         rects[offset + 2] = slot.right;
         rects[offset + 3] = slot.bottom;
-        if (tinted) colors[sprite] = spriteColor;
+        if (tinted) {
+          colors[sprite] = preserveEmoji
+              ? (spriteColor & 0xFF000000) | 0x00FFFFFF
+              : spriteColor;
+        }
       } else {
         flush(canvas);
         _drawDirect(
@@ -449,7 +502,9 @@ class Flut5GlyphAtlasBlitter._() {
           raster.blitHeight,
           foldA,
           foldB,
-          directPaint(),
+          preserveEmoji
+              ? _emojiPaint(spriteColor, _atlasPaint.filterQuality)
+              : directPaint(),
         );
       }
     }
@@ -493,6 +548,7 @@ class Flut5GlyphAtlasBlitter._() {
         spacing: spacing,
         spriteColor: color,
         directPaint: () => shadow.textTintPaint,
+        isShadow: true,
         foldA: foldA,
         foldB: foldB,
         foldDx: foldDx,
@@ -639,46 +695,94 @@ class Flut5GlyphAtlasBlitter._() {
     }
   }
 
+  static bool _entryDrawsNatively(
+    Flut5TextCache cache,
+    Flut5GlyphGrid grid,
+    Flut5TextDynamicEntry entry,
+  ) {
+    if (entry.shadow != null) return false;
+    final requestedScale = entry.foldScale * grid.canvasScale;
+    final rasterScale = cache.rasterScaleFor(entry.fontSize, requestedScale);
+    if (cache.drawsNatively(
+      entry.font,
+      entry.paintingStyle,
+      entry.strokeWidth,
+      rasterScale,
+      requestedScale,
+    )) {
+      return true;
+    }
+    return entry.strokeColor != null &&
+        cache.drawsNatively(
+          entry.font,
+          1,
+          entry.strokeWidth,
+          rasterScale,
+          requestedScale,
+        );
+  }
+
   /// Blits an entire batch of plain solid-colour `textDynamic` entries
   /// (potentially spanning different strings, sizes, colours, shadows,
-  /// positions, rotations, and uniform scales) in minimal `Canvas.drawRawAtlas`
-  /// calls against [Flut5TextCache]'s glyph atlas.
+  /// outlined+filled pairs, positions, rotations, and uniform scales) in
+  /// minimal `Canvas.drawRawAtlas` calls against [Flut5TextCache]'s glyph atlas.
   static void drawBatch(Canvas canvas, List<Flut5TextDynamicEntry> entries) {
     final cache = Flut5TextCache.instance;
     final grid = Flut5GlyphGrid.of(canvas, cache.pixelRatio);
     setQuality(cache.textBlitQuality);
     var hasAnyShadow = false;
+    var hasAnyStrokeFill = false;
     for (var i = 0; i < entries.length; i++) {
-      if (entries[i].shadow != null) {
-        hasAnyShadow = true;
-        break;
-      }
+      if (entries[i].shadow != null) hasAnyShadow = true;
+      if (entries[i].strokeColor != null) hasAnyStrokeFill = true;
+      if (hasAnyShadow && hasAnyStrokeFill) break;
     }
-    if (!hasAnyShadow) {
+    if (!hasAnyShadow && !hasAnyStrokeFill) {
       _drawGlyphRange(canvas, cache, grid, entries, 0, entries.length);
       flush(canvas);
       return;
     }
 
-    // Group consecutive non-overlapping entries so all their shadows draw in
-    // one atlas pass followed by all their glyph ink in one atlas pass; start
-    // a new group on overlap to keep exact painter's-algorithm z-order.
+    // Group consecutive non-overlapping entries so all their shadows, stroke
+    // under-passes (for fill+stroke entries), and fills/single passes each
+    // batch cleanly in drawRawAtlas while preserving exact painter's order on
+    // any overlap.
     var runStart = 0;
-    final runBoxes = Flut5OverlapIndex();
+    final runBoxes = _runBoxes..clear();
+    void flushRun(int end) {
+      if (runStart >= end) return;
+      if (hasAnyShadow) {
+        _drawShadowRange(canvas, cache, grid, entries, runStart, end);
+      }
+      if (hasAnyStrokeFill) {
+        _drawStrokeFillPassRange(canvas, cache, grid, entries, runStart, end);
+      }
+      _drawGlyphRange(canvas, cache, grid, entries, runStart, end);
+    }
+
     for (var i = 0; i < entries.length; i++) {
-      final box = entries[i].inkBounds();
+      final entry = entries[i];
+      if (i == runStart &&
+          entry.shadow == null &&
+          entry.strokeColor == null &&
+          _entryDrawsNatively(cache, grid, entry)) {
+        flush(canvas);
+        _paintEntryNatively(canvas, entry);
+        runStart = i + 1;
+        continue;
+      }
+      final box = entry.inkBounds();
       if (runBoxes.overlaps(box.left, box.top, box.right, box.bottom)) {
-        _drawShadowRange(canvas, cache, grid, entries, runStart, i);
-        _drawGlyphRange(canvas, cache, grid, entries, runStart, i);
+        flushRun(i);
         runStart = i;
         runBoxes.clear();
       }
       runBoxes.add(box.left, box.top, box.right, box.bottom);
     }
     if (runStart < entries.length) {
-      _drawShadowRange(canvas, cache, grid, entries, runStart, entries.length);
-      _drawGlyphRange(canvas, cache, grid, entries, runStart, entries.length);
+      flushRun(entries.length);
     }
+    runBoxes.clear();
     flush(canvas);
   }
 
@@ -723,6 +827,58 @@ class Flut5GlyphAtlasBlitter._() {
     }
   }
 
+  /// Draws the stroke under-pass of all `strokeColor != null` entries in
+  /// `[startIndex, endIndex)` that don't fall back to per-line interleaving or
+  /// native painting.
+  static void _drawStrokeFillPassRange(
+    Canvas canvas,
+    Flut5TextCache cache,
+    Flut5GlyphGrid grid,
+    List<Flut5TextDynamicEntry> entries,
+    int startIndex,
+    int endIndex,
+  ) {
+    final quality = cache.textBlitQuality;
+    for (var e = startIndex; e < endIndex; e++) {
+      final entry = entries[e];
+      final strokeCol = entry.strokeColor;
+      if (strokeCol == null ||
+          entry.text.isEmpty ||
+          entry.needsPerLineStrokeFill ||
+          _entryDrawsNatively(cache, grid, entry)) {
+        continue;
+      }
+      final requestedScale = entry.foldScale * grid.canvasScale;
+      final rasterScale = cache.rasterScaleFor(entry.fontSize, requestedScale);
+      final argb = strokeCol.toARGB32();
+      _entryTintColor = strokeCol;
+      _entryTintQuality = quality;
+      var lineY = entry.y;
+      for (final line in entry.lines) {
+        drawLine(
+          canvas,
+          cache,
+          line,
+          entry.font,
+          grid,
+          paintingStyle: 1,
+          strokeWidth: entry.strokeWidth,
+          rasterScale: rasterScale,
+          startX: entry.startXOf(line),
+          y: lineY,
+          spacing: entry.spacing,
+          spriteColor: argb,
+          directPaint: _entryTint,
+          foldA: entry.foldA,
+          foldB: entry.foldB,
+          foldDx: entry.foldDx,
+          foldDy: entry.foldDy,
+        );
+        lineY += entry.lineHeight;
+      }
+    }
+  }
+
   static void _drawGlyphRange(
     Canvas canvas,
     Flut5TextCache cache,
@@ -737,21 +893,69 @@ class Flut5GlyphAtlasBlitter._() {
       if (entry.text.isEmpty) continue;
       final requestedScale = entry.foldScale * grid.canvasScale;
       final rasterScale = cache.rasterScaleFor(entry.fontSize, requestedScale);
-      if (entry.shadow == null &&
-          cache.drawsNatively(
-            entry.font,
-            entry.paintingStyle,
-            entry.strokeWidth,
-            rasterScale,
-            requestedScale,
-          )) {
+      if (_entryDrawsNatively(cache, grid, entry)) {
         flush(canvas);
         _paintEntryNatively(canvas, entry);
+        continue;
+      }
+      if (entry.needsPerLineStrokeFill) {
+        final strokeCol = entry.strokeColor!;
+        final strokeArgb = strokeCol.toARGB32();
+        final fillArgb = entry.color.toARGB32();
+        var lineY = entry.y;
+        for (final line in entry.lines) {
+          final startX = entry.startXOf(line);
+          _entryTintColor = strokeCol;
+          _entryTintQuality = quality;
+          drawLine(
+            canvas,
+            cache,
+            line,
+            entry.font,
+            grid,
+            paintingStyle: 1,
+            strokeWidth: entry.strokeWidth,
+            rasterScale: rasterScale,
+            startX: startX,
+            y: lineY,
+            spacing: entry.spacing,
+            spriteColor: strokeArgb,
+            directPaint: _entryTint,
+            foldA: entry.foldA,
+            foldB: entry.foldB,
+            foldDx: entry.foldDx,
+            foldDy: entry.foldDy,
+          );
+          _entryTintColor = entry.color;
+          drawLine(
+            canvas,
+            cache,
+            line,
+            entry.font,
+            grid,
+            paintingStyle: 0,
+            strokeWidth: 0.0,
+            rasterScale: rasterScale,
+            startX: startX,
+            y: lineY,
+            spacing: entry.spacing,
+            spriteColor: fillArgb,
+            directPaint: _entryTint,
+            foldA: entry.foldA,
+            foldB: entry.foldB,
+            foldDx: entry.foldDx,
+            foldDy: entry.foldDy,
+          );
+          lineY += entry.lineHeight;
+        }
         continue;
       }
       final color = entry.color.toARGB32();
       _entryTintColor = entry.color;
       _entryTintQuality = quality;
+      final passStrokeWidth = entry.paintingStyle == 1
+          ? entry.strokeWidth
+          : 0.0;
       var lineY = entry.y;
       for (final line in entry.lines) {
         drawLine(
@@ -761,7 +965,7 @@ class Flut5GlyphAtlasBlitter._() {
           entry.font,
           grid,
           paintingStyle: entry.paintingStyle,
-          strokeWidth: entry.strokeWidth,
+          strokeWidth: passStrokeWidth,
           rasterScale: rasterScale,
           startX: entry.startXOf(line),
           y: lineY,
@@ -779,11 +983,21 @@ class Flut5GlyphAtlasBlitter._() {
   }
 
   static void _paintEntryNatively(Canvas canvas, Flut5TextDynamicEntry entry) {
-    final foreground = Paint()..color = entry.color;
-    if (entry.paintingStyle == 1) {
-      foreground
-        ..style = PaintingStyle.stroke
+    final List<Paint> foregrounds;
+    if (entry.strokeColor != null) {
+      _nativeStrokePaint
+        ..color = entry.strokeColor!
         ..strokeWidth = entry.strokeWidth;
+      _nativeFillPaint.color = entry.color;
+      foregrounds = [_nativeStrokePaint, _nativeFillPaint];
+    } else if (entry.paintingStyle == 1) {
+      _nativeStrokePaint
+        ..color = entry.color
+        ..strokeWidth = entry.strokeWidth;
+      foregrounds = [_nativeStrokePaint];
+    } else {
+      _nativeFillPaint.color = entry.color;
+      foregrounds = [_nativeFillPaint];
     }
     final isFolded =
         entry.foldA != 1 ||
@@ -791,34 +1005,21 @@ class Flut5GlyphAtlasBlitter._() {
         entry.foldDx != 0 ||
         entry.foldDy != 0;
     if (isFolded) {
+      _scratchMatrix[0] = entry.foldA;
+      _scratchMatrix[1] = entry.foldB;
+      _scratchMatrix[4] = -entry.foldB;
+      _scratchMatrix[5] = entry.foldA;
+      _scratchMatrix[12] = entry.foldDx;
+      _scratchMatrix[13] = entry.foldDy;
       canvas.save();
-      canvas.transform(
-        Float64List.fromList([
-          entry.foldA,
-          entry.foldB,
-          0,
-          0,
-          -entry.foldB,
-          entry.foldA,
-          0,
-          0,
-          0,
-          0,
-          1,
-          0,
-          entry.foldDx,
-          entry.foldDy,
-          0,
-          1,
-        ]),
-      );
+      canvas.transform(_scratchMatrix);
     }
     if (entry.maxWidth == null) {
       paintUnwrappedNatively(
         canvas,
         entry.text,
         entry.font,
-        foregrounds: [foreground],
+        foregrounds: foregrounds,
         x: entry.x,
         y: entry.y,
         spacing: entry.spacing,
@@ -829,15 +1030,18 @@ class Flut5GlyphAtlasBlitter._() {
       var lineY = entry.y;
       for (final line in entry.lines) {
         if (line.glyphs.isNotEmpty) {
-          paintLineNatively(
-            canvas,
-            line,
-            entry.font,
-            foreground: foreground,
-            startX: entry.startXOf(line),
-            y: lineY,
-            spacing: entry.letterSpacing ?? 0,
-          );
+          final startX = entry.startXOf(line);
+          for (var p = 0; p < foregrounds.length; p++) {
+            paintLineNatively(
+              canvas,
+              line,
+              entry.font,
+              foreground: foregrounds[p],
+              startX: startX,
+              y: lineY,
+              spacing: entry.letterSpacing ?? 0,
+            );
+          }
         }
         lineY += entry.lineHeight;
       }
@@ -862,6 +1066,7 @@ class Flut5TextDynamicEntry({
   required final Color color,
   required final int paintingStyle,
   required final double strokeWidth,
+  final Color? strokeColor,
   required final double foldA,
   required final double foldB,
   required final double foldDx,
@@ -887,19 +1092,55 @@ class Flut5TextDynamicEntry({
   /// baked in, because it decides their line breaks.
   double get spacing => maxWidth == null ? letterSpacing ?? 0 : 0;
 
-  late final List<Flut5TextLine> lines = Flut5TextCache.instance
-      .getOrCreateLayout(
-        text: text,
-        fontFamily: fontFamily,
-        fontSize: fontSize,
-        fontWeight: fontWeight,
-        fontStyle: fontStyle,
-        letterSpacing: maxWidth == null ? 0.0 : letterSpacing ?? 0.0,
-        maxWidth: maxWidth,
-        fontVariations: fontVariations,
-        fontVariationKey: fontVariationKey,
-      )
-      .lines;
+  late final List<Flut5TextLine> lines = _resolveLines();
+
+  List<Flut5TextLine> _resolveLines() {
+    final cache = Flut5TextCache.instance;
+    if (maxWidth != null) {
+      return cache
+          .getOrCreateLayout(
+            text: text,
+            fontFamily: fontFamily,
+            fontSize: fontSize,
+            fontWeight: fontWeight,
+            fontStyle: fontStyle,
+            letterSpacing: letterSpacing ?? 0.0,
+            maxWidth: maxWidth,
+            fontVariations: fontVariations,
+            fontVariationKey: fontVariationKey,
+          )
+          .lines;
+    }
+    final layout = cache.getOrCreateLayout(
+      text: text,
+      fontFamily: fontFamily,
+      fontSize: fontSize,
+      fontWeight: fontWeight,
+      fontStyle: fontStyle,
+      letterSpacing: 0.0,
+      maxWidth: null,
+      fontVariations: fontVariations,
+      fontVariationKey: fontVariationKey,
+      allowLigatures: true,
+    );
+    if ((letterSpacing ?? 0.0) != 0.0 && layout.hasLigatures) {
+      return cache
+          .getOrCreateLayout(
+            text: text,
+            fontFamily: fontFamily,
+            fontSize: fontSize,
+            fontWeight: fontWeight,
+            fontStyle: fontStyle,
+            letterSpacing: 0.0,
+            maxWidth: null,
+            fontVariations: fontVariations,
+            fontVariationKey: fontVariationKey,
+            allowLigatures: false,
+          )
+          .lines;
+    }
+    return layout.lines;
+  }
 
   late final double lineHeight = textLeading != null
       ? fontSize * textLeading!
@@ -911,6 +1152,12 @@ class Flut5TextDynamicEntry({
           fontVariations: fontVariations,
           fontVariationKey: fontVariationKey,
         );
+
+  /// Whether a multi-line outlined+filled entry has tight line spacing where
+  /// a later line's stroke can touch an earlier line's fill, requiring per-line
+  /// stroke-then-fill ordering.
+  late final bool needsPerLineStrokeFill =
+      strokeColor != null && lines.length > 1 && lineHeight < fontSize * 1.15;
 
   /// Where [line]'s pen starts along x, after alignment.
   double startXOf(Flut5TextLine line) {
@@ -924,7 +1171,9 @@ class Flut5TextDynamicEntry({
   }
 
   /// The laid-out block before the fold.
-  Rect get _localBox {
+  late final Rect _localBox = _computeLocalBox();
+
+  Rect _computeLocalBox() {
     var left = double.infinity, right = double.negativeInfinity;
     for (final line in lines) {
       final start = startXOf(line);
@@ -954,18 +1203,22 @@ class Flut5TextDynamicEntry({
     );
   }
 
-  /// The laid-out text block in queue space, for sizing scroll containers.
-  Rect layoutBounds() => _folded(_localBox);
+  late final Rect _layoutBounds = _folded(_localBox);
 
-  /// Everything this entry can paint, shadow included, in queue space.
-  Rect inkBounds() => _folded(
+  late final Rect _inkBounds = _folded(
     flut5TextInkBox(
       _localBox,
       fontSize,
-      paintingStyle == 1 ? strokeWidth : 0,
+      (paintingStyle == 1 || strokeColor != null) ? strokeWidth : 0,
       shadow,
     ),
   );
+
+  /// The laid-out text block in queue space, for sizing scroll containers.
+  Rect layoutBounds() => _layoutBounds;
+
+  /// Everything this entry can paint, shadow included, in queue space.
+  Rect inkBounds() => _inkBounds;
 }
 
 /// Coalesces consecutive plain `textDynamic` calls — across strings, colours,

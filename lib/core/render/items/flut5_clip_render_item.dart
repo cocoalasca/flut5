@@ -96,6 +96,9 @@ class ClipRenderItem._({
        );
 
   @override
+  bool get keepsCanvasTransform => true;
+
+  @override
   void execute(Canvas canvas) {
     // No canvas.save() here — the clip narrows the current save layer and is
     // lifted by the restore() that the matching pop() issues. See the class

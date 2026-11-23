@@ -41,3 +41,6 @@ example/
 # Font-pipeline debugging scratch (not part of the published package, and
 # ships a third-party font). Delete this line to start tracking it.
 agent_assets/
+
+# Flutter golden test diff output generated locally on failure.
+test/failures/

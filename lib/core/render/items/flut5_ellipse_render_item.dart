@@ -13,6 +13,9 @@ class EllipseRenderItem(
   Rect? get bounds => rect;
 
   @override
+  bool get keepsCanvasTransform => true;
+
+  @override
   void execute(Canvas canvas) {
     final s = shadow;
     if (s != null) {

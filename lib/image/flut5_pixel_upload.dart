@@ -206,14 +206,33 @@ class Flut5PixelUploader() {
       }
     }
 
-    for (var sprite = 0, offset = 0; sprite < spriteCount; sprite++, offset += 4) {
-      // Straight ARGB; the GPU premultiplies it. Int32List keeps the low
-      // 32 bits, so an alpha above 127 wrapping negative is intended.
-      colors[sprite] =
-          straightRgba[offset + 3] << 24 |
-          straightRgba[offset] << 16 |
-          straightRgba[offset + 1] << 8 |
-          straightRgba[offset + 2];
+    if (Endian.host == Endian.little && (straightRgba.offsetInBytes & 3) == 0) {
+      final src32 = Uint32List.view(
+        straightRgba.buffer,
+        straightRgba.offsetInBytes,
+        spriteCount,
+      );
+      for (var i = 0; i < spriteCount; i++) {
+        final px = src32[i];
+        // Straight ARGB; the GPU premultiplies it. On little-endian hosts
+        // [R, G, B, A] loads as 0xAABBGGRR, so swizzle R and B in one step.
+        colors[i] =
+            (px & 0xFF00FF00) |
+            ((px & 0x00FF0000) >> 16) |
+            ((px & 0x000000FF) << 16);
+      }
+    } else {
+      for (var sprite = 0, offset = 0;
+          sprite < spriteCount;
+          sprite++, offset += 4) {
+        // Straight ARGB; the GPU premultiplies it. Int32List keeps the low
+        // 32 bits, so an alpha above 127 wrapping negative is intended.
+        colors[sprite] =
+            straightRgba[offset + 3] << 24 |
+            straightRgba[offset] << 16 |
+            straightRgba[offset + 1] << 8 |
+            straightRgba[offset + 2];
+      }
     }
     final recorder = ui.PictureRecorder();
     // BlendMode.dst keeps the colour and discards the texel — `colors` are the

@@ -29,6 +29,9 @@ class BackgroundRenderItem._({
       );
 
   @override
+  bool get keepsCanvasTransform => true;
+
+  @override
   void execute(Canvas canvas) {
     if (color != null) {
       canvas.drawColor(

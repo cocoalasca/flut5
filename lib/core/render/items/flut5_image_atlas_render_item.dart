@@ -6,6 +6,7 @@ import 'package:flutter/widgets.dart';
 
 import '../../flut5_console.dart';
 import '../flut5_render_item.dart';
+import 'flut5_text_dynamic_batch_render_item.dart' show Flut5GlyphGrid;
 
 /// One entry of [ImageAtlasRenderItem]'s padded-copy cache.
 final class _PaddedCopy(
@@ -226,6 +227,8 @@ class ImageAtlasRenderItem({
     if (w <= 0 || h <= 0 || w > _maxPaddedExtent || h > _maxPaddedExtent) {
       return false;
     }
+    final canvasScaleSq = Flut5GlyphGrid.canvasLinearScaleSq(canvas);
+    if (canvasScaleSq <= 0) return false;
     final fw = w.toDouble();
     final fh = h.toDouble();
     final len = transforms.length;
@@ -246,7 +249,7 @@ class ImageAtlasRenderItem({
         // opaque-edged sprites would soften across `scale` screen pixels, and
         // downscaled sprites would mip-bleed the transparent border — keep
         // exact drawImageRect AA for those.
-        final scaleSq = scos * scos + ssin * ssin;
+        final scaleSq = (scos * scos + ssin * ssin) * canvasScaleSq;
         if (scaleSq < 0.96 || scaleSq > 1.04) {
           return false;
         }
@@ -329,6 +332,8 @@ class ImageAtlasRenderItem({
     // Queue data can still coalesce across rotations, but preserve the
     // primitive renderer for rotated quads. Only axis-aligned runs use atlas.
     final matrix = _matrix;
+    int? lastArgb;
+    ColorFilter? lastFilter;
     var start = 0;
     for (var i = 0; i < transforms.length; i += 4) {
       if (transforms[i + 1] == 0) continue;
@@ -360,9 +365,15 @@ class ImageAtlasRenderItem({
         rects[i + 3],
       );
       final argb = tintColors?[i >> 2];
-      _blitPaint.colorFilter = argb == null || argb == 0xFFFFFFFF
-          ? null
-          : ColorFilter.mode(Color(argb), BlendMode.modulate);
+      if (argb == null || argb == 0xFFFFFFFF) {
+        _blitPaint.colorFilter = null;
+      } else {
+        if (argb != lastArgb) {
+          lastArgb = argb;
+          lastFilter = ColorFilter.mode(Color(argb), BlendMode.modulate);
+        }
+        _blitPaint.colorFilter = lastFilter;
+      }
       canvas.save();
       canvas.transform(matrix);
       canvas.drawImageRect(

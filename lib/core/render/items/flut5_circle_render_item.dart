@@ -14,6 +14,9 @@ class CircleRenderItem(
   Rect? get bounds => Rect.fromCircle(center: center, radius: radius);
 
   @override
+  bool get keepsCanvasTransform => true;
+
+  @override
   void execute(Canvas canvas) {
     final s = shadow;
     if (s != null) {

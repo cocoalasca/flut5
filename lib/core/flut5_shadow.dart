@@ -7,6 +7,8 @@ import '../image/flut5_image_shadows.dart';
 import '../text/flut5_text_cache.dart';
 import 'flut5_engine_colors.dart';
 import 'render/flut5_render_queue.dart';
+import 'render/items/flut5_text_dynamic_batch_render_item.dart'
+    show Flut5GlyphGrid;
 
 /// Immutable descriptor of an active drop shadow.
 ///
@@ -71,7 +73,9 @@ class Flut5ShadowSpec(
 
   /// Spread grows the glyphs by a morphological [ImageFilter.dilate], then
   /// the blur softens them (CSS order). `null` when the shadow is neither.
-  ImageFilter? get _silhouetteFilter {
+  late final ImageFilter? _silhouetteFilter = _buildSilhouetteFilter();
+
+  ImageFilter? _buildSilhouetteFilter() {
     final blurred = blur > 0
         ? ImageFilter.blur(
             sigmaX: _blurSigma,
@@ -166,11 +170,12 @@ class Flut5ShadowSpec(
       return;
     }
     final reach = spread + (blur > 0 ? 3 * _blurSigma : 0);
+    final canvasScale = Flut5GlyphGrid.effectiveScaleFor(canvas);
     final baked = Flut5ImageShadows.silhouette(
       image: image,
       src: src,
       size: Size(dst.width.abs(), dst.height.abs()),
-      pixelRatio: Flut5TextCache.instance.pixelRatio,
+      pixelRatio: Flut5TextCache.instance.pixelRatio * canvasScale,
       filterKey: (blur, spread),
       filter: filter,
       reach: reach,

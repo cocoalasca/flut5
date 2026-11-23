@@ -68,14 +68,16 @@ Rect? flut5PaintBounds(Flut5RenderItem item, double aa) {
     math.max(geometry.left, geometry.right),
     math.max(geometry.top, geometry.bottom),
   );
-  final reach = stroke == null ? 0.0 : _strokeReach(stroke, stroke.strokeWidth);
+  final reach = stroke == null
+      ? 0.0
+      : flut5StrokeReach(stroke, stroke.strokeWidth);
   var result = box.inflate(reach + aa);
   if (shadow != null) {
     // The shadow redraws the shape shifted by its offset, spread by a stroke
     // of twice the spread (or a stroke that much wider), then blurred.
     final spreadReach = stroke == null
         ? shadow.spread * math.sqrt2
-        : _strokeReach(stroke, stroke.strokeWidth + shadow.spread * 2);
+        : flut5StrokeReach(stroke, stroke.strokeWidth + shadow.spread * 2);
     final halo = shadow.blur > 0
         ? 3 * Shadow.convertRadiusToSigma(shadow.blur)
         : 0.0;
@@ -91,7 +93,7 @@ Rect? flut5PaintBounds(Flut5RenderItem item, double aa) {
 /// How far a stroke of [width] painted with [stroke]'s joins and caps can
 /// reach past the outline: half its width, out to a miter's tip at sharp
 /// corners or a square cap's corner.
-double _strokeReach(Paint stroke, double width) =>
+double flut5StrokeReach(Paint stroke, double width) =>
     width /
     2 *
     (stroke.strokeJoin == StrokeJoin.miter

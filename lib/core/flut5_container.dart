@@ -392,6 +392,7 @@ mixin Flut5ContainerMixin on Flut5Transform, Flut52DPrimitives, Flut5Clip {
   List<_Flut5ContainerScrollState> _autoScrollsLastFrame = [];
   List<_Flut5ContainerScrollState> _autoScrollsThisFrame = [];
   int _autoScrollFrame = -1;
+  int _lastAutoScrollSweepFrame = 0;
 
   /// How many scroll states of containers without an `id` are kept.
   @visibleForTesting
@@ -676,7 +677,8 @@ mixin Flut5ContainerMixin on Flut5Transform, Flut52DPrimitives, Flut5Clip {
       final finished = _autoScrollsLastFrame..clear();
       _autoScrollsLastFrame = _autoScrollsThisFrame;
       _autoScrollsThisFrame = finished;
-      if (frameCount % _autoScrollSweepInterval == 0) {
+      if (frameCount - _lastAutoScrollSweepFrame >= _autoScrollSweepInterval) {
+        _lastAutoScrollSweepFrame = frameCount;
         _autoScrollStates.removeWhere(
           (_, state) => frameCount - state.lastUsedFrame > _autoScrollLifetime,
         );

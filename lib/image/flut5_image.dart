@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -206,9 +207,8 @@ class Flut5Image._(
     if (source is Flut5Image) return source;
     if (source is ui.Image) return Flut5Image.fromUiImage(source);
     if (source is Uint8List) {
-      return _withBorderChecked(
-        Flut5Image._(await _decodeBytes(source, '<bytes>'), '<bytes>'),
-      );
+      final img = Flut5Image._(await _decodeBytes(source, '<bytes>'), '<bytes>');
+      return _bytesDefinitelyOpaque(source) ? img : _withBorderChecked(img);
     }
     if (source is ImageProvider) {
       return _withBorderChecked(
@@ -217,9 +217,11 @@ class Flut5Image._(
     }
     if (source is String) {
       if (_isNetworkUrl(source)) {
-        return _withBorderChecked(
-          Flut5Image._(await _resolveProvider(NetworkImage(source)), source),
+        final img = Flut5Image._(
+          await _resolveProvider(NetworkImage(source)),
+          source,
         );
+        return _isOpaqueImageUrl(source) ? img : _withBorderChecked(img);
       }
       final key = await _resolveAssetKey(source);
       final ByteData data;
@@ -232,9 +234,8 @@ class Flut5Image._(
         data.offsetInBytes,
         data.lengthInBytes,
       );
-      return _withBorderChecked(
-        Flut5Image._(await _decodeBytes(bytes, key), key),
-      );
+      final img = Flut5Image._(await _decodeBytes(bytes, key), key);
+      return _bytesDefinitelyOpaque(bytes) ? img : _withBorderChecked(img);
     }
     throw ArgumentError(
       'loadImage() expects a String asset name, asset path or URL, a '
@@ -270,18 +271,141 @@ class Flut5Image._(
   }
 
   static Future<bool> _ringIsTransparent(ui.Image bitmap) async {
-    final w = bitmap.width.toDouble(), h = bitmap.height.toDouble();
-    if (w < 3 || h < 3) return false;
-    final rows = await _stripBytes(bitmap, bitmap.width, 2, [
+    final bw = bitmap.width, bh = bitmap.height;
+    final w = bw.toDouble(), h = bh.toDouble();
+    if (bw < 3 || bh < 3) return false;
+    final stripW = math.max(bw, bh);
+    // Pack all 4 border edges (top row, bottom row, left column rotated,
+    // right column rotated) into a single max(w, h) × 4 strip so edge detection
+    // needs just one GPU rasterization and one CPU readback.
+    if (stripW <= 8192) {
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder);
+      canvas.drawImageRect(
+        bitmap,
+        Rect.fromLTWH(0, 0, w, 1),
+        Rect.fromLTWH(0, 0, w, 1),
+        _copyPaint,
+      );
+      canvas.drawImageRect(
+        bitmap,
+        Rect.fromLTWH(0, h - 1, w, 1),
+        Rect.fromLTWH(0, 1, w, 1),
+        _copyPaint,
+      );
+      canvas.save();
+      canvas.translate(0, 3);
+      canvas.rotate(-math.pi / 2);
+      canvas.drawImageRect(
+        bitmap,
+        Rect.fromLTWH(0, 0, 1, h),
+        Rect.fromLTWH(0, 0, 1, h),
+        _copyPaint,
+      );
+      canvas.restore();
+      canvas.save();
+      canvas.translate(0, 4);
+      canvas.rotate(-math.pi / 2);
+      canvas.drawImageRect(
+        bitmap,
+        Rect.fromLTWH(w - 1, 0, 1, h),
+        Rect.fromLTWH(0, 0, 1, h),
+        _copyPaint,
+      );
+      canvas.restore();
+      final picture = recorder.endRecording();
+      final strip = await picture.toImage(stripW, 4);
+      picture.dispose();
+      try {
+        final data = await strip.toByteData();
+        if (data == null) return false;
+        final rgba = data.buffer.asUint8List(
+          data.offsetInBytes,
+          data.lengthInBytes,
+        );
+        return _alphaIsZero(rgba);
+      } finally {
+        strip.dispose();
+      }
+    }
+    final rows = await _stripBytes(bitmap, bw, 2, [
       (Rect.fromLTWH(0, 0, w, 1), Rect.fromLTWH(0, 0, w, 1)),
       (Rect.fromLTWH(0, h - 1, w, 1), Rect.fromLTWH(0, 1, w, 1)),
     ]);
     if (rows == null || !_alphaIsZero(rows)) return false;
-    final columns = await _stripBytes(bitmap, 2, bitmap.height, [
+    final columns = await _stripBytes(bitmap, 2, bh, [
       (Rect.fromLTWH(0, 0, 1, h), Rect.fromLTWH(0, 0, 1, h)),
       (Rect.fromLTWH(w - 1, 0, 1, h), Rect.fromLTWH(1, 0, 1, h)),
     ]);
     return columns != null && _alphaIsZero(columns);
+  }
+
+  /// Fast header check returning `true` only when encoded bytes guarantee no
+  /// alpha/transparency channel (JPEG, non-32-bit BMP, or PNG type 0/2 without
+  /// a `tRNS` chunk), avoiding a wasted GPU border readback.
+  static bool _bytesDefinitelyOpaque(Uint8List bytes) {
+    // JPEG (SOI + marker prefix)
+    if (bytes.length >= 3 &&
+        bytes[0] == 0xFF &&
+        bytes[1] == 0xD8 &&
+        bytes[2] == 0xFF) {
+      return true;
+    }
+    // BMP ('BM', bits-per-pixel != 32)
+    if (bytes.length >= 30 && bytes[0] == 0x42 && bytes[1] == 0x4D) {
+      final bpp = bytes[28] | (bytes[29] << 8);
+      return bpp == 1 || bpp == 4 || bpp == 8 || bpp == 24;
+    }
+    // PNG signature + IHDR chunk (colortype 0 = grayscale, 2 = RGB, no tRNS)
+    if (bytes.length >= 33 &&
+        bytes[0] == 0x89 &&
+        bytes[1] == 0x50 &&
+        bytes[2] == 0x4E &&
+        bytes[3] == 0x47 &&
+        bytes[4] == 0x0D &&
+        bytes[5] == 0x0A &&
+        bytes[6] == 0x1A &&
+        bytes[7] == 0x0A &&
+        bytes[12] == 0x49 &&
+        bytes[13] == 0x48 &&
+        bytes[14] == 0x44 &&
+        bytes[15] == 0x52) {
+      final colorType = bytes[25];
+      if (colorType != 0 && colorType != 2) return false;
+      var offset = 8;
+      while (offset + 12 <= bytes.length) {
+        final len =
+            (bytes[offset] << 24) |
+            (bytes[offset + 1] << 16) |
+            (bytes[offset + 2] << 8) |
+            bytes[offset + 3];
+        if (len < 0) return false;
+        final t0 = bytes[offset + 4];
+        final t1 = bytes[offset + 5];
+        final t2 = bytes[offset + 6];
+        final t3 = bytes[offset + 7];
+        if (t0 == 0x49 &&
+            ((t1 == 0x44 && t2 == 0x41 && t3 == 0x54) ||
+                (t1 == 0x45 && t2 == 0x4E && t3 == 0x44))) {
+          return true;
+        }
+        if (t0 == 0x74 && t1 == 0x52 && t2 == 0x4E && t3 == 0x53) {
+          return false;
+        }
+        final next = offset + 12 + len;
+        if (next <= offset || next > bytes.length) return false;
+        offset = next;
+      }
+    }
+    return false;
+  }
+
+  static bool _isOpaqueImageUrl(String source) {
+    final path = Uri.tryParse(source)?.path.toLowerCase();
+    if (path == null) return false;
+    return path.endsWith('.jpg') ||
+        path.endsWith('.jpeg') ||
+        path.endsWith('.jfif');
   }
 
   /// Copies [regions] of [bitmap] 1:1 into a [width]×[height] strip and
@@ -646,7 +770,13 @@ class Flut5Image._(
               _copyPaint,
             ),
     );
-    return Flut5Image._(bitmap, label);
+    final regionImage = Flut5Image._(bitmap, label);
+    if (inside.width <= 0 || inside.height <= 0) {
+      regionImage._hasTransparentBorder = width >= 3 && height >= 3;
+    } else if (width >= 3 && height >= 3) {
+      unawaited(regionImage._detectTransparentBorder());
+    }
+    return regionImage;
   }
 
   // ── Pixels ────────────────────────────────────────────────────────────

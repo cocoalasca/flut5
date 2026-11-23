@@ -13,6 +13,9 @@ class LineRenderItem(
   Rect? get bounds => Rect.fromPoints(p1, p2);
 
   @override
+  bool get keepsCanvasTransform => true;
+
+  @override
   void execute(Canvas canvas) {
     final stroke = strokePaint;
     if (stroke == null) return;

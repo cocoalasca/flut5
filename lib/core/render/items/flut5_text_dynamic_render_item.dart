@@ -153,19 +153,53 @@ class TextDynamicRenderItem({
     return originalX;
   }
 
-  List<Flut5TextLine> get _layoutLines => Flut5TextCache.instance
-      .getOrCreateLayout(
-        text: text,
-        fontFamily: fontFamily,
-        fontSize: fontSize,
-        fontWeight: fontWeight,
-        fontStyle: fontStyle,
-        letterSpacing: maxWidth == null ? 0.0 : letterSpacing ?? 0.0,
-        maxWidth: maxWidth,
-        fontVariations: fontVariations,
-        fontVariationKey: fontVariationKey,
-      )
-      .lines;
+  List<Flut5TextLine> get _layoutLines {
+    final cache = Flut5TextCache.instance;
+    if (maxWidth != null) {
+      return cache
+          .getOrCreateLayout(
+            text: text,
+            fontFamily: fontFamily,
+            fontSize: fontSize,
+            fontWeight: fontWeight,
+            fontStyle: fontStyle,
+            letterSpacing: letterSpacing ?? 0.0,
+            maxWidth: maxWidth,
+            fontVariations: fontVariations,
+            fontVariationKey: fontVariationKey,
+          )
+          .lines;
+    }
+    final layout = cache.getOrCreateLayout(
+      text: text,
+      fontFamily: fontFamily,
+      fontSize: fontSize,
+      fontWeight: fontWeight,
+      fontStyle: fontStyle,
+      letterSpacing: 0.0,
+      maxWidth: null,
+      fontVariations: fontVariations,
+      fontVariationKey: fontVariationKey,
+      allowLigatures: true,
+    );
+    if ((letterSpacing ?? 0.0) != 0.0 && layout.hasLigatures) {
+      return cache
+          .getOrCreateLayout(
+            text: text,
+            fontFamily: fontFamily,
+            fontSize: fontSize,
+            fontWeight: fontWeight,
+            fontStyle: fontStyle,
+            letterSpacing: 0.0,
+            maxWidth: null,
+            fontVariations: fontVariations,
+            fontVariationKey: fontVariationKey,
+            allowLigatures: false,
+          )
+          .lines;
+    }
+    return layout.lines;
+  }
 
   double get _lineHeight => textLeading != null
       ? fontSize * textLeading!
@@ -383,21 +417,10 @@ class TextDynamicRenderItem({
       );
     }
 
-    // Unwrapped layouts exclude animated spacing from the cache key.
-    // Wrapped layouts still bake it in because it determines line breaks.
-    final lines = cache
-        .getOrCreateLayout(
-          text: text,
-          fontFamily: fontFamily,
-          fontSize: fontSize,
-          fontWeight: fontWeight,
-          fontStyle: fontStyle,
-          letterSpacing: maxWidth == null ? 0.0 : letterSpacing ?? 0.0,
-          maxWidth: maxWidth,
-          fontVariations: fontVariations,
-          fontVariationKey: fontVariationKey,
-        )
-        .lines;
+    // Unwrapped layouts exclude animated spacing from the cache key (split on
+    // ligature-bearing runs when spacing is non-zero). Wrapped layouts still
+    // bake spacing in because it determines line breaks.
+    final lines = _layoutLines;
 
     if (lines.isEmpty) return;
 

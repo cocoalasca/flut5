@@ -95,11 +95,13 @@ mixin _PhysicsPolygons {
 
   /// Whether [_sapShapes] is sorted along y rather than x.
   bool _sweepsAlongY = false;
+  Float64List _polygonSweepMin = Float64List(0);
 
   /// Picks the sweep axis: the one the polygons are more spread out on, so
   /// a tall column doesn't test every polygon against every other. Swaps
-  /// only on a clear difference, since a swap costs a full re-sort.
-  void _chooseSweepAxis(List<_PolygonShape> shapes) {
+  /// only on a clear difference, and returns `true` when the axis flipped so
+  /// the caller performs a full O(N log N) sort instead of insertion sort.
+  bool _chooseSweepAxis(List<_PolygonShape> shapes) {
     var lowX = double.infinity, highX = double.negativeInfinity;
     var lowY = double.infinity, highY = double.negativeInfinity;
     for (var i = 0; i < shapes.length; i++) {
@@ -112,7 +114,9 @@ mixin _PhysicsPolygons {
     final spreadX = highX - lowX, spreadY = highY - lowY;
     if (_sweepsAlongY ? spreadX > spreadY * 1.25 : spreadY > spreadX * 1.25) {
       _sweepsAlongY = !_sweepsAlongY;
+      return true;
     }
+    return false;
   }
 
   /// One collision pass for polygons: every polygon against every other via
@@ -124,33 +128,50 @@ mixin _PhysicsPolygons {
     final count = shapes.length;
     if (count > 1) {
       final sap = _sapShapes;
-      _chooseSweepAxis(sap);
+      final flipped = _chooseSweepAxis(sap);
       final alongY = _sweepsAlongY;
-      // Insertion sort by the leading edge — O(N) on coherent frames.
-      for (var i = 1; i < count; i++) {
-        final key = sap[i];
-        final keyStart = alongY ? key.minY : key.minX;
-        var j = i - 1;
-        while (j >= 0 && (alongY ? sap[j].minY : sap[j].minX) > keyStart) {
-          sap[j + 1] = sap[j];
-          j--;
+      if (flipped) {
+        sap.sort(
+          alongY
+              ? (a, b) => a.minY.compareTo(b.minY)
+              : (a, b) => a.minX.compareTo(b.minX),
+        );
+      } else {
+        // Insertion sort by the leading edge — O(N) on coherent frames.
+        for (var i = 1; i < count; i++) {
+          final key = sap[i];
+          final keyStart = alongY ? key.minY : key.minX;
+          var j = i - 1;
+          while (j >= 0 && (alongY ? sap[j].minY : sap[j].minX) > keyStart) {
+            sap[j + 1] = sap[j];
+            j--;
+          }
+          sap[j + 1] = key;
         }
-        sap[j + 1] = key;
       }
+      if (_polygonSweepMin.length < count) {
+        _polygonSweepMin = Float64List(count * 2);
+      }
+      final minEdge = _polygonSweepMin;
+      for (var i = 0; i < count; i++) {
+        final shape = sap[i];
+        minEdge[i] = alongY ? shape.minY : shape.minX;
+      }
+      var maxLeftShift = 0.0;
       for (var a = 0; a < count; a++) {
         final shapeA = sap[a];
+        final minA = minEdge[a];
         final polyA = shapeA.polygon;
         final aStatic = polyA.isStatic;
         final aImmobile =
             polyA.isSleeping ||
             (aStatic && polyA.velocity.length2 == 0.0 && polyA.angularVelocity == 0.0);
         for (var b = a + 1; b < count; b++) {
-          final shapeB = sap[b];
-          if (alongY
-              ? shapeB.minY > shapeA.maxY
-              : shapeB.minX > shapeA.maxX) {
+          if (minEdge[b] - maxLeftShift >
+              (alongY ? shapeA.maxY : shapeA.maxX)) {
             break;
           }
+          final shapeB = sap[b];
           final polyB = shapeB.polygon;
           if (aStatic && polyB.isStatic) continue;
           if (aImmobile &&
@@ -167,6 +188,10 @@ mixin _PhysicsPolygons {
           } else {
             _collidePolygonPair(shapeB, shapeA);
           }
+          final shiftA = minA - (alongY ? shapeA.minY : shapeA.minX);
+          if (shiftA > maxLeftShift) maxLeftShift = shiftA;
+          final shiftB = minEdge[b] - (alongY ? shapeB.minY : shapeB.minX);
+          if (shiftB > maxLeftShift) maxLeftShift = shiftB;
         }
       }
     }
@@ -189,17 +214,21 @@ mixin _PhysicsPolygons {
     // since they were filed.
     final reach = grid.cellSize;
     if (grid.isHashed) {
-      final c0 = grid.hashColumnAt(shape.minX - reach);
-      final c1 = grid.hashColumnAt(shape.maxX + reach);
-      final r0 = grid.hashRowAt(shape.minY - reach);
-      final r1 = grid.hashRowAt(shape.maxY + reach);
-      final spanCells = (c1 - c0 + 1) * (r1 - r0 + 1);
-      if (spanCells > grid.filedCount) {
+      if (!grid.hashedBoxIsWalkable(
+        shape.minX - reach,
+        shape.minY - reach,
+        shape.maxX + reach,
+        shape.maxY + reach,
+      )) {
         final filed = grid.filedParticles;
         for (var slot = 0; slot < grid.filedCount; slot++) {
           _collidePolygonWithParticleIfNear(shape, particles[filed[slot]]);
         }
       } else {
+        final c0 = grid.hashColumnAt(shape.minX - reach);
+        final c1 = grid.hashColumnAt(shape.maxX + reach);
+        final r0 = grid.hashRowAt(shape.minY - reach);
+        final r1 = grid.hashRowAt(shape.maxY + reach);
         final hashHeads = grid.hashHeads;
         final hashNext = grid.hashNext;
         final cellX = grid.cellX;
