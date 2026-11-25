@@ -103,19 +103,11 @@ mixin Flut5Color {
   Color lerpColor(Object c1, Object c2, double amt) {
     final resolved1 = flut5TryResolveSingleColor(c1);
     if (resolved1 == null) {
-      throw ArgumentError.value(
-        c1,
-        'c1',
-        'Invalid color value for lerpColor()',
-      );
+      throw ArgumentError.value(c1, 'c1', 'Invalid color value for lerpColor()');
     }
     final resolved2 = flut5TryResolveSingleColor(c2);
     if (resolved2 == null) {
-      throw ArgumentError.value(
-        c2,
-        'c2',
-        'Invalid color value for lerpColor()',
-      );
+      throw ArgumentError.value(c2, 'c2', 'Invalid color value for lerpColor()');
     }
     return Color.lerp(resolved1, resolved2, amt.clamp(0.0, 1.0))!;
   }
