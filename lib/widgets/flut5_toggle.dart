@@ -46,16 +46,16 @@ base class Flut5Toggle({var bool value = false, required super.removeElement})
         (style['borderRadius'] as num?)?.toDouble() ?? trackHeight / 2;
 
     final inactiveTrackColor =
-        style['backgroundColor'] as Color? ??
-        style['trackColor'] as Color? ??
+        resolveColor(style['backgroundColor']) ??
+        resolveColor(style['trackColor']) ??
         Colors.grey.shade300;
     final activeTrackColor =
-        style['activeBackgroundColor'] as Color? ??
-        style['activeTrackColor'] as Color? ??
+        resolveColor(style['activeBackgroundColor']) ??
+        resolveColor(style['activeTrackColor']) ??
         Colors.blue;
     final trackColor = value ? activeTrackColor : inactiveTrackColor;
 
-    final trackBorderColor = style['borderColor'] as Color?;
+    final trackBorderColor = resolveColor(style['borderColor']);
     final trackBorderWeight =
         (style['borderWeight'] as num?)?.toDouble() ?? 1.0;
     final trackShadows = resolveShadows(style['shadow']);
@@ -67,12 +67,12 @@ base class Flut5Toggle({var bool value = false, required super.removeElement})
         ? trackWidth - thumbSize - thumbPadding
         : thumbPadding;
 
-    final baseThumbColor = style['thumbColor'] as Color? ?? Colors.white;
+    final baseThumbColor = resolveColor(style['thumbColor']) ?? Colors.white;
     final thumbFill = value
-        ? (style['activeThumbColor'] as Color? ?? baseThumbColor)
+        ? (resolveColor(style['activeThumbColor']) ?? baseThumbColor)
         : baseThumbColor;
     final thumbShadows = resolveShadows(style['thumbShadow']);
-    final thumbBorderColor = style['thumbBorderColor'] as Color?;
+    final thumbBorderColor = resolveColor(style['thumbBorderColor']);
     final thumbBorderWeight =
         (style['thumbBorderWeight'] as num?)?.toDouble() ?? 1.5;
     final thumbBorderRadius = (style['thumbBorderRadius'] as num?)?.toDouble();

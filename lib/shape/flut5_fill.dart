@@ -2,6 +2,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/widgets.dart';
 
+import '../core/flut5_color_resolver.dart';
 import '../core/flut5_engine_colors.dart';
 import '../core/flut5_console.dart';
 import '../core/render/flut5_render_queue.dart';
@@ -111,42 +112,39 @@ mixin Flut5Fill {
 
   /// Sets the fill used for subsequent shapes.
   ///
-  /// Accepts a [Color] or a [Gradient] (linear/radial/sweep). When passing a
-  /// [Gradient], the optional [x], [y], [w], [h] override the shader rect;
-  /// otherwise the shader is built against the full canvas.
+  /// Accepts:
+  /// - A [Color], optionally with an alpha (`0..255`) override:
+  ///   `fill(Colors.red)`, `fill(Colors.red, 128)`
+  /// - p5-style numeric values (`0..255`):
+  ///   `fill(gray)`, `fill(gray, alpha)`, `fill(r, g, b)`, `fill(r, g, b, alpha)`
+  /// - A hex or CSS `rgb()`/`rgba()` string (with optional alpha override):
+  ///   `fill('#ff00aa')`, `fill('#f0a8')`, `fill('#ff00aa80')`, `fill('#f0a', 128)`
+  /// - A 1–4 element numeric list: `fill([255, 0, 170])`, `fill([255, 0, 170, 128])`
+  /// - A [Gradient] (linear/radial/sweep); optional [a], [b], [c], [d] specify
+  ///   the shader rect `(x, y, w, h)` (otherwise built against the full canvas).
   /// ```dart
   /// flut5.fill(Colors.red);
+  /// flut5.fill(255, 100, 50);
+  /// flut5.fill('#ff6432');
   /// flut5.fill(LinearGradient(colors: [Colors.red, Colors.blue]));
   /// flut5.fill(RadialGradient(colors: [...]), 10, 10, 100, 100);
   /// ```
-  void fill(Object input, [double? x, double? y, double? w, double? h]) {
+  void fill(Object input, [num? a, num? b, num? c, num? d]) {
     if (batchPath != null) {
       throw FlutterError('fill() cannot be called inside beginBatch/endBatch');
     }
-    if (input is Color) {
-      if (x != null || y != null || w != null || h != null) {
-        Flut5Console.printLater(
-          'fill(): x/y/w/h are ignored when the first argument is a Color',
-        );
-      }
-      // Unchanged: keep the version, and with it the paint snapshot the render
-      // queue batches by — `fill(c)` inside a loop must not split the batch.
-      if (fillGradient == null &&
-          fillColor == input &&
-          _appliedFillColor == input) {
-        return;
-      }
-      _appliedFillColor = input;
-      fillColor = input;
-      fillGradient = null;
-      fillGradientRect = null;
-      _fillPaint.shader = null;
-      _fillPaint.color = input;
-      _shaderGradient = null;
-      _shaderRect = null;
-    } else if (input is Gradient) {
-      final rect = (x != null && y != null && w != null && h != null)
-          ? Rect.fromLTWH(x, y, w, h)
+    if (input is Color && a == null && b == null && c == null && d == null) {
+      _applyFillColor(input);
+      return;
+    }
+    if (input is Gradient) {
+      final rect = (a != null && b != null && c != null && d != null)
+          ? Rect.fromLTWH(
+              a.toDouble(),
+              b.toDouble(),
+              c.toDouble(),
+              d.toDouble(),
+            )
           : null;
       // Unchanged: keeping the version also keeps the per-shape shader cache,
       // so `fill(gradient)` every frame stops rebuilding every shader.
@@ -161,12 +159,53 @@ mixin Flut5Fill {
       _appliedFillColor = flut5Black;
       fillColor = flut5Black;
       _fillPaint.color = flut5Black;
-    } else {
-      Flut5Console.printLater(
-        'fill(): expected Color or Gradient, got ${input.runtimeType} — ignored',
-      );
+      _fillVersion++;
       return;
     }
+    final res = flut5ResolveColorArgs('fill', input, a, b, c, d, true);
+    if (res.error != null) {
+      Flut5Console.printLater('${res.error} — ignored');
+      return;
+    }
+    if (res.warning != null) {
+      Flut5Console.printLater(res.warning!);
+    }
+    if (res.color != null) {
+      _applyFillColor(res.color!);
+    } else {
+      _applyFillArgb(res.argb!);
+    }
+  }
+
+  void _applyFillArgb(int argb) {
+    // Unchanged sRGB color: skip Color allocation and preserve paint snapshot
+    // identity for render-queue batching.
+    if (fillGradient == null &&
+        fillColor.colorSpace == ui.ColorSpace.sRGB &&
+        fillColor.toARGB32() == argb &&
+        _appliedFillColor.colorSpace == ui.ColorSpace.sRGB &&
+        _appliedFillColor.toARGB32() == argb) {
+      return;
+    }
+    _applyFillColor(Color(argb));
+  }
+
+  void _applyFillColor(Color color) {
+    // Unchanged: keep the version, and with it the paint snapshot the render
+    // queue batches by — `fill(c)` inside a loop must not split the batch.
+    if (fillGradient == null &&
+        fillColor == color &&
+        _appliedFillColor == color) {
+      return;
+    }
+    _appliedFillColor = color;
+    fillColor = color;
+    fillGradient = null;
+    fillGradientRect = null;
+    _fillPaint.shader = null;
+    _fillPaint.color = color;
+    _shaderGradient = null;
+    _shaderRect = null;
     _fillVersion++;
   }
 
@@ -314,28 +353,36 @@ mixin Flut5Fill {
     return _fillPaint;
   }
 
-  /// Clears the entire canvas with [input], accepting a [Color] or a
-  /// [Gradient]. When passing a [Gradient], the optional [x], [y], [w], [h]
-  /// override the shader rect; otherwise it's built against the full canvas.
+  /// Clears the entire canvas with [input], accepting a [Color], p5-style
+  /// numeric channels (`0..255`), a hex / CSS `rgb()`/`rgba()` string, a 1–4
+  /// element numeric list, or a [Gradient].
+  ///
+  /// When passing a [Gradient], optional [a], [b], [c], [d] specify the shader
+  /// rect `(x, y, w, h)`; otherwise it is built against the full canvas.
   ///
   /// Call at the start of `draw()` to redraw the background each frame.
   /// ```dart
   /// flut5.background(Colors.white);
+  /// flut5.background(220);
+  /// flut5.background(0, 25); // translucent trail fade
+  /// flut5.background('#1a1a2e');
   /// flut5.background(LinearGradient(colors: [Colors.black, Colors.blue]));
   /// flut5.background(RadialGradient(colors: [...]), 0, 0, 200, 200);
   /// ```
-  void background(Object input, [double? x, double? y, double? w, double? h]) {
-    if (input is Color) {
-      if (x != null || y != null || w != null || h != null) {
-        Flut5Console.printLater(
-          'background(): x/y/w/h are ignored when the first argument is a Color',
-        );
-      }
+  void background(Object input, [num? a, num? b, num? c, num? d]) {
+    if (input is Color && a == null && b == null && c == null && d == null) {
       renderQueue.enqueue(BackgroundRenderItem(input));
-    } else if (input is Gradient) {
-      final hasRect = x != null && y != null && w != null && h != null;
+      return;
+    }
+    if (input is Gradient) {
+      final hasRect = a != null && b != null && c != null && d != null;
       final rect = hasRect
-          ? Rect.fromLTWH(x, y, w, h)
+          ? Rect.fromLTWH(
+              a.toDouble(),
+              b.toDouble(),
+              c.toDouble(),
+              d.toDouble(),
+            )
           : Rect.fromLTWH(0, 0, canvasSize.width, canvasSize.height);
       final isOpaque = _gradientIsOpaque(input);
       final paint = Paint()..shader = _backgroundShaderFor(input, rect);
@@ -349,11 +396,17 @@ mixin Flut5Fill {
           isOpaque: isOpaque,
         ),
       );
-    } else {
-      Flut5Console.printLater(
-        'background(): expected Color or Gradient, got ${input.runtimeType} — ignored',
-      );
+      return;
     }
+    final res = flut5ResolveColorArgs('background', input, a, b, c, d, true);
+    if (res.error != null) {
+      Flut5Console.printLater('${res.error} — ignored');
+      return;
+    }
+    if (res.warning != null) {
+      Flut5Console.printLater(res.warning!);
+    }
+    renderQueue.enqueue(BackgroundRenderItem(res.color ?? Color(res.argb!)));
   }
 
   ui.Shader _backgroundShaderFor(Gradient gradient, Rect rect) {

@@ -1,8 +1,10 @@
 import 'dart:typed_data';
+import 'dart:ui' as ui show ColorSpace;
 
 import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/widgets.dart';
 
+import '../core/flut5_color_resolver.dart';
 import '../core/flut5_engine_colors.dart';
 import '../core/flut5_console.dart';
 import '../core/render/flut5_render_queue.dart';
@@ -149,46 +151,41 @@ mixin Flut5Stroke {
 
   /// Sets the stroke used for subsequent shapes.
   ///
-  /// Accepts a [Color] or a [Gradient] (linear/radial/sweep). When passing a
-  /// [Gradient], the optional [x], [y], [w], [h] override the shader rect;
-  /// otherwise the shader is built against the full canvas.
+  /// Accepts:
+  /// - A [Color], optionally with an alpha (`0..255`) override:
+  ///   `stroke(Colors.blue)`, `stroke(Colors.blue, 128)`
+  /// - p5-style numeric values (`0..255`):
+  ///   `stroke(gray)`, `stroke(gray, alpha)`, `stroke(r, g, b)`, `stroke(r, g, b, alpha)`
+  /// - A hex or CSS `rgb()`/`rgba()` string (with optional alpha override):
+  ///   `stroke('#00aaff')`, `stroke('#0af8')`, `stroke('#00aaff80')`
+  /// - A 1–4 element numeric list: `stroke([0, 170, 255])`
+  /// - A [Gradient] (linear/radial/sweep); optional [a], [b], [c], [d] specify
+  ///   the shader rect `(x, y, w, h)` (otherwise built against the full canvas).
   /// ```dart
   /// flut5.stroke(Colors.blue);
+  /// flut5.stroke(255, 100, 50);
+  /// flut5.stroke('#00aaff');
   /// flut5.stroke(LinearGradient(colors: [Colors.red, Colors.blue]));
   /// flut5.stroke(RadialGradient(colors: [...]), 10, 10, 100, 100);
   /// ```
-  void stroke(Object input, [double? x, double? y, double? w, double? h]) {
+  void stroke(Object input, [num? a, num? b, num? c, num? d]) {
     if (batchPath != null) {
       throw FlutterError(
         'stroke() cannot be called inside beginBatch/endBatch',
       );
     }
-    if (input is Color) {
-      if (x != null || y != null || w != null || h != null) {
-        Flut5Console.printLater(
-          'stroke(): x/y/w/h are ignored when the first argument is a Color',
-        );
-      }
-      // Unchanged: keep the version, and with it the paint snapshot the render
-      // queue batches by — `stroke(c)` inside a loop must not split the batch.
-      if (strokeGradient == null &&
-          strokeColor == input &&
-          _appliedStrokeColor == input) {
-        return;
-      }
-      _appliedStrokeColor = input;
-      strokeColor = input;
-      strokeGradient = null;
-      strokeGradientRect = null;
-      _strokePaint.shader = null;
-      _strokeFillPaint.shader = null;
-      _strokePaint.color = input;
-      _strokeFillPaint.color = input;
-      _shaderGradient = null;
-      _shaderRect = null;
-    } else if (input is Gradient) {
-      final rect = (x != null && y != null && w != null && h != null)
-          ? Rect.fromLTWH(x, y, w, h)
+    if (input is Color && a == null && b == null && c == null && d == null) {
+      _applyStrokeColor(input);
+      return;
+    }
+    if (input is Gradient) {
+      final rect = (a != null && b != null && c != null && d != null)
+          ? Rect.fromLTWH(
+              a.toDouble(),
+              b.toDouble(),
+              c.toDouble(),
+              d.toDouble(),
+            )
           : null;
       // Unchanged: keeping the version also keeps the per-shape shader cache.
       if (strokeGradient == input &&
@@ -203,12 +200,53 @@ mixin Flut5Stroke {
       strokeColor = flut5Black;
       _strokePaint.color = flut5Black;
       _strokeFillPaint.color = flut5Black;
-    } else {
-      Flut5Console.printLater(
-        'stroke(): expected Color or Gradient, got ${input.runtimeType} — ignored',
-      );
+      _strokeVersion++;
       return;
     }
+    final res = flut5ResolveColorArgs('stroke', input, a, b, c, d, true);
+    if (res.error != null) {
+      Flut5Console.printLater('${res.error} — ignored');
+      return;
+    }
+    if (res.warning != null) {
+      Flut5Console.printLater(res.warning!);
+    }
+    if (res.color != null) {
+      _applyStrokeColor(res.color!);
+    } else {
+      _applyStrokeArgb(res.argb!);
+    }
+  }
+
+  void _applyStrokeArgb(int argb) {
+    if (strokeGradient == null &&
+        strokeColor.colorSpace == ui.ColorSpace.sRGB &&
+        strokeColor.toARGB32() == argb &&
+        _appliedStrokeColor.colorSpace == ui.ColorSpace.sRGB &&
+        _appliedStrokeColor.toARGB32() == argb) {
+      return;
+    }
+    _applyStrokeColor(Color(argb));
+  }
+
+  void _applyStrokeColor(Color color) {
+    // Unchanged: keep the version, and with it the paint snapshot the render
+    // queue batches by — `stroke(c)` inside a loop must not split the batch.
+    if (strokeGradient == null &&
+        strokeColor == color &&
+        _appliedStrokeColor == color) {
+      return;
+    }
+    _appliedStrokeColor = color;
+    strokeColor = color;
+    strokeGradient = null;
+    strokeGradientRect = null;
+    _strokePaint.shader = null;
+    _strokeFillPaint.shader = null;
+    _strokePaint.color = color;
+    _strokeFillPaint.color = color;
+    _shaderGradient = null;
+    _shaderRect = null;
     _strokeVersion++;
   }
 

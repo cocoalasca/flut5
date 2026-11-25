@@ -5,6 +5,8 @@ import 'package:flutter/widgets.dart';
 
 import '../image/flut5_image_shadows.dart';
 import '../text/flut5_text_cache.dart';
+import 'flut5_color_resolver.dart';
+import 'flut5_console.dart';
 import 'flut5_engine_colors.dart';
 import 'render/flut5_render_queue.dart';
 import 'render/items/flut5_text_dynamic_batch_render_item.dart'
@@ -277,41 +279,69 @@ mixin Flut5Shadow {
   /// same way Flutter's [BoxShadow] does), so values copied from a CSS
   /// `box-shadow` look the same here. The fourth argument, [spreadOrColor],
   /// is overloaded so [spread] can be skipped: pass a [num] to grow the
-  /// silhouette, or a [Color] to set the shadow color directly (with spread
-  /// `0`). A fifth [color] argument sets the color after an explicit spread.
-  /// When no color is supplied the current shadow color is kept (black until
-  /// changed via [shadow] or [shadowFill]). Argument order mirrors CSS
-  /// `box-shadow`, and spread applies to shapes, lines, points, and text.
+  /// silhouette, or a color ([Color], hex / CSS `rgb()`/`rgba()` string, or
+  /// 1–4 element numeric list) to set the shadow color directly (with spread
+  /// `0`). A fifth [color] argument sets the color after an explicit spread
+  /// (also accepting a grayscale [num]). When no color is supplied the current
+  /// shadow color is kept (black until changed via [shadow] or [shadowFill]).
+  /// Argument order mirrors CSS `box-shadow`, and spread applies to shapes,
+  /// lines, points, and text.
   ///
   /// ```dart
-  /// shadow(4, 4, 8);                  // soft black drop shadow
-  /// shadow(1, 1, 6, Colors.cyan);     // color, no spread
-  /// shadow(0, 0, 12, 4, Colors.cyan); // colored glow with spread
-  /// noShadow();                       // turn it off
+  /// shadow(4, 4, 8);                     // soft black drop shadow
+  /// shadow(1, 1, 6, Colors.cyan);        // color, no spread
+  /// shadow(1, 1, 6, '#00ffff80');        // hex color, no spread
+  /// shadow(0, 0, 12, 4, Colors.cyan);    // colored glow with spread
+  /// shadow(0, 0, 12, 4, [0, 255, 255]);  // RGB list with spread
+  /// noShadow();                          // turn it off
   /// ```
   void shadow(
     double offsetX,
     double offsetY,
     double blur, [
     Object? spreadOrColor,
-    Color? color,
+    Object? color,
   ]) {
     double spread = 0;
-    Color? resolvedColor = color;
+    Color? resolvedColor;
     if (spreadOrColor is num) {
       spread = spreadOrColor.toDouble();
-    } else if (spreadOrColor is Color) {
+      if (color != null) {
+        resolvedColor = flut5TryResolveSingleColor(color);
+        if (resolvedColor == null) {
+          throw ArgumentError.value(
+            color,
+            'color',
+            'shadow() 5th argument must be a Color, hex/rgb String, '
+                'grayscale num, or 1–4 element List<num>',
+          );
+        }
+      }
+    } else if (spreadOrColor != null) {
+      final parsed = flut5TryResolveSingleColor(spreadOrColor);
+      if (parsed == null) {
+        throw ArgumentError(
+          'shadow() 4th argument must be a spread (num) or a color '
+          '(Color, hex/rgb String, or List<num>). '
+          'Got ${spreadOrColor.runtimeType}.',
+        );
+      }
       if (color != null) {
         throw ArgumentError(
           'shadow(): pass color once — as the 4th OR 5th argument, not both.',
         );
       }
-      resolvedColor = spreadOrColor;
-    } else if (spreadOrColor != null) {
-      throw ArgumentError(
-        'shadow() 4th argument must be a spread (num) or a Color. '
-        'Got ${spreadOrColor.runtimeType}.',
-      );
+      resolvedColor = parsed;
+    } else if (color != null) {
+      resolvedColor = flut5TryResolveSingleColor(color);
+      if (resolvedColor == null) {
+        throw ArgumentError.value(
+          color,
+          'color',
+          'shadow() 5th argument must be a Color, hex/rgb String, '
+              'grayscale num, or 1–4 element List<num>',
+        );
+      }
     }
     _shadowOffset = Offset(offsetX, offsetY);
     _shadowBlur = blur;
@@ -321,10 +351,26 @@ mixin Flut5Shadow {
     _pushShadow();
   }
 
-  /// Changes only the shadow [color], keeping the current offset, blur and
+  /// Changes only the shadow color, keeping the current offset, blur and
   /// spread. Takes visible effect when a shadow is active (set via [shadow]).
-  void shadowFill(Color color) {
-    _shadowColor = color;
+  ///
+  /// Accepts a [Color], p5-style numeric values (`0..255`), a hex / CSS
+  /// `rgb()`/`rgba()` string, or a 1–4 element numeric list.
+  void shadowFill(Object input, [num? a, num? b, num? c]) {
+    if (input is Color && a == null && b == null && c == null) {
+      _shadowColor = input;
+      if (_shadowActive) _pushShadow();
+      return;
+    }
+    final res = flut5ResolveColorArgs('shadowFill', input, a, b, c);
+    if (res.error != null) {
+      Flut5Console.printLater('${res.error} — ignored');
+      return;
+    }
+    if (res.warning != null) {
+      Flut5Console.printLater(res.warning!);
+    }
+    _shadowColor = res.color ?? Color(res.argb!);
     if (_shadowActive) _pushShadow();
   }
 

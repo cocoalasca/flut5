@@ -1,5 +1,6 @@
 import 'package:flutter/widgets.dart';
 
+import '../core/flut5_color_resolver.dart';
 import '../core/flut5_console.dart';
 import '../shape/flut5_fill.dart';
 import 'flut5_image.dart';
@@ -18,12 +19,28 @@ mixin Flut5ImageMixin on Flut5Fill {
   FilterQuality _imageFilterQuality = FilterQuality.medium;
 
   /// Sets a multiplicative tint colour for subsequent [image] draws, matching
-  /// Processing / p5.js `tint()`. Each pixel's RGBA is multiplied by [color],
-  /// so `tint(Color(0x80FFFFFF))` draws images at 50% opacity and
-  /// `tint(Colors.red)` keeps only the red channel. Differently-tinted sprites
-  /// of the same image still coalesce into a single GPU `drawRawAtlas` call.
-  void tint(Color color) {
-    _imageTint = color;
+  /// Processing / p5.js `tint()`. Each pixel's RGBA is multiplied by the
+  /// resolved colour, so `tint(255, 128)` or `tint(Color(0x80FFFFFF))` draws
+  /// images at 50% opacity and `tint(Colors.red)` or `tint('#ff0000')` keeps
+  /// only the red channel. Differently-tinted sprites of the same image still
+  /// coalesce into a single GPU `drawRawAtlas` call.
+  ///
+  /// Accepts a [Color], p5-style numeric values (`0..255`), a hex / CSS
+  /// `rgb()`/`rgba()` string, or a 1–4 element numeric list.
+  void tint(Object input, [num? a, num? b, num? c]) {
+    if (input is Color && a == null && b == null && c == null) {
+      _imageTint = input;
+      return;
+    }
+    final res = flut5ResolveColorArgs('tint', input, a, b, c);
+    if (res.error != null) {
+      Flut5Console.printLater('${res.error} — ignored');
+      return;
+    }
+    if (res.warning != null) {
+      Flut5Console.printLater(res.warning!);
+    }
+    _imageTint = res.color ?? Color(res.argb!);
   }
 
   /// Clears any active [tint] so subsequent [image] draws render with their

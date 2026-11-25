@@ -460,14 +460,14 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
   Gradient? get fillGradient => flut5.fillGradient;
   set fillGradient(Gradient? g) => flut5.fillGradient = g;
   int get fillVersion => flut5.fillVersion;
-  void fill(Object input, [double? x, double? y, double? w, double? h]) =>
-      flut5.fill(input, x, y, w, h);
+  void fill(Object input, [num? a, num? b, num? c, num? d]) =>
+      flut5.fill(input, a, b, c, d);
   void noFill() => flut5.noFill();
   Paint getFillPaint() => flut5.getFillPaint();
   Paint? snapshotFillPaint() => flut5.snapshotFillPaint();
   Paint? snapshotFillPaintNoShader() => flut5.snapshotFillPaintNoShader();
-  void background(Object input, [double? x, double? y, double? w, double? h]) =>
-      flut5.background(input, x, y, w, h);
+  void background(Object input, [num? a, num? b, num? c, num? d]) =>
+      flut5.background(input, a, b, c, d);
 
   // ── Stroke ───────────────────────────────────────────────────────────────
   Color get strokeColor => flut5.strokeColor;
@@ -477,8 +477,8 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
   Gradient? get strokeGradient => flut5.strokeGradient;
   set strokeGradient(Gradient? g) => flut5.strokeGradient = g;
   int get strokeVersion => flut5.strokeVersion;
-  void stroke(Object input, [double? x, double? y, double? w, double? h]) =>
-      flut5.stroke(input, x, y, w, h);
+  void stroke(Object input, [num? a, num? b, num? c, num? d]) =>
+      flut5.stroke(input, a, b, c, d);
   void noStroke() => flut5.noStroke();
   void strokeWeight(double weight) => flut5.strokeWeight(weight);
   void strokeCap(StrokeCap cap) => flut5.strokeCap(cap);
@@ -500,9 +500,10 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
     double offsetY,
     double blur, [
     Object? spreadOrColor,
-    Color? color,
+    Object? color,
   ]) => flut5.shadow(offsetX, offsetY, blur, spreadOrColor, color);
-  void shadowFill(Color color) => flut5.shadowFill(color);
+  void shadowFill(Object input, [num? a, num? b, num? c]) =>
+      flut5.shadowFill(input, a, b, c);
   void noShadow() => flut5.noShadow();
 
   // ── Blur ─────────────────────────────────────────────────────────────────
@@ -512,7 +513,7 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
   void endBlur() => flut5.endBlur();
 
   // ── Pixelate ─────────────────────────────────────────────────────────────
-  void beginPixelate(double blockSize, [List<Color>? palette]) =>
+  void beginPixelate(double blockSize, [List<Object>? palette]) =>
       flut5.beginPixelate(blockSize, palette);
   void endPixelate() => flut5.endPixelate();
 
@@ -561,7 +562,9 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
       flut5.randomGaussian(mean, sd);
   void randomSeed(int seed) => flut5.randomSeed(seed);
   void resetRandom() => flut5.resetRandom();
-  Color lerpColor(Color c1, Color c2, double amt) =>
+  Color color(Object input, [num? a, num? b, num? c]) =>
+      flut5.color(input, a, b, c);
+  Color lerpColor(Object c1, Object c2, double amt) =>
       flut5.lerpColor(c1, c2, amt);
   BlendMode get currentBlendMode => flut5.currentBlendMode;
   int get blendVersion => flut5.blendVersion;
@@ -991,7 +994,8 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
   double textDescent() => flut5.textDescent();
 
   // ── Image ────────────────────────────────────────────────────────────────
-  void tint(Color color) => flut5.tint(color);
+  void tint(Object input, [num? a, num? b, num? c]) =>
+      flut5.tint(input, a, b, c);
   void noTint() => flut5.noTint();
   FilterQuality imageFilterQuality([FilterQuality? quality]) =>
       flut5.imageFilterQuality(quality);

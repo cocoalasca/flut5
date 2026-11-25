@@ -55,7 +55,7 @@ base class Flut5Slider(
 
     final thumbRadius = (style['thumbSize'] as num?)?.toDouble();
     final shadows = resolveShadows(style['thumbShadow']);
-    final thumbBorderColor = style['thumbBorderColor'] as Color?;
+    final thumbBorderColor = resolveColor(style['thumbBorderColor']);
     final thumbBorderWeight =
         (style['thumbBorderWeight'] as num?)?.toDouble() ?? 1.5;
 
@@ -75,20 +75,20 @@ base class Flut5Slider(
           )
         : null;
 
-    final trackBorderColor = style['trackBorderColor'] as Color?;
+    final trackBorderColor = resolveColor(style['trackBorderColor']);
     final trackBorderWeight =
         (style['trackBorderWeight'] as num?)?.toDouble() ?? 1.0;
     final trackShadows = resolveShadows(style['shadow']);
     final trackBorderRadius = (style['trackBorderRadius'] as num?)?.toDouble();
     final rawTrackColor = style['trackColor'];
     final trackGradient = resolveLinearGradient(rawTrackColor);
-    final trackSolidColor = trackGradient == null && rawTrackColor is Color
-        ? rawTrackColor
+    final trackSolidColor = trackGradient == null
+        ? resolveColor(rawTrackColor)
         : null;
     final rawActiveColor = style['activeTrackColor'];
     final activeGradient = resolveLinearGradient(rawActiveColor);
-    final activeSolidColor = activeGradient == null && rawActiveColor is Color
-        ? rawActiveColor
+    final activeSolidColor = activeGradient == null
+        ? resolveColor(rawActiveColor)
         : null;
     final needsTrackShape =
         trackBorderColor != null ||
@@ -108,7 +108,7 @@ base class Flut5Slider(
         : null;
 
     return base.copyWith(
-      thumbColor: style['thumbColor'] as Color?,
+      thumbColor: resolveColor(style['thumbColor']),
       activeTrackColor: activeSolidColor,
       inactiveTrackColor: trackSolidColor,
       trackHeight: (style['trackHeight'] as num?)?.toDouble(),

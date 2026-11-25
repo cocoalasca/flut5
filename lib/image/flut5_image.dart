@@ -6,6 +6,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/widgets.dart';
 import 'package:flutter/services.dart' show AssetManifest, rootBundle;
 
+import '../core/flut5_color_resolver.dart';
 import '../core/flut5_console.dart';
 import '../core/flut5_engine_colors.dart';
 import 'flut5_image_handles.dart';
@@ -982,15 +983,18 @@ class Flut5Image._(
 
   /// Sets the pixel at ([x], [y]) to [color].
   ///
-  /// p5's `img.set(x, y, color)`. Like editing [pixels] by hand, nothing
-  /// changes on screen until [updatePixels] — set as many pixels as you like,
-  /// then update once:
+  /// p5's `img.set(x, y, color)`. Accepts a [Color], p5-style numeric values
+  /// (`0..255`: grayscale, gray + alpha, RGB, or RGBA), a hex / CSS
+  /// `rgb()`/`rgba()` string, or a 1–4 element numeric list.
+  ///
+  /// Like editing [pixels] by hand, nothing changes on screen until
+  /// [updatePixels] — set as many pixels as you like, then update once:
   ///
   /// ```dart
   /// final noise = createImage(64, 64);
   /// for (var y = 0; y < 64; y++) {
   ///   for (var x = 0; x < 64; x++) {
-  ///     noise.set(x, y, random(1) < 0.5 ? Colors.black : Colors.white);
+  ///     noise.set(x, y, random(1) < 0.5 ? 0 : 255);
   ///   }
   /// }
   /// noise.updatePixels();
@@ -1001,15 +1005,36 @@ class Flut5Image._(
   /// a pixel outside the image is ignored, as in p5. A colour in another
   /// colour space (Display P3) is converted to sRGB, clamping whatever sRGB
   /// can't show.
-  void set(num x, num y, Color color) {
+  void set(num x, num y, Object color, [num? g, num? b, num? a]) {
     final loaded = _loadedPixelsOrWarn('set() ignored');
     if (loaded == null) return;
     final offset = _pixelOffset(x, y);
     if (offset < 0) return;
-    final srgb = color.colorSpace == ui.ColorSpace.sRGB
-        ? color
-        : color.withValues(colorSpace: ui.ColorSpace.sRGB);
-    final argb = srgb.toARGB32();
+    final int argb;
+    if (color is Color && g == null && b == null && a == null) {
+      final srgb = color.colorSpace == ui.ColorSpace.sRGB
+          ? color
+          : color.withValues(colorSpace: ui.ColorSpace.sRGB);
+      argb = srgb.toARGB32();
+    } else {
+      final res = flut5ResolveColorArgs('Flut5Image.set', color, g, b, a);
+      if (res.error != null) {
+        Flut5Console.printLater('${res.error} — ignored');
+        return;
+      }
+      if (res.warning != null) {
+        Flut5Console.printLater(res.warning!);
+      }
+      if (res.argb != null) {
+        argb = res.argb!;
+      } else {
+        final resolved = res.color!;
+        final srgb = resolved.colorSpace == ui.ColorSpace.sRGB
+            ? resolved
+            : resolved.withValues(colorSpace: ui.ColorSpace.sRGB);
+        argb = srgb.toARGB32();
+      }
+    }
     loaded[offset] = (argb >> 16) & 0xFF;
     loaded[offset + 1] = (argb >> 8) & 0xFF;
     loaded[offset + 2] = argb & 0xFF;

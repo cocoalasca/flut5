@@ -47,15 +47,16 @@ base class Flut5Checkbox({var bool value = false, required super.removeElement})
     final boxWidth = resolvedWidth ?? _kDefaultSize;
     final boxHeight = resolvedHeight ?? _kDefaultSize;
     final borderRadius = (style['borderRadius'] as num?)?.toDouble() ?? 4.0;
-    final borderColor = style['borderColor'] as Color?;
+    final borderColor = resolveColor(style['borderColor']);
     final borderWeight = (style['borderWeight'] as num?)?.toDouble() ?? 2.0;
 
     final inactiveFill =
-        style['backgroundColor'] as Color? ?? Colors.transparent;
-    final activeFill = style['activeBackgroundColor'] as Color? ?? Colors.blue;
+        resolveColor(style['backgroundColor']) ?? Colors.transparent;
+    final activeFill =
+        resolveColor(style['activeBackgroundColor']) ?? Colors.blue;
     final bgColor = value ? activeFill : inactiveFill;
 
-    final checkColor = style['checkColor'] as Color? ?? Colors.white;
+    final checkColor = resolveColor(style['checkColor']) ?? Colors.white;
     final shadows = resolveShadows(style['shadow']);
     final EdgeInsetsGeometry? padding = style['padding'] as EdgeInsetsGeometry?;
 

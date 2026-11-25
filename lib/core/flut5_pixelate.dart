@@ -1,5 +1,6 @@
 import 'package:flutter/widgets.dart';
 
+import 'flut5_color_resolver.dart';
 import 'render/flut5_render_queue.dart';
 
 /// Pixelation scopes: everything drawn between [beginPixelate] and
@@ -46,22 +47,43 @@ mixin Flut5Pixelate {
   /// text('retro', 60, 200);
   /// endPixelate();
   ///
-  /// // Four-shade handheld look.
-  /// beginPixelate(4, [
-  ///   Color(0xFF0F380F), Color(0xFF306230),
-  ///   Color(0xFF8BAC0F), Color(0xFF9BBC0F),
-  /// ]);
+  /// // Four-shade handheld look (Color objects, hex strings, or RGB lists).
+  /// beginPixelate(4, ['#0F380F', '#306230', '#8BAC0F', '#9BBC0F']);
   /// background(Colors.white);
   /// circle(100, 100, 80);
   /// endPixelate();
   /// ```
-  void beginPixelate(double blockSize, [List<Color>? palette]) {
+  void beginPixelate(double blockSize, [List<Object>? palette]) {
     if (batchPath != null) {
       throw FlutterError(
         'beginPixelate() cannot be called inside beginBatch/endBatch',
       );
     }
-    renderQueue.beginPixelate(blockSize, width, height, palette: palette);
+    List<Color>? resolvedPalette;
+    if (palette != null) {
+      if (palette is List<Color>) {
+        resolvedPalette = palette;
+      } else {
+        resolvedPalette = List<Color>.generate(palette.length, (i) {
+          final resolved = flut5TryResolveSingleColor(palette[i]);
+          if (resolved == null) {
+            throw ArgumentError.value(
+              palette[i],
+              'palette[$i]',
+              'beginPixelate() palette entries must be a Color, hex/rgb '
+                  'String, grayscale num, or 1–4 element List<num>',
+            );
+          }
+          return resolved;
+        }, growable: false);
+      }
+    }
+    renderQueue.beginPixelate(
+      blockSize,
+      width,
+      height,
+      palette: resolvedPalette,
+    );
   }
 
   /// Ends the innermost [beginPixelate] scope.

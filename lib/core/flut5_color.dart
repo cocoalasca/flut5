@@ -2,6 +2,8 @@
 
 import 'package:flutter/widgets.dart';
 
+import 'flut5_color_resolver.dart';
+
 /// p5-style blend mode constants for [Flut5Color.blendMode].
 const BlendMode BLEND = BlendMode.srcOver;
 const BlendMode ADD = BlendMode.plus;
@@ -62,13 +64,59 @@ mixin Flut5Color {
     _blendVersion++;
   }
 
+  /// Creates a [Color] from p5-style numeric values, a hex / CSS string,
+  /// a numeric list, or an existing [Color].
+  ///
+  /// Accepted forms:
+  /// - `color(gray)` / `color(gray, alpha)` — grayscale (`0..255`)
+  /// - `color(r, g, b)` / `color(r, g, b, alpha)` — RGB / RGBA (`0..255`)
+  /// - `color('#f0a')`, `color('#f0a8')`, `color('#ff00aa')`, `color('#ff00aa80')`
+  ///   (plus optional `alpha` override: `color('#ff00aa', 128)`)
+  /// - `color('rgb(255, 0, 170)')`, `color('rgba(255, 0, 170, 0.5)')`
+  /// - `color([255, 0, 170])`, `color([255, 0, 170, 128])`
+  /// - `color(Colors.red)` / `color(Colors.red, 128)`
+  ///
+  /// Throws an [ArgumentError] if the arguments do not form a valid color.
+  Color color(Object input, [num? a, num? b, num? c]) {
+    final res = flut5ResolveColorArgs('color', input, a, b, c);
+    if (res.error != null) {
+      throw ArgumentError(res.error);
+    }
+    if (res.warning != null) {
+      throw ArgumentError(
+        'color(): too many arguments when first argument is a ${input.runtimeType}',
+      );
+    }
+    return res.color ?? Color(res.argb!);
+  }
+
   /// Linearly blends [c1] toward [c2] by [amt] (0.0 = full [c1], 1.0 = full [c2]).
   ///
-  /// [amt] is clamped to [0.0, 1.0].
+  /// Both [c1] and [c2] accept a [Color], a hex / CSS `rgb()`/`rgba()` string,
+  /// a grayscale [num] (`0..255`), or a 1–4 element numeric [List].
+  ///
+  /// [amt] is clamped to `[0.0, 1.0]`.
   /// ```dart
   /// final mid = flut5.lerpColor(Colors.red, Colors.blue, 0.5);
+  /// final hexMid = flut5.lerpColor('#ff0000', '#0000ff', 0.5);
   /// ```
-  Color lerpColor(Color c1, Color c2, double amt) {
-    return Color.lerp(c1, c2, amt.clamp(0.0, 1.0))!;
+  Color lerpColor(Object c1, Object c2, double amt) {
+    final resolved1 = flut5TryResolveSingleColor(c1);
+    if (resolved1 == null) {
+      throw ArgumentError.value(
+        c1,
+        'c1',
+        'Invalid color value for lerpColor()',
+      );
+    }
+    final resolved2 = flut5TryResolveSingleColor(c2);
+    if (resolved2 == null) {
+      throw ArgumentError.value(
+        c2,
+        'c2',
+        'Invalid color value for lerpColor()',
+      );
+    }
+    return Color.lerp(resolved1, resolved2, amt.clamp(0.0, 1.0))!;
   }
 }
