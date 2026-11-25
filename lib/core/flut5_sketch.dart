@@ -12,11 +12,6 @@ abstract class Flut5Sketch({super.listenEvents = true}) extends Flut5 {
 
   bool isReady = false;
 
-  /// Flexible props map passed from the parent widget via [Flut5Canvas.props].
-  /// Updated before [setup] runs and whenever the parent rebuilds with new props.
-  /// Access as `props` inside [setup] or [draw].
-  Map<String, dynamic> props = const {};
-
   FutureOr<void> setup() {}
   void draw() {}
 }

@@ -234,6 +234,7 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
   Size get canvasSize => flut5.canvasSize;
   SketchEnvironment get environment => flut5.environment;
   set environment(SketchEnvironment e) => flut5.environment = e;
+  Map<String, dynamic> get props => flut5.props;
   double get mouseX => flut5.mouseX;
   double get mouseY => flut5.mouseY;
   double get pmouseX => flut5.pmouseX;

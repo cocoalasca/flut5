@@ -1608,6 +1608,8 @@ void main() {
       engine.advanceEnvironmentFrame(100);
       engine.advanceEnvironmentFrame(116);
       engine.setAvgMouseFrames(5);
+      expect(engine.updateEnvironmentProps({'level': 2}), isTrue);
+      expect(engine.updateEnvironmentProps({'level': 2}), isFalse);
 
       // None of the hot updates allocated a SketchEnvironment wrapper.
       expect(engine.debugHasCachedEnvironmentSnapshot, isFalse);
@@ -1619,6 +1621,7 @@ void main() {
       expect(engine.deltaTime, 16.0);
       expect(engine.frameRate(), closeTo(62.5, 1e-9));
       expect(engine.avgMouseFrames, 5);
+      expect(engine.props, {'level': 2});
 
       // Reading `environment` lazily materializes and caches a matching snapshot.
       final snap = engine.environment;
@@ -1629,6 +1632,7 @@ void main() {
       expect(snap.frameCount, 2);
       expect(snap.deltaTime, 16.0);
       expect(snap.avgMouseFrames, 5);
+      expect(snap.props, {'level': 2});
       expect(identical(engine.environment, snap), isTrue);
 
       // Assigning `environment` syncs all mutable scalar fields back.
@@ -1639,6 +1643,7 @@ void main() {
       expect(engine.height, 480.0);
       expect(engine.frameCount, 0);
       expect(engine.mouseX, 0.0);
+      expect(engine.props, isEmpty);
     });
   });
 }

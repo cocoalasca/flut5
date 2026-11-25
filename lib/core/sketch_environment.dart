@@ -24,6 +24,9 @@ final class const SketchEnvironment._({
   /// Font shape data preloaded from Flutter's generated `FontManifest.json`,
   /// keyed by pubspec/manifest family name.
   required final Map<String, Flut5FontData> fonts,
+
+  /// Flexible props map passed from the parent widget via `Flut5Canvas.props`.
+  required final Map<String, dynamic> props,
   required final int _lastFrameMs,
 
   /// Number of frames used to compute [avgMouseX], [avgMouseY] and [avgMouse].
@@ -72,6 +75,7 @@ final class const SketchEnvironment._({
         frameCount: 0,
         deltaTime: 0,
         fonts: const <String, Flut5FontData>{},
+        props: const <String, dynamic>{},
         lastFrameMs: 0,
         avgMouseFrames: 15,
         avgMouseX: 0,
@@ -112,6 +116,7 @@ final class const SketchEnvironment._({
       frameCount: frameCount,
       deltaTime: deltaTime,
       fonts: fonts,
+      props: props,
       lastFrameMs: _lastFrameMs,
       avgMouseFrames: avgMouseFrames,
       avgMouseX: avgMouseX,
@@ -147,6 +152,7 @@ final class const SketchEnvironment._({
       frameCount: frameCount,
       deltaTime: deltaTime,
       fonts: fonts,
+      props: props,
       lastFrameMs: _lastFrameMs,
       avgMouseFrames: avgMouseFrames,
       avgMouseX: avgMouseX,
@@ -172,6 +178,7 @@ final class const SketchEnvironment._({
       frameCount: frameCount,
       deltaTime: deltaTime,
       fonts: fonts,
+      props: props,
       lastFrameMs: _lastFrameMs,
       avgMouseFrames: avgMouseFrames,
       avgMouseX: avgMouseX,
@@ -215,6 +222,7 @@ final class const SketchEnvironment._({
       frameCount: frameCount,
       deltaTime: deltaTime,
       fonts: fonts,
+      props: props,
       lastFrameMs: _lastFrameMs,
       avgMouseFrames: frames,
       avgMouseX: avgX,
@@ -261,6 +269,7 @@ final class const SketchEnvironment._({
       frameCount: frameCount + 1,
       deltaTime: delta,
       fonts: fonts,
+      props: props,
       lastFrameMs: nowMs,
       avgMouseFrames: avgMouseFrames,
       avgMouseX: avgX,
@@ -330,6 +339,33 @@ final class const SketchEnvironment._({
       frameCount: frameCount,
       deltaTime: deltaTime,
       fonts: Map.unmodifiable(fonts),
+      props: props,
+      lastFrameMs: _lastFrameMs,
+      avgMouseFrames: avgMouseFrames,
+      avgMouseX: avgMouseX,
+      avgMouseY: avgMouseY,
+      vxSamples: _vxSamples,
+      vySamples: _vySamples,
+      sampleHead: _sampleHead,
+      sampleCount: _sampleCount,
+    );
+  }
+
+  /// Returns an updated environment with a new [props] map.
+  SketchEnvironment withProps(Map<String, dynamic> props) {
+    if (mapEquals(props, this.props)) return this;
+    return SketchEnvironment._(
+      size: size,
+      mouseX: mouseX,
+      mouseY: mouseY,
+      pmouseX: pmouseX,
+      pmouseY: pmouseY,
+      key: key,
+      keyCode: keyCode,
+      frameCount: frameCount,
+      deltaTime: deltaTime,
+      fonts: fonts,
+      props: Map.unmodifiable(props),
       lastFrameMs: _lastFrameMs,
       avgMouseFrames: avgMouseFrames,
       avgMouseX: avgMouseX,
@@ -361,6 +397,7 @@ final class Flut5EnvironmentState() {
   int frameCount = 0;
   double deltaTime = 0;
   Map<String, Flut5FontData> fonts = const <String, Flut5FontData>{};
+  Map<String, dynamic> props = const <String, dynamic>{};
   int _lastFrameMs = 0;
   int avgMouseFrames = 15;
   double avgMouseX = 0;
@@ -501,6 +538,15 @@ final class Flut5EnvironmentState() {
     _cachedSnapshot = null;
   }
 
+  /// Replaces the props map in place. Returns `true` if the map differed by
+  /// value ([mapEquals]).
+  bool setProps(Map<String, dynamic> newProps) {
+    if (mapEquals(props, newProps)) return false;
+    props = Map.unmodifiable(newProps);
+    _cachedSnapshot = null;
+    return true;
+  }
+
   /// Lazily materializes and caches an immutable [SketchEnvironment] snapshot.
   SketchEnvironment get snapshot => _cachedSnapshot ??= SketchEnvironment._(
     size: size,
@@ -513,6 +559,7 @@ final class Flut5EnvironmentState() {
     frameCount: frameCount,
     deltaTime: deltaTime,
     fonts: fonts,
+    props: props,
     lastFrameMs: _lastFrameMs,
     avgMouseFrames: avgMouseFrames,
     avgMouseX: avgMouseX,
@@ -536,6 +583,7 @@ final class Flut5EnvironmentState() {
     frameCount = env.frameCount;
     deltaTime = env.deltaTime;
     fonts = env.fonts;
+    props = env.props;
     _lastFrameMs = env._lastFrameMs;
     avgMouseFrames = env.avgMouseFrames;
     avgMouseX = env.avgMouseX;

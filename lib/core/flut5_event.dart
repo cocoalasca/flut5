@@ -59,7 +59,7 @@ mixin Flut5EventMixin {
   StreamSubscription<SketchKeyboardEvent>? _keyTypedSub;
   StreamSubscription<ResizeEvent>? _resizeSub;
   StreamSubscription<SketchScrollEvent>? _scrollSub;
-  StreamSubscription<Map<String, dynamic>>? _stateChangeSub;
+  StreamSubscription<void>? _stateChangeSub;
 
   /// Subscribes to pointer, keyboard, resize, scroll and props state-change
   /// events broadcasted by the [Flut5Engine].
@@ -77,7 +77,9 @@ mixin Flut5EventMixin {
     _keyTypedSub = engine.events.keyTypedStream.listen(onKeyTyped);
     _resizeSub = engine.events.resizeStream.listen(onResize);
     _scrollSub = engine.events.scrollStream.listen(onMouseWheel);
-    _stateChangeSub = engine.events.stateChangeStream.listen(onStateChange);
+    _stateChangeSub = engine.events.stateChangeStream.listen(
+      (_) => onStateChange(),
+    );
   }
 
   /// Override this method to handle pointer down (touch/click) events.
@@ -131,19 +133,22 @@ mixin Flut5EventMixin {
   /// Override this method to handle canvas resize events.
   void onResize(ResizeEvent e) {}
 
-  /// Override this method to react to [Flut5Canvas.props] changes.
+  /// Override this method to react to `Flut5Canvas.props` changes.
   /// Called whenever the parent widget rebuilds with a props map that differs
-  /// from the previous one. The sketch is NOT reset — [setup] and [draw]
+  /// from the previous one. The sketch is NOT reset — `setup` and `draw`
   /// continue normally.
+  ///
+  /// The engine's environment `props` map is already updated before this
+  /// callback runs, so read `props` directly inside `onStateChange()`.
   ///
   /// Delivered to every [Flut5EventMixin] object subscribed via [listenEvents]
   /// — the sketch itself and any helper class constructed with
   /// `listenEvents: true` — so a `Particle` reacts to props the same way it
   /// reacts to pointer events.
   ///
-  /// Not called before the first [Flut5Sketch.setup]; read `props` directly
+  /// Not called before the first `Flut5Sketch.setup`; read `props` directly
   /// there for the initial value.
-  void onStateChange(Map<String, dynamic> props) {}
+  void onStateChange() {}
 
   /// Subscribes to the state-change stream broadcasted by the [Flut5Engine].
   ///
@@ -157,8 +162,10 @@ mixin Flut5EventMixin {
   )
   void listenStateChanges(Flut5Engine engine) {
     _stateChangeSub?.cancel();
-    // ignore: deprecated_member_use_from_same_package
-    _stateChangeSub = engine.events.stateChangeStream.listen(onStateStream);
+    _stateChangeSub = engine.events.stateChangeStream.listen(
+      // ignore: deprecated_member_use_from_same_package
+      (_) => onStateStream(),
+    );
   }
 
   /// Override this method to react to streamed props changes.
@@ -170,7 +177,7 @@ mixin Flut5EventMixin {
     'Override onStateChange instead. '
     'This will be removed in a future release.',
   )
-  void onStateStream(Map<String, dynamic> props) => onStateChange(props);
+  void onStateStream() => onStateChange();
 
   /// Cancels all active event subscriptions.
   void disposeEvents() {
@@ -267,13 +274,12 @@ final class Flut5Event({
   /// A broadcast stream of mouse-wheel / trackpad scroll events.
   Stream<SketchScrollEvent> get scrollStream => _scrollController.stream;
 
-  final StreamController<Map<String, dynamic>> _stateChangeController =
-      StreamController<Map<String, dynamic>>.broadcast();
+  final StreamController<void> _stateChangeController =
+      StreamController<void>.broadcast();
 
-  /// A broadcast stream of props maps dispatched whenever [Flut5Canvas.props]
-  /// changes. Subscribed automatically by [Flut5EventMixin.listenEvents].
-  Stream<Map<String, dynamic>> get stateChangeStream =>
-      _stateChangeController.stream;
+  /// A broadcast stream notified whenever `Flut5Canvas.props` changes.
+  /// Subscribed automatically by [Flut5EventMixin.listenEvents].
+  Stream<void> get stateChangeStream => _stateChangeController.stream;
 
   /// Tracks whether a pointer button is currently pressed.
   bool _pointerIsDown = false;
@@ -619,10 +625,10 @@ final class Flut5Event({
     if (!_resizeController.isClosed) _resizeController.add(event);
   }
 
-  /// Adds a new state-change props map to the stream.
-  /// Dispatched by [Flut5Canvas] whenever its props map changes by value.
-  void addStateChange(Map<String, dynamic> props) {
-    if (!_stateChangeController.isClosed) _stateChangeController.add(props);
+  /// Notifies subscribers that the engine's environment `props` map changed.
+  /// Dispatched by `Flut5Canvas` whenever its props map changes by value.
+  void addStateChange() {
+    if (!_stateChangeController.isClosed) _stateChangeController.add(null);
   }
 
   /// Closes all active [StreamController]s.

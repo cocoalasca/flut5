@@ -694,6 +694,16 @@ void main() {
     expect(environment.keyCode, 65);
   });
 
+  test('SketchEnvironment updates props', () {
+    final initial = const SketchEnvironment();
+    expect(initial.props, isEmpty);
+
+    final updated = initial.withProps({'count': 3, 'label': 'hi'});
+    expect(updated.props, {'count': 3, 'label': 'hi'});
+    expect(identical(updated.withProps({'count': 3, 'label': 'hi'}), updated), isTrue);
+    expect(() => updated.props['count'] = 4, throwsUnsupportedError);
+  });
+
   group('CFF text outlines', () {
     test('flex1 preserves the endpoint on the dominant axis', () {
       final font = CFFData(

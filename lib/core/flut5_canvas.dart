@@ -33,13 +33,15 @@ class const Flut5Canvas({
   /// causing it to fill the available space.
   final Size size = Size.infinite,
 
-  /// Flexible props map that flows from the parent widget into the sketch.
-  /// Available as `props` inside [Flut5Sketch.setup] and [Flut5Sketch.draw].
+  /// Flexible props map that flows from the parent widget into the sketch's
+  /// engine environment. Available as `props` inside [Flut5Sketch.setup],
+  /// [Flut5Sketch.draw], and any [Flut5] helper sharing the sketch's engine.
   ///
-  /// When this map changes by value, `onStateChange` is broadcast to the
-  /// sketch and to every helper constructed with `listenEvents: true` — the
-  /// sketch is NOT reset. Keep the sketch instance stable (as a field, not
-  /// inline) to avoid unintended resets on parent rebuilds.
+  /// When this map changes by value, the engine's `props` are updated
+  /// synchronously and `onStateChange()` is broadcast to the sketch and to
+  /// every helper constructed with `listenEvents: true` — the sketch is NOT
+  /// reset. Keep the sketch instance stable (as a field, not inline) to avoid
+  /// unintended resets on parent rebuilds.
   ///
   /// Comparison is [mapEquals], so a fresh `List`/closure literal in the map
   /// counts as a change on every parent rebuild.
@@ -140,6 +142,7 @@ class _Flut5CanvasState()
     // lands before the first frame; see Flut5Shaders.
     Flut5Shaders.load();
     _ticker = createTicker(_onTick);
+    widget.sketch.flut5.updateEnvironmentProps(widget.props ?? const {});
     _attachLoopControls(widget.sketch.flut5);
     if (widget.sketch.flut5.isLooping) {
       _ticker.start();
@@ -247,6 +250,7 @@ class _Flut5CanvasState()
     if (oldWidget.sketch != widget.sketch) {
       oldWidget.sketch.flut5.detachLoopControls();
       _disposeSketch(oldWidget.sketch);
+      widget.sketch.flut5.updateEnvironmentProps(widget.props ?? const {});
       _attachLoopControls(widget.sketch.flut5);
       _handleLoopingChanged(widget.sketch.flut5.isLooping);
       _painter = Flut5Painter(sketch: widget.sketch, repaint: _repaint);
@@ -254,13 +258,14 @@ class _Flut5CanvasState()
       _setupScheduled = false;
     } else if (!mapEquals(oldWidget.props, widget.props)) {
       final newProps = widget.props ?? const {};
-      // The field is assigned synchronously so setup()/draw() and any pointer
-      // callback read the new value immediately. The onStateChange broadcast
-      // rides the engine's event stream like every other event, so the sketch
-      // and any helper with `listenEvents: true` receive it uniformly — one
-      // microtask later, which still lands before the next frame.
-      widget.sketch.props = newProps;
-      widget.sketch.flut5.events.addStateChange(newProps);
+      // The engine's environment props are updated synchronously so
+      // setup()/draw() and any pointer callback read the new value
+      // immediately. The onStateChange notification rides the engine's event
+      // stream like every other event, so the sketch and any helper with
+      // `listenEvents: true` receive it uniformly — one microtask later,
+      // which still lands before the next frame — and read `props` directly.
+      widget.sketch.flut5.updateEnvironmentProps(newProps);
+      widget.sketch.flut5.events.addStateChange();
     }
   }
 
@@ -327,8 +332,9 @@ class _Flut5CanvasState()
     // Drop any leftover trail snapshot so setup() / hot reload starts clean.
     widget.sketch.flut5.clearFrameSnapshot();
 
-    // Inject props before setup runs so they are accessible as `this.props`
-    widget.sketch.props = widget.props ?? const {};
+    // Inject props into the engine environment before setup runs so they are
+    // accessible via `props` on the sketch and any Flut5 helper sharing it.
+    widget.sketch.flut5.updateEnvironmentProps(widget.props ?? const {});
 
     // Provide a valid dummy canvas for setup() so drawing/transform commands don't crash
     final recorder = ui.PictureRecorder();

@@ -27,7 +27,7 @@ class _Listener() with Flut5EventMixin {
   @override
   void onMouseWheel(SketchScrollEvent e) => _record('scroll');
   @override
-  void onStateChange(Map<String, dynamic> props) => _record('state');
+  void onStateChange() => _record('state');
 }
 
 void _emitAll(Flut5Engine engine) {
@@ -53,7 +53,7 @@ void _emitAll(Flut5Engine engine) {
     )
     ..addResize(const ResizeEvent(Size.zero, Size(100, 100)))
     ..addPointerScroll(const PointerScrollEvent(scrollDelta: Offset(0, 10)))
-    ..addStateChange({'updated': true});
+    ..addStateChange();
 }
 
 void main() {
@@ -133,13 +133,13 @@ void main() {
     // ignore: deprecated_member_use_from_same_package
     listener.listenStateChanges(engine);
     listener.listenEvents(engine);
-    engine.events.addStateChange({});
+    engine.events.addStateChange();
     await Future<void>.delayed(Duration.zero);
     expect(listener.counts, {'state': 1});
     // ignore: deprecated_member_use_from_same_package
     listener.listenStateChanges(engine);
     listener.disposeEvents();
-    engine.events.addStateChange({});
+    engine.events.addStateChange();
     await Future<void>.delayed(Duration.zero);
     expect(listener.counts, {'state': 1});
   });

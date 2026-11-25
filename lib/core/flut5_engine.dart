@@ -150,6 +150,13 @@ final class Flut5Engine()
   @override
   Map<String, Flut5FontData> get fonts => _env.fonts;
 
+  /// Flexible props map passed from the parent widget via `Flut5Canvas.props`.
+  ///
+  /// Updated before `setup()` runs and synchronously whenever the parent
+  /// rebuilds with a props map that differs by value. Readable from the sketch
+  /// and from any `Flut5` helper sharing this engine.
+  Map<String, dynamic> get props => _env.props;
+
   /// Per-sketch runtime environment state such as frame timing.
   ///
   /// Lazily materializes an immutable [SketchEnvironment] snapshot on read;
@@ -163,6 +170,11 @@ final class Flut5Engine()
   /// Internal: updates canvas dimensions in place without allocating a new
   /// [SketchEnvironment]. Returns `true` when [newSize] differed from [size].
   bool updateEnvironmentSize(Size newSize) => _env.setSize(newSize);
+
+  /// Internal: updates the props map in place without allocating a new
+  /// [SketchEnvironment]. Returns `true` when [newProps] differed by value.
+  bool updateEnvironmentProps(Map<String, dynamic> newProps) =>
+      _env.setProps(newProps);
 
   /// Internal: advances frame timing and mouse velocity ring buffers in place
   /// without allocating a new [SketchEnvironment].

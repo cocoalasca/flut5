@@ -12,7 +12,7 @@ class _Helper({super.flut5}) extends Flut5 {
   final List<Map<String, dynamic>> received = [];
 
   @override
-  void onStateChange(Map<String, dynamic> props) => received.add(props);
+  void onStateChange() => received.add(props);
 }
 
 class _CountingSketch() extends Flut5Sketch {
@@ -28,7 +28,7 @@ class _CountingSketch() extends Flut5Sketch {
   }
 
   @override
-  void onStateChange(Map<String, dynamic> props) => received.add(props);
+  void onStateChange() => received.add(props);
 }
 
 /// Rebuilds the canvas with whatever props the test last set.
@@ -123,12 +123,17 @@ void main() {
     tester,
   ) async {
     final sketch = await mounted(tester);
+    expect(sketch.props['count'], 0);
+    expect(sketch.helper.props['count'], 0);
 
     await setProps(tester, {'count': 42});
 
-    // Callback delivery moved to a microtask, but the field itself is still
-    // assigned in didUpdateWidget — so draw() never reads a stale value.
+    // Callback delivery moved to a microtask, but the engine environment is
+    // updated in didUpdateWidget — so draw() and helpers never read a stale
+    // value.
     expect(sketch.props['count'], 42);
+    expect(sketch.helper.props['count'], 42);
+    expect(sketch.environment.props['count'], 42);
   });
 
   testWidgets('a disposed sketch stops receiving props', (tester) async {
@@ -137,7 +142,7 @@ void main() {
     expect(sketch.received, hasLength(1));
 
     await tester.pumpWidget(const SizedBox());
-    sketch.flut5.events.addStateChange({'count': 2});
+    sketch.flut5.events.addStateChange();
     await tester.pump();
 
     expect(sketch.received, hasLength(1), reason: 'subscription was cancelled');
