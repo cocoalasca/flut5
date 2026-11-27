@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/widgets.dart';
 
 import '../flut5_console.dart';
@@ -21,6 +22,7 @@ import 'items/flut5_path_render_item.dart';
 import 'items/flut5_pixelate_render_item.dart';
 import 'items/flut5_rect_render_item.dart';
 import 'items/flut5_circle_render_item.dart';
+import 'items/flut5_circle_run_render_item.dart';
 import 'items/flut5_ellipse_render_item.dart';
 import 'items/flut5_image_atlas_render_item.dart';
 import 'items/flut5_image_render_item.dart';
@@ -40,6 +42,7 @@ export 'items/flut5_arc_render_item.dart';
 export 'items/flut5_background_render_item.dart';
 export 'items/flut5_blur_render_item.dart';
 export 'items/flut5_circle_render_item.dart';
+export 'items/flut5_circle_run_render_item.dart';
 export 'items/flut5_clip_render_item.dart';
 export 'items/flut5_ellipse_render_item.dart';
 export 'items/flut5_image_atlas_render_item.dart';
@@ -278,6 +281,71 @@ class Flut5RenderQueue() {
   // and close as soon as a new shape lands where that would happen.
   final Flut5OverlapIndex _pendingShapeBoxes = Flut5OverlapIndex();
   bool _pendingShapeTracked = false;
+
+  // ── Circle runs (Skia only) ───────────────────────────────────────────
+  //
+  // While every shape in the newest batch is a filled, anti-aliased,
+  // unshadowed circle of one radius, the circles are not added to its path:
+  // their centres are kept here instead, and the batch is queued as one
+  // [CircleRunRenderItem] — round points, which Skia draws exactly as it
+  // draws each circle alone, for a fraction of a path's cost. The first
+  // shape that breaks the run has the kept circles added to the path, in
+  // order, and the batch carries on exactly as it would have.
+
+  /// Whether this backend draws a round point the way it draws a circle —
+  /// true on Skia, false on Impeller. See [CircleRunRenderItem].
+  static final bool _skiaCircles = !ui.ImageFilter.isShaderFilterSupported;
+
+  /// Forces circle runs on or off regardless of backend, or restores
+  /// detection with `null`. Test seam: `flutter test` runs Skia unless
+  /// `--enable-impeller` is passed.
+  @visibleForTesting
+  static bool? debugCirclesAsPoints;
+
+  static bool get _circlesAsPoints => debugCirclesAsPoints ?? _skiaCircles;
+
+  /// Whether shapes batch by the web's rules — see [_drawnAlone].
+  ///
+  /// On the web (CanvasKit and skwasm) a merged path costs by its bounds,
+  /// not by its shapes: without multisampling, Skia draws an anti-aliased
+  /// path of many contours by rasterizing a coverage mask of its whole
+  /// bounds on the CPU, about 0.7 ms per canvas-sized path at 1600×1026,
+  /// while shapes drawn one by one go to its GPU ops, which batch them
+  /// itself. Measured on CanvasKit, 3000 shapes, build + raster:
+  ///
+  /// | scene | merged | web rules |
+  /// |---|---|---|
+  /// | fill + stroke circles | 90 ms | 12 ms |
+  /// | stroke-only circles / rects | 35 / 18 ms | 6 / 6 ms |
+  /// | translucent squares | 41 ms | 6.4 ms |
+  /// | squares in 8 colours, random order | 76 ms | 19 ms |
+  ///
+  /// Opaque fill-only shapes of one colour still merge (a single path is as
+  /// cheap or cheaper there), and nothing slowed down in the scenes measured.
+  /// Every shape the rules take out of a batch draws the way it draws alone,
+  /// which on Skia is also the closer picture.
+  static bool get _webBatching => debugWebBatching ?? kIsWeb;
+
+  /// Forces the web batching rules on or off regardless of platform, or
+  /// restores detection with `null`. Test seam.
+  @visibleForTesting
+  static bool? debugWebBatching;
+
+  /// True while the newest batch holds only kept circles, none of them in
+  /// its path yet.
+  bool _circleRunOpen = false;
+  double _circleRunRadius = 0;
+  Float64List _circleRun = Float64List(256);
+
+  /// Doubles used in [_circleRun], two per circle.
+  int _circleRunLength = 0;
+  Float32List _circleRunScratch = Float32List(0);
+
+  // One-entry memo for [_circleRunPaint]: point paints are immutable once
+  // queued, so the same fill at the same radius can share one.
+  Paint? _circleRunPaintFill;
+  double _circleRunPaintRadius = -1;
+  Paint? _circleRunPaintMemo;
   Paint? _stacksFill;
   Paint? _stacksStroke;
   bool _stacksResult = false;
@@ -1061,8 +1129,23 @@ class Flut5RenderQueue() {
   /// batch already draws them (measured on Impeller: up to 47 levels on
   /// edge pixels, nothing else). Polygons and vertex shapes are paths either
   /// way and come out identical.
-  bool _drawnAlone(Paint? fill, Paint? stroke) {
+  ///
+  /// Under [_webBatching], stroked and translucent shapes always draw alone:
+  /// their batches are the ones that end up as many canvas-wide paths
+  /// (strokes split where an outline would show through, translucent shapes
+  /// wherever two come close). A translucent filled [circle] is the
+  /// exception while circle runs apply — a run is one point call, cheaper
+  /// still, and draws each circle as it draws alone.
+  bool _drawnAlone(Paint? fill, Paint? stroke, {bool circle = false}) {
     if (_blurLayer != null) return true;
+    if (_webBatching &&
+        (stroke != null || (fill != null && fill.color.a < 1.0)) &&
+        !(circle &&
+            stroke == null &&
+            _activeShadow == null &&
+            _circlesAsPoints)) {
+      return true;
+    }
     if (canBatchPaint(fill) && canBatchPaint(stroke)) return false;
     return !_batchesApart(fill, stroke);
   }
@@ -1649,6 +1732,7 @@ class Flut5RenderQueue() {
         _pendingShapeHasContent &&
         identical(_pendingShapeStroke, paint) &&
         (_activeShadow == null || _pendingShapeFill == null)) {
+      _addCircleRunToPath();
       _pendingShapePath!
         ..moveTo(x1, y1)
         ..lineTo(x2, y2);
@@ -1878,19 +1962,29 @@ class Flut5RenderQueue() {
     Paint? fill,
     Paint? stroke,
   ) {
-    _prepareGeometry(fill, stroke);
+    _prepareGeometry(
+      fill,
+      stroke,
+      alone: _drawnAlone(fill, stroke, circle: true),
+    );
     if (_foldHasLinear) {
       if (fill == null && stroke == null) return;
       final px = _foldX(cx, cy);
       final py = _foldY(cx, cy);
       final r = radius * _foldScale;
       final oval = Rect.fromLTRB(px - r, py - r, px + r, py + r);
-      _beginShape(
+      final path = _beginShape(
         fill,
         _foldStroke(stroke),
         oval,
         mergesExactly: false,
-      ).addOval(oval);
+        circleRadius: r,
+      );
+      if (_circleRunOpen && identical(path, _pendingShapePath)) {
+        _keepRunCircle(px, py);
+      } else {
+        path.addOval(oval);
+      }
       _pendingShapeHasContent = true;
       return;
     }
@@ -1915,7 +2009,7 @@ class Flut5RenderQueue() {
       );
       return;
     }
-    if (_drawnAlone(fill, stroke)) {
+    if (_drawnAlone(fill, stroke, circle: true)) {
       final masked = _maskBlurredFill(fill, stroke);
       _addItem(
         CircleRenderItem(
@@ -1935,7 +2029,18 @@ class Flut5RenderQueue() {
       cx + radius,
       cy + radius,
     );
-    _beginShape(fill, stroke, oval, mergesExactly: false).addOval(oval);
+    final path = _beginShape(
+      fill,
+      stroke,
+      oval,
+      mergesExactly: false,
+      circleRadius: radius,
+    );
+    if (_circleRunOpen && identical(path, _pendingShapePath)) {
+      _keepRunCircle(cx, cy);
+    } else {
+      path.addOval(oval);
+    }
     _pendingShapeHasContent = true;
   }
 
@@ -4107,6 +4212,8 @@ class Flut5RenderQueue() {
     _pendingShapeStroke = null;
     _pendingShapeHasContent = false;
     _pendingShapeShadow = null;
+    _circleRunOpen = false;
+    _circleRunLength = 0;
     _pendingShapeBoxes.clear();
     _pendingShapeTracked = false;
     _pendingMergesExactly = true;
@@ -4299,12 +4406,19 @@ class Flut5RenderQueue() {
   ///
   /// A change of paint does not always open a new batch: the path returned
   /// may be an older open batch's.
+  ///
+  /// [circleRadius] is set by circles, which may then be kept out of the
+  /// path as a circle run: when [_circleRunOpen] holds afterwards and the
+  /// path returned is the newest batch's, the caller keeps the circle with
+  /// [_keepRunCircle] instead of adding it to the path. Any other shape
+  /// joining the batch has the kept circles added to the path first.
   Path _beginShape(
     Paint? fill,
     Paint? stroke,
     Rect? bounds, {
     bool oriented = true,
     bool mergesExactly = true,
+    double? circleRadius,
   }) {
     if (_pendingTextEntries.isNotEmpty) {
       _keepShapesBeneathText(fill, stroke, bounds, mergesExactly);
@@ -4366,6 +4480,9 @@ class Flut5RenderQueue() {
           plain &&
           reorders &&
           _mayReorderShapes &&
+          // On the web a colour batch kept open spans the canvas, and each
+          // one is a canvas-wide coverage mask — see [_webBatching].
+          !_webBatching &&
           (_openBatches.isEmpty || bounds != null);
     } else {
       if (!mergesExactly) _pendingMergesExactly = false;
@@ -4394,13 +4511,110 @@ class Flut5RenderQueue() {
     _flushPoints();
     _flushLines();
     _flushImages();
+    final opening = _pendingShapePath == null;
     final path = _pendingShapePath ??= _takeBatchPath();
     _pendingShapeFill = fill;
     _pendingShapeStroke = stroke;
     // Rides along on the batch — setShadowState flushes on change, so an open
     // batch always matches the current shadow.
     _pendingShapeShadow = _activeShadow;
+    _continueCircleRun(opening, fill, stroke, circleRadius);
     return path;
+  }
+
+  /// Opens, extends or ends the newest batch's circle run for a shape that
+  /// has just joined it — see the notes on [_circleRunOpen]. [radius] is the
+  /// shape's when it is a circle, `null` otherwise.
+  void _continueCircleRun(
+    bool opening,
+    Paint? fill,
+    Paint? stroke,
+    double? radius,
+  ) {
+    final runs =
+        radius != null &&
+        radius > 0 &&
+        fill != null &&
+        stroke == null &&
+        fill.isAntiAlias &&
+        _activeShadow == null &&
+        _circlesAsPoints;
+    if (opening) {
+      _circleRunLength = 0;
+      _circleRunOpen = runs;
+      if (runs) _circleRunRadius = radius;
+      return;
+    }
+    if (!_circleRunOpen || (runs && radius == _circleRunRadius)) return;
+    _addCircleRunToPath();
+  }
+
+  /// Keeps one circle of the open run, centred on ([x], [y]).
+  void _keepRunCircle(double x, double y) {
+    if (_circleRunLength + 2 > _circleRun.length) {
+      _circleRun = Float64List(_circleRun.length * 2)
+        ..setRange(0, _circleRunLength, _circleRun);
+    }
+    _circleRun[_circleRunLength++] = x;
+    _circleRun[_circleRunLength++] = y;
+  }
+
+  /// Ends the open circle run by adding its circles to the newest batch's
+  /// path, in the order they were drawn — the path they would have been in
+  /// all along.
+  void _addCircleRunToPath() {
+    if (!_circleRunOpen) return;
+    _circleRunOpen = false;
+    final path = _pendingShapePath;
+    if (path != null) {
+      final r = _circleRunRadius;
+      final run = _circleRun;
+      for (var i = 0; i < _circleRunLength; i += 2) {
+        final x = run[i];
+        final y = run[i + 1];
+        path.addOval(Rect.fromLTRB(x - r, y - r, x + r, y + r));
+      }
+    }
+    _circleRunLength = 0;
+  }
+
+  /// Queues the open circle run as one [CircleRunRenderItem].
+  CircleRunRenderItem _takeCircleRun(Paint fill) {
+    final length = _circleRunLength;
+    if (_circleRunScratch.length < length) {
+      _circleRunScratch = Float32List(_circleRun.length);
+    }
+    final scratch = _circleRunScratch;
+    final run = _circleRun;
+    for (var i = 0; i < length; i++) {
+      scratch[i] = run[i];
+    }
+    final radius = _circleRunRadius;
+    _circleRunOpen = false;
+    _circleRunLength = 0;
+    return CircleRunRenderItem(
+      _allocArenaCopy(scratch, length),
+      radius,
+      _circleRunPaint(fill, radius),
+    );
+  }
+
+  /// [fill] as a point paint for circles of [radius]: a round point
+  /// `2 * radius` wide.
+  Paint _circleRunPaint(Paint fill, double radius) {
+    if (identical(fill, _circleRunPaintFill) &&
+        radius == _circleRunPaintRadius) {
+      return _circleRunPaintMemo!;
+    }
+    _circleRunPaintFill = fill;
+    _circleRunPaintRadius = radius;
+    return _circleRunPaintMemo = Paint()
+      ..color = fill.color
+      ..blendMode = fill.blendMode
+      ..isAntiAlias = fill.isAntiAlias
+      ..invertColors = fill.invertColors
+      ..strokeWidth = radius * 2
+      ..strokeCap = StrokeCap.round;
   }
 
   /// Makes way for a shape whose paints are not the newest batch's — see
@@ -4475,6 +4689,7 @@ class Flut5RenderQueue() {
     }
 
     // Leave the newest batch open, behind the one about to be opened.
+    _addCircleRunToPath();
     _openBatchOfPaint[_pendingShapeFill ?? _pendingShapeStroke!] = newest;
     _openBatches.add(
       PathRenderItem(
@@ -4606,20 +4821,27 @@ class Flut5RenderQueue() {
     _pendingShapeTracked = false;
     _newestStaysOpen = false;
     if (!_pendingShapeHasContent) {
+      _circleRunOpen = false;
+      _circleRunLength = 0;
       _pendingShapePath = null;
       _pendingShapeFill = null;
       _pendingShapeStroke = null;
       _pendingShapeShadow = null;
       return;
     }
-    _items.add(
-      PathRenderItem(
-        _pendingShapePath!,
-        _pendingShapeFill,
-        _pendingShapeStroke,
-        shadow: _pendingShapeShadow,
-      ),
-    );
+    if (_circleRunOpen && _circleRunLength > 0) {
+      _items.add(_takeCircleRun(_pendingShapeFill!));
+    } else {
+      _addCircleRunToPath();
+      _items.add(
+        PathRenderItem(
+          _pendingShapePath!,
+          _pendingShapeFill,
+          _pendingShapeStroke,
+          shadow: _pendingShapeShadow,
+        ),
+      );
+    }
     _pendingShapePath = null;
     _pendingShapeFill = null;
     _pendingShapeStroke = null;

@@ -52,6 +52,11 @@ List<Path> _batchPaths(Flut5Engine e) {
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  // These pin the path pool; on Skia a batch of circles would otherwise be
+  // queued as round points and never take a path.
+  setUp(() => Flut5RenderQueue.debugCirclesAsPoints = false);
+  tearDown(() => Flut5RenderQueue.debugCirclesAsPoints = null);
+
   test(
     'a recorded frame keeps its outlines when its paths are reused',
     () async {

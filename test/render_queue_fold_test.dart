@@ -15,6 +15,9 @@ void main() {
 
   group('Translate folding — batching', () {
     test('push/translate/shape/pop loops coalesce into one path item', () {
+      // Pins the path; on Skia these circles would be one circle run.
+      Flut5RenderQueue.debugCirclesAsPoints = false;
+      addTearDown(() => Flut5RenderQueue.debugCirclesAsPoints = null);
       final e = engine();
       for (var i = 0; i < 10; i++) {
         e.push();

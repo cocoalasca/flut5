@@ -635,8 +635,8 @@ final class Flut5Engine()
   /// these are chosen to be affordable on the weakest device of their class,
   /// and the climb toward [frameSnapshotResolutionFactorMax] is what earns
   /// resolution back on stronger ones.
-  static double get _defaultResolutionFactorDebug => _isJsWeb ? 0.7 : 0.8;
-  static double get _defaultResolutionFactorProd => _isJsWeb ? 0.9 : 0.95;
+  static double get _defaultResolutionFactorDebug => _isJsWeb ? 0.375 : 0.8;
+  static double get _defaultResolutionFactorProd => _isJsWeb ? 0.5 : 0.95;
 
   double _frameSnapshotResolutionFactorDebug = _defaultResolutionFactorDebug;
   double _frameSnapshotResolutionFactorProd = _defaultResolutionFactorProd;
@@ -662,7 +662,7 @@ final class Flut5Engine()
   ///
   /// | target | debug | production |
   /// |---|---|---|
-  /// | web compiled to JavaScript | `0.7` | `0.9` |
+  /// | web compiled to JavaScript | `0.375` | `0.5` |
   /// | everything else | `0.8` | `0.95` |
   ///
   /// Two effects stack. Debug is several times slower at the same work —
@@ -747,7 +747,7 @@ final class Flut5Engine()
   }
 
   /// Default [frameSnapshotResolutionFactor] for debug builds, used unless
-  /// the factor is assigned explicitly. Defaults to `0.7` on JavaScript web,
+  /// the factor is assigned explicitly. Defaults to `0.375` on JavaScript web,
   /// `0.8` everywhere else.
   ///
   /// Lower than the production default because debug runs unoptimized Dart —
@@ -777,7 +777,7 @@ final class Flut5Engine()
   }
 
   /// Default [frameSnapshotResolutionFactor] for production builds, used
-  /// unless the factor is assigned explicitly. Defaults to `0.9` on
+  /// unless the factor is assigned explicitly. Defaults to `0.5` on
   /// JavaScript web, `0.95` everywhere else.
   ///
   /// Profile builds count as production: profile exists to approximate
@@ -898,15 +898,28 @@ final class Flut5Engine()
   /// single stalled capture doesn't decide the outcome.
   static const int _calibrationSamplesPerRung = 4;
 
+  /// Captures thrown away when the search starts, before any is counted.
+  ///
+  /// The first captures after launch pay one-time costs no later capture
+  /// does — surface and pipeline setup, first texture uploads. Measured on
+  /// CanvasKit: 36.3, 9.4, then a steady 5–6 ms. Counted, they averaged the
+  /// floor rung over budget, so the search locked there on devices with room
+  /// to spare (on macOS at a steady 1.2 ms against a 12 ms budget).
+  static const int _calibrationWarmupCaptures = 3;
+
+  /// Captures thrown away at each rung after the first: the first capture
+  /// at a new size also pays for resizing the capture surface.
+  static const int _calibrationRungSettleCaptures = 1;
+
   /// Hard stop on the search, in captures. Without it a sketch whose cost
   /// hovers exactly at the budget could keep sampling indefinitely, and every
   /// capture spent calibrating is one spent at less than the final quality.
   static const int _calibrationCaptureBudget = 48;
 
   int _calibrationIndex = 0;
-  int _calibrationSamples = 0;
   int _calibrationTotalCaptures = 0;
-  double? _calibrationCostEma;
+  int _calibrationSkip = _calibrationWarmupCaptures;
+  final List<double> _calibrationSampleMs = [];
   bool _calibrationDone = false;
 
   List<double>? _cachedCalibrationLadder;
@@ -972,9 +985,9 @@ final class Flut5Engine()
   /// changes what it draws.
   void resetSnapshotCalibration() {
     _calibrationIndex = 0;
-    _calibrationSamples = 0;
     _calibrationTotalCaptures = 0;
-    _calibrationCostEma = null;
+    _calibrationSkip = _calibrationWarmupCaptures;
+    _calibrationSampleMs.clear();
     _calibrationDone = false;
     _calibrationOutcome = null;
   }
@@ -1006,8 +1019,7 @@ final class Flut5Engine()
   void _lockCalibration(String reason) {
     _calibrationDone = true;
     _calibrationOutcome = reason;
-    _calibrationSamples = 0;
-    _calibrationCostEma = null;
+    _calibrationSampleMs.clear();
   }
 
   /// Test seam: injects one measured capture cost into the startup search.
@@ -1035,30 +1047,46 @@ final class Flut5Engine()
     }
 
     _calibrationTotalCaptures++;
-    final previous = _calibrationCostEma;
-    // Even weighting: this is a short deliberate sample, not a long-running
-    // signal that needs to shrug off outliers the way the throttle's EMA does.
-    _calibrationCostEma = previous == null ? ms : previous * 0.5 + ms * 0.5;
 
     if (_calibrationTotalCaptures >= _calibrationCaptureBudget) {
       _lockCalibration('sampling budget');
       return;
     }
-    if (++_calibrationSamples < _calibrationSamplesPerRung) return;
+    if (_calibrationSkip > 0) {
+      _calibrationSkip--;
+      return;
+    }
+    _calibrationSampleMs.add(ms);
+    if (_calibrationSampleMs.length < _calibrationSamplesPerRung) return;
+    // The median, so one stalled capture among the handful sampled can't
+    // decide the rung either way.
+    final sorted = [..._calibrationSampleMs]..sort();
+    final mid = sorted.length ~/ 2;
+    final measured = sorted.length.isOdd
+        ? sorted[mid]
+        : (sorted[mid - 1] + sorted[mid]) / 2;
 
     final budget = frameSnapshotBudgetMs > 0 ? frameSnapshotBudgetMs : 8.0;
-    // Judge the amortized per-frame share, not the raw capture time — the
-    // same quantity [frameSnapshotRasterLoad] reports, so the HUD and the
-    // search can never disagree about whether a rung is affordable.
+    // Judge the amortized per-frame share on platforms with a separate raster
+    // thread — the same quantity [frameSnapshotRasterLoad] reports, so the HUD
+    // and the search can never disagree about whether a rung is affordable.
     //
-    // A capture every `interval` frames costs a fraction of a frame, not a
-    // whole one. Comparing raw latency against the budget was calling 11.5 ms
-    // at interval 2 unaffordable on a device visibly holding 60 fps at 35%
-    // raster load. Raw latency also overstates occupancy on its own: it is
+    // A capture every `interval` frames costs a fraction of a frame on native,
+    // not a whole one. Comparing raw latency against the budget was calling
+    // 11.5 ms at interval 2 unaffordable on a device visibly holding 60 fps at
+    // 35% raster load. Raw latency also overstates occupancy on its own: it is
     // measured begin-to-complete across an *async* rasterize, so it spans a
     // frame boundary rather than filling one frame.
+    //
+    // On JavaScript web (CanvasKit), however, there is no raster thread:
+    // `Picture.toImage` runs `readPixels` synchronously on the main thread
+    // inside the capture frame. A 20 ms capture blows the 16.6 ms vsync
+    // deadline even at interval 2 and cannot be amortized across skipped
+    // frames, so judge the raw capture duration directly.
     final interval = effectiveFrameSnapshotInterval;
-    final cost = _calibrationCostEma! / (interval < 1 ? 1 : interval);
+    final cost = _isJsWeb
+        ? measured
+        : measured / (interval < 1 ? 1 : interval);
 
     // Decisions are made on *measured* cost at the current rung, never on a
     // predicted cost at the next one.
@@ -1097,8 +1125,8 @@ final class Flut5Engine()
     }
 
     _calibrationIndex++;
-    _calibrationSamples = 0;
-    _calibrationCostEma = null;
+    _calibrationSampleMs.clear();
+    _calibrationSkip = _calibrationRungSettleCaptures;
   }
 
   /// Fraction of [frameSnapshotBudgetMs] a rung must come in under for the
@@ -1327,15 +1355,15 @@ final class Flut5Engine()
     return frameSnapshotFilterQuality;
   }
 
-  int _frameSnapshotInterval = 2;
+  int _frameSnapshotInterval = 1;
 
   /// How often (in frames) the trail snapshot is recaptured via
-  /// `picture.toImage`. `2` (the default) recaptures every other frame,
-  /// halving the recurring snapshot cost — drawings on skipped frames
-  /// still display correctly but don't contribute to the accumulated
-  /// trail, so trails look ~half as dense and decay ~twice as fast. Set
-  /// `1` to recapture every frame for the smoothest, densest trail fade;
-  /// higher values trade more trail density for more headroom.
+  /// `picture.toImage`. `1` (the default) recaptures every frame for the
+  /// smoothest, densest trail fade. Higher values (e.g. `2`, `3`) skip
+  /// captures between ticks to trade trail density for more headroom —
+  /// drawings on skipped frames still display correctly but don't contribute
+  /// to the accumulated trail, so at `2` trails look ~half as dense and decay
+  /// ~twice as fast.
   ///
   /// When [adaptiveSnapshotThrottle] is enabled this value is treated as a
   /// *floor*: the painter consults [effectiveFrameSnapshotInterval]
@@ -1408,10 +1436,14 @@ final class Flut5Engine()
   /// it differently — deliberately:
   ///
   /// - **Startup calibration** ([frameSnapshotResolutionFactorMax]) compares
-  ///   the *amortized per-frame* share, `captureMs / interval`, the same
-  ///   quantity [frameSnapshotRasterLoad] reports. At the `12.0` default and
-  ///   an interval of 2 that permits captures up to ~24 ms. Raise it to trade
-  ///   frame rate for trail resolution; lower it to protect frame rate.
+  ///   the *amortized per-frame* share, `captureMs / interval`, on platforms
+  ///   with an async raster thread (the same quantity [frameSnapshotRasterLoad]
+  ///   reports — at the `12.0` default and interval `1`, permitting captures up
+  ///   to ~12 ms, or ~24 ms at interval `2`). On JavaScript web (CanvasKit),
+  ///   capture runs synchronously on the main thread, so raw `captureMs` is
+  ///   compared directly against this budget to avoid missing the 16.6 ms vsync
+  ///   deadline on capture frames. Raise it to trade frame rate for trail
+  ///   resolution; lower it to protect frame rate.
   /// - **The overload throttle** ([adaptiveSnapshotThrottle]) compares the
   ///   raw [frameSnapshotLastCaptureMs] instead, because it controls the
   ///   interval itself — amortizing by a value the controller is steering
@@ -1625,13 +1657,16 @@ final class Flut5Engine()
   /// already being paced by capture. Roughly `0.5` or below is comfortable.
   ///
   /// Measured against [frameRateCap] when one is set, 60 Hz otherwise, and
-  /// divided by [effectiveFrameSnapshotInterval] because a capture every `n`
-  /// frames spreads its cost over `n` frames.
+  /// divided by [effectiveFrameSnapshotInterval] on platforms with an async
+  /// raster thread (where a capture every `n` frames spreads its cost over `n`
+  /// frames). On JavaScript web (CanvasKit) capture blocks the main thread
+  /// synchronously within the capture frame, so the un-amortized duration is
+  /// compared against a single frame budget.
   double? get frameSnapshotRasterLoad {
     final cost = _frameSnapshotCostEmaMs;
     if (cost == null) return null;
     final interval = effectiveFrameSnapshotInterval;
-    final perFrame = cost / (interval < 1 ? 1 : interval);
+    final perFrame = _isJsWeb ? cost : cost / (interval < 1 ? 1 : interval);
     final target = frameRateCap ?? 60.0;
     if (target <= 0) return null;
     return perFrame / (1000.0 / target);

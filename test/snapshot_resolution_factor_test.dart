@@ -1,9 +1,14 @@
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show kIsWasm, kIsWeb;
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:flut5/flut5.dart';
+
+const bool _isJsWeb = kIsWeb && !kIsWasm;
+const double _expectedDefaultDebug = _isJsWeb ? 0.375 : 0.8;
+const double _expectedDefaultProd = _isJsWeb ? 0.5 : 0.95;
 
 /// Covers the two knobs that decide how much the trail snapshot costs per
 /// capture: the window-relative resolution factor, and whether the blit
@@ -13,16 +18,15 @@ void main() {
 
   group('frameSnapshotResolutionFactor', () {
     test('defaults per build mode and platform', () {
-      // The host VM is native, not JavaScript web, so the higher pair
-      // applies. JS web gets 0.7/0.9 instead — no raster thread to overlap
-      // capture with, plus CanvasKit's per-call toImage cost.
+      // Native and Wasm get 0.8/0.95; JS web (CanvasKit) gets 0.375/0.5
+      // because there is no raster thread and Picture.toImage runs readPixels
+      // synchronously on the main thread.
       final e = Flut5Engine();
-      expect(e.frameSnapshotResolutionFactorDebug, 0.8);
-      expect(e.frameSnapshotResolutionFactorProd, 0.95);
-      // `flutter test` runs the debug JIT, so the debug value is the one that
-      // resolves. Either sits below the 1.0 ceiling, which is what makes
-      // startup calibration active out of the box.
-      expect(e.frameSnapshotResolutionFactor, 0.8);
+      expect(e.frameSnapshotResolutionFactorDebug, _expectedDefaultDebug);
+      expect(e.frameSnapshotResolutionFactorProd, _expectedDefaultProd);
+      // `flutter test` runs in debug mode, so the debug value resolves. Either
+      // sits below the 1.0 ceiling, making startup calibration active by default.
+      expect(e.frameSnapshotResolutionFactor, _expectedDefaultDebug);
       expect(e.frameSnapshotResolutionFactorIsExplicit, isFalse);
     });
 
@@ -40,7 +44,7 @@ void main() {
       final e = Flut5Engine()..frameSnapshotResolutionFactor = 0.45;
       e.clearFrameSnapshotResolutionFactor();
       expect(e.frameSnapshotResolutionFactorIsExplicit, isFalse);
-      expect(e.frameSnapshotResolutionFactor, 0.8);
+      expect(e.frameSnapshotResolutionFactor, _expectedDefaultDebug);
     });
 
     test('changing the active mode default changes the resolved factor', () {
@@ -51,7 +55,7 @@ void main() {
     test('changing the inactive mode default does not', () {
       final e = Flut5Engine()..frameSnapshotResolutionFactorProd = 0.35;
       expect(e.frameSnapshotResolutionFactorProd, 0.35);
-      expect(e.frameSnapshotResolutionFactor, 0.8);
+      expect(e.frameSnapshotResolutionFactor, _expectedDefaultDebug);
     });
 
     test('per-mode setters reject percentages too', () {
@@ -90,7 +94,7 @@ void main() {
       expect(() => e.frameSnapshotResolutionFactor = -0.5, throwsArgumentError);
       expect(() => e.frameSnapshotResolutionFactor = 1.01, throwsArgumentError);
       // The rejected assignments must not have taken effect.
-      expect(e.frameSnapshotResolutionFactor, 0.8);
+      expect(e.frameSnapshotResolutionFactor, _expectedDefaultDebug);
     });
 
     test('method and p5-style accessor forms agree', () {

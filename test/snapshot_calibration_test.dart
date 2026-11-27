@@ -1,9 +1,13 @@
 import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart' show kIsWasm, kIsWeb;
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:flut5/flut5.dart';
+
+const bool _isJsWeb = kIsWeb && !kIsWasm;
+const double _expectedDefaultDebug = _isJsWeb ? 0.375 : 0.8;
 
 /// Covers the startup resolution search: the factor is a guaranteed floor,
 /// the engine climbs toward [Flut5Engine.frameSnapshotResolutionFactorMax]
@@ -38,19 +42,16 @@ void main() {
     ..frameSnapshotResolutionFactorMax = ceiling;
 
   group('defaults', () {
-    test(
-      'the mode floor under a 1.0 ceiling means calibration runs by default',
-      () {
-        final e = Flut5Engine();
-        // `flutter test` is a native debug build, so the debug default for
-        // non-JS-web targets applies (0.8; JavaScript web would be 0.7).
-        expect(e.frameSnapshotResolutionFactor, 0.8);
-        expect(e.frameSnapshotResolutionFactorMax, 1.0);
-        // Every sketch starts conservative for its build mode and climbs.
-        expect(e.frameSnapshotCalibrating, isTrue);
-        expect(e.frameSnapshotCalibratedFactor, 0.8);
-      },
-    );
+    test('the mode floor under a 1.0 ceiling means calibration runs by default', () {
+      final e = Flut5Engine();
+      // Native/Wasm debug default is 0.8; JavaScript web (CanvasKit) is 0.375.
+      expect(e.frameSnapshotResolutionFactor, _expectedDefaultDebug);
+      expect(e.frameSnapshotResolutionFactorMax, 1.0);
+      expect(e.frameSnapshotInterval, 1);
+      // Every sketch starts conservative for its build mode and climbs.
+      expect(e.frameSnapshotCalibrating, isTrue);
+      expect(e.frameSnapshotCalibratedFactor, _expectedDefaultDebug);
+    });
 
     test('a capable device reaches full resolution from the defaults', () {
       final e = Flut5Engine();
@@ -62,7 +63,7 @@ void main() {
     test('a slow device stays at the mode floor', () {
       final e = Flut5Engine();
       feed(e, 500.0, 48);
-      expect(e.frameSnapshotCalibratedFactor, 0.8);
+      expect(e.frameSnapshotCalibratedFactor, _expectedDefaultDebug);
     });
 
     test('setting both to 1.0 opts out of calibration entirely', () {
@@ -101,22 +102,22 @@ void main() {
     });
 
     test('settles between floor and ceiling on a marginal device', () {
-      // Ladder is [0.5, 0.625, 0.75, 0.875, 1.0]; budget 12 ms judged against
-      // the amortized per-frame share, so at interval 2 a rung is left behind
-      // only while measured/2 stays under 12 × 0.8 = 9.6.
-      // On a device where full resolution would cost 40 ms:
-      //   0.5   → 10.00 ms,  5.00 per frame → climb
-      //   0.625 → 15.63 ms,  7.81 per frame → climb
-      //   0.75  → 22.50 ms, 11.25 per frame → under 12, past 9.6 → stop here
+      // Ladder is [0.5, 0.625, 0.75, 0.875, 1.0]; budget 12 ms at default
+      // interval 1, so a rung is left behind only while measured cost stays
+      // under 12 × 0.8 = 9.6 ms.
+      // On a device where full resolution would cost 20 ms:
+      //   0.5   →  5.00 ms → climb
+      //   0.625 →  7.81 ms → climb
+      //   0.75  → 11.25 ms → under 12, past 9.6 → stop here
       final e = ranged(0.5, 1.0);
-      feed(e, 40.0, 48);
+      feed(e, 20.0, 48);
       expect(e.frameSnapshotCalibratedFactor, 0.75);
       expect(e.frameSnapshotCalibrating, isFalse);
     });
 
     test('a device costing one budget at full res keeps full res', () {
-      // 8 ms per capture at interval 2 is 4 ms per frame — 24% raster load.
-      // Plainly affordable, so there is no reason to give up resolution.
+      // 8 ms per capture is under 12 × 0.8 = 9.6 ms even without interval
+      // amortization, so there is no reason to give up resolution.
       final e = ranged(0.5, 1.0);
       feed(e, 8.0, 48);
       expect(e.frameSnapshotCalibratedFactor, 1.0);
@@ -152,26 +153,35 @@ void main() {
 
     test('stopping mid-ladder reports no headroom', () {
       final e = ranged(0.5, 1.0);
-      feed(e, 40.0, 48);
+      feed(e, 20.0, 48);
       expect(e.frameSnapshotCalibratedFactor, 0.75);
       expect(e.frameSnapshotCalibrationOutcome, 'no headroom');
     });
 
     test(
-      'a longer interval buys resolution, since capture amortizes further',
+      'a longer interval buys resolution on async backends, not on sync JS web',
       () {
-        // Same device, same budget: at interval 2 the per-frame share of a
-        // capture is half its cost, at interval 4 a quarter. The search should
-        // find the longer interval affords more resolution — the trade the
-        // amortized comparison exists to expose.
+        // On native/Wasm, capture amortizes across `interval` frames on the
+        // raster thread, so interval 4 affords a higher rung than interval 2.
+        // On JS web (CanvasKit), capture blocks the main thread synchronously
+        // within the capture frame, so a 20 ms capture still misses vsync
+        // regardless of interval and both settle at the same rung.
+        final fullResMs = _isJsWeb ? 20.0 : 40.0;
         final slow = ranged(0.5, 1.0)..frameSnapshotInterval = 2;
-        feed(slow, 40.0, 48);
+        feed(slow, fullResMs, 48);
         final fast = ranged(0.5, 1.0)..frameSnapshotInterval = 4;
-        feed(fast, 40.0, 48);
-        expect(
-          fast.frameSnapshotCalibratedFactor,
-          greaterThan(slow.frameSnapshotCalibratedFactor),
-        );
+        feed(fast, fullResMs, 48);
+        if (_isJsWeb) {
+          expect(
+            fast.frameSnapshotCalibratedFactor,
+            equals(slow.frameSnapshotCalibratedFactor),
+          );
+        } else {
+          expect(
+            fast.frameSnapshotCalibratedFactor,
+            greaterThan(slow.frameSnapshotCalibratedFactor),
+          );
+        }
       },
     );
 
@@ -314,6 +324,36 @@ void main() {
       expect(e.showFrameSnapshotDebug, isTrue);
       e.noSnapshotPerformanceInfo();
       expect(e.showFrameSnapshotDebug, isFalse);
+    });
+  });
+
+  group('noisy measurements', () {
+    test('startup captures do not pin the search to the floor', () {
+      // The first captures after launch, shaped like those measured on
+      // CanvasKit (36.3, 9.4, then settling). Averaged in, they made the
+      // floor look over budget and the search locked there; skipped, the
+      // device settles where the same device without them does.
+      final e = ranged(0.5, 1.0);
+      e.debugFeedCalibrationSample(36.3);
+      e.debugFeedCalibrationSample(9.4);
+      e.debugFeedCalibrationSample(7.0);
+      feed(e, 20.0, 45);
+      final quiet = ranged(0.5, 1.0);
+      feed(quiet, 20.0, 48);
+      expect(quiet.frameSnapshotCalibratedFactor, 0.75);
+      expect(e.frameSnapshotCalibratedFactor, 0.75);
+    });
+
+    test('one stalled capture within a rung does not decide it', () {
+      final e = ranged(0.5, 1.0);
+      for (final ms in [40.0, 40.0, 40.0]) {
+        e.debugFeedCalibrationSample(ms); // warm-up, thrown away
+      }
+      for (final ms in [5.0, 60.0, 5.0, 5.0]) {
+        e.debugFeedCalibrationSample(ms);
+      }
+      expect(e.frameSnapshotCalibrating, isTrue);
+      expect(e.frameSnapshotCalibratedFactor, greaterThan(0.5));
     });
   });
 
