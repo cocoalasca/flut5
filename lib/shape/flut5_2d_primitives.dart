@@ -16,6 +16,13 @@ mixin Flut52DPrimitives on Flut5Stroke, Flut5Fill, Flut5Trigonometry {
   @override
   Canvas get canvas;
 
+  /// Whether a `beginBatch()` is open. Implemented by the engine.
+  bool get isBatching;
+
+  /// Adds a plain rect to the open batch. Implemented by the engine, which
+  /// keeps a batch of only rects as numbers until it needs a path.
+  void recordBatchRect(double x, double y, double width, double height);
+
   // All snapshot caches now live on Flut5Fill/Flut5Stroke (shared with the
   // vertex API) so consecutive same-state draws batch by paint identity.
   Paint _pointPaintSnapshot() => snapshotPointPaint()!;
@@ -171,7 +178,7 @@ mixin Flut52DPrimitives on Flut5Stroke, Flut5Fill, Flut5Trigonometry {
     double? br,
     double? bl,
   ]) {
-    if (batchPath != null) {
+    if (isBatching) {
       if (tl != null || tr != null || br != null || bl != null) {
         Radius rad(double? r) => Radius.circular(r ?? 0.0);
         batchPath!.addRRect(
@@ -184,7 +191,7 @@ mixin Flut52DPrimitives on Flut5Stroke, Flut5Fill, Flut5Trigonometry {
           ),
         );
       } else {
-        batchPath!.addRect(Rect.fromLTWH(x, y, w, h));
+        recordBatchRect(x, y, w, h);
       }
       markBatchDirty();
       return;

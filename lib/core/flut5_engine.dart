@@ -296,8 +296,85 @@ final class Flut5Engine()
 
   /// The active batch path, or `null` when not batching.
   /// Set by [beginBatch] / [endBatch].
+  ///
+  /// While a batch holds only plain rects they are kept as numbers rather
+  /// than added to a path (see [recordBatchRect]); reading this adds them,
+  /// in order, so anything else drawn into the batch lands after them.
   @override
-  Path? batchPath;
+  Path? get batchPath {
+    if (!_batching) return null;
+    if (_batchRectsOnly) _addBatchRectsToPath();
+    return _batchPath;
+  }
+
+  set batchPath(Path? path) {
+    _batching = path != null;
+    _batchPath = path;
+    _batchRectsOnly = false;
+    _batchRectLength = 0;
+  }
+
+  bool _batching = false;
+  Path? _batchPath;
+
+  /// True while the open batch holds nothing but plain rects, kept in
+  /// [_batchRects] (left, top, right, bottom each) instead of a path. At
+  /// [endBatch] they become a [Flut5RectBatchGeometry]: last frame's, when
+  /// the same rects were batched in the same place, and with their edges
+  /// merged into lines for the stroke when that draws the same picture.
+  bool _batchRectsOnly = false;
+  Float64List _batchRects = Float64List(256);
+  int _batchRectLength = 0;
+
+  /// Whether this canvas sits upright on screen: nothing between it and the
+  /// display rotates, skews or adds perspective. Set by the painter at the
+  /// start of every paint from the canvas widget's place in the tree; `true`
+  /// for an engine with no canvas widget. A batch of stroked rects only
+  /// draws as merged lines while it holds ([RectOutlineRenderItem]).
+  ///
+  /// Painter plumbing, deliberately not forwarded on `Flut5`.
+  bool get screenUpright => renderQueue.screenUpright;
+  set screenUpright(bool value) => renderQueue.screenUpright = value;
+
+  /// Whether a [beginBatch] is open.
+  @override
+  bool get isBatching => _batching;
+
+  /// Adds a plain rect to the open batch — kept as numbers while the batch
+  /// holds only rects, added to [batchPath] otherwise.
+  @override
+  void recordBatchRect(double x, double y, double width, double height) {
+    if (!_batchRectsOnly) {
+      batchPath!.addRect(Rect.fromLTWH(x, y, width, height));
+      return;
+    }
+    final offset = _batchRectLength;
+    if (offset + 4 > _batchRects.length) {
+      _batchRects = Float64List(_batchRects.length * 2)
+        ..setRange(0, offset, _batchRects);
+    }
+    // Right and bottom as Rect.fromLTWH works them out, so the rect rebuilt
+    // from these is the one addRect would have been given.
+    _batchRects[offset] = x;
+    _batchRects[offset + 1] = y;
+    _batchRects[offset + 2] = x + width;
+    _batchRects[offset + 3] = y + height;
+    _batchRectLength = offset + 4;
+  }
+
+  /// Ends rect-only recording: the rects kept so far go into the batch path,
+  /// which takes everything drawn into the batch from here on.
+  void _addBatchRectsToPath() {
+    _batchRectsOnly = false;
+    final path = _batchPath ??= Path();
+    final rects = _batchRects;
+    for (var i = 0; i < _batchRectLength; i += 4) {
+      path.addRect(
+        Rect.fromLTRB(rects[i], rects[i + 1], rects[i + 2], rects[i + 3]),
+      );
+    }
+    _batchRectLength = 0;
+  }
 
   /// The active batch point buffer (flat x,y pairs), or `null` when not
   /// batching. Points are kept separate from [batchPath] because they render
@@ -333,10 +410,13 @@ final class Flut5Engine()
   /// flut5.endBatch();      // -> one drawPath + one drawRawPoints
   /// ```
   void beginBatch() {
-    if (batchPath != null) {
+    if (_batching) {
       throw FlutterError('beginBatch() called while already batching');
     }
-    batchPath = Path();
+    _batching = true;
+    _batchPath = null;
+    _batchRectsOnly = true;
+    _batchRectLength = 0;
     batchPoints = <double>[];
     _batchDirty = false;
   }
@@ -349,32 +429,61 @@ final class Flut5Engine()
   /// exactly as the shapes would individually) while the fill stays solid.
   /// Points are never dashed.
   void endBatch() {
-    if (batchPath == null) {
+    if (!_batching) {
       throw FlutterError('endBatch() called without beginBatch()');
     }
-    final path = batchPath!;
+    final rectsOnly = _batchRectsOnly;
+    final rectLength = _batchRectLength;
+    final batchedPath = _batchPath;
     final points = batchPoints!;
     final bool pathEmpty = !_batchDirty;
-    batchPath = null;
+    _batching = false;
+    _batchPath = null;
+    _batchRectsOnly = false;
+    _batchRectLength = 0;
     batchPoints = null;
     _batchDirty = false;
 
     final bool pointsEmpty = points.isEmpty;
     if (pathEmpty && pointsEmpty) return;
 
-    if (!pathEmpty) {
+    if (!pathEmpty && (!rectsOnly || rectLength > 0)) {
       final bool hasFill = fillColor != flut5Transparent;
       final bool hasStroke = strokeColor != flut5Transparent;
+      final dash = lineDashVal;
+      final shadow = renderQueue.activeShadow;
+      final geometry = rectsOnly
+          ? renderQueue.rectBatchGeometry(
+              _batchRects,
+              rectLength,
+              outline:
+                  hasStroke &&
+                  dash == null &&
+                  shadow == null &&
+                  screenUpright &&
+                  RectOutlineRenderItem.linesAllowed,
+            )
+          : null;
+      final path = batchedPath ?? geometry!.rects;
       final bool needsBounds =
           (hasFill && fillGradient != null && fillGradientRect == null) ||
           (hasStroke && strokeGradient != null && strokeGradientRect == null);
-      final bounds = needsBounds ? path.getBounds() : Rect.zero;
+      final bounds = needsBounds
+          ? (geometry?.bounds ?? path.getBounds())
+          : Rect.zero;
       final Paint? fill = hasFill ? snapshotFillPaintForShape(bounds) : null;
       final Paint? stroke = hasStroke
           ? snapshotStrokePaintForShape(bounds)
           : null;
-      final dash = lineDashVal;
-      if (stroke != null && dash != null) {
+      if (geometry?.outline != null &&
+          stroke != null &&
+          dash == null &&
+          shadow == null &&
+          screenUpright &&
+          RectOutlineRenderItem.linesAllowed &&
+          RectOutlineRenderItem.strokes(stroke)) {
+        renderQueue.enqueue(RectOutlineRenderItem(geometry!, fill, stroke));
+      } else if (stroke != null && dash != null) {
         // Dash the merged outline in one pass — the stroke stays a single
         // drawPath, so the batch keeps its draw-call win. The shadow rides
         // the solid silhouette when a fill exists so the batch casts one

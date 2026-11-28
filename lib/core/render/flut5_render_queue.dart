@@ -14,6 +14,7 @@ import '../flut5_shadow.dart';
 import 'flut5_dash.dart';
 import 'flut5_overlap_index.dart';
 import 'flut5_paint_bounds.dart';
+import 'flut5_rect_outline.dart';
 import 'flut5_render_item.dart';
 import 'flut5_shaders.dart';
 import 'items/flut5_multi_line_render_item.dart';
@@ -23,6 +24,7 @@ import 'items/flut5_pixelate_render_item.dart';
 import 'items/flut5_rect_render_item.dart';
 import 'items/flut5_circle_render_item.dart';
 import 'items/flut5_circle_run_render_item.dart';
+import 'items/flut5_rect_outline_render_item.dart';
 import 'items/flut5_ellipse_render_item.dart';
 import 'items/flut5_image_atlas_render_item.dart';
 import 'items/flut5_image_render_item.dart';
@@ -42,7 +44,9 @@ export 'items/flut5_arc_render_item.dart';
 export 'items/flut5_background_render_item.dart';
 export 'items/flut5_blur_render_item.dart';
 export 'items/flut5_circle_render_item.dart';
+export 'flut5_rect_outline.dart' show Flut5RectBatchGeometry;
 export 'items/flut5_circle_run_render_item.dart';
+export 'items/flut5_rect_outline_render_item.dart';
 export 'items/flut5_clip_render_item.dart';
 export 'items/flut5_ellipse_render_item.dart';
 export 'items/flut5_image_atlas_render_item.dart';
@@ -281,6 +285,69 @@ class Flut5RenderQueue() {
   // and close as soon as a new shape lands where that would happen.
   final Flut5OverlapIndex _pendingShapeBoxes = Flut5OverlapIndex();
   bool _pendingShapeTracked = false;
+
+  // ── Rect batches kept across frames ───────────────────────────────────
+  //
+  // A `beginBatch()` batch of plain rects keeps its geometry here, by its
+  // place among this frame's batches, so the same rects next frame reuse the
+  // same paths — see [Flut5RectBatchGeometry]. [clear] starts the count over
+  // and lets go of slots this frame didn't reach.
+  final List<Flut5RectBatchGeometry> _rectBatches = [];
+  int _rectBatchCount = 0;
+  final Flut5RectOutline _rectOutline = Flut5RectOutline();
+
+  /// Batches past this many in one frame aren't kept, so a test or a sketch
+  /// batching without ever clearing the queue can't grow the cache.
+  static const int _maxKeptRectBatches = 64;
+
+  /// The geometry of a batch of the [length] doubles in [rects] (left, top,
+  /// width, height per rect): last frame's, when this frame's batch in the
+  /// same place draws the same rects. With [outline], also the merged lines
+  /// of the rects' edges, when merging pays.
+  Flut5RectBatchGeometry rectBatchGeometry(
+    Float64List rects,
+    int length, {
+    required bool outline,
+  }) {
+    final slot = _rectBatchCount++;
+    var geometry = slot < _rectBatches.length ? _rectBatches[slot] : null;
+    if (geometry == null || !geometry.matches(rects, length)) {
+      geometry = Flut5RectBatchGeometry.of(rects, length);
+      if (slot < _rectBatches.length) {
+        _rectBatches[slot] = geometry;
+      } else if (slot < _maxKeptRectBatches) {
+        _rectBatches.add(geometry);
+      }
+    }
+    if (outline) geometry.buildOutline(_rectOutline);
+    return geometry;
+  }
+
+  // ── Rect runs ─────────────────────────────────────────────────────────
+  //
+  // While every shape in the newest batch is a plain rect (no corner radii,
+  // no folded scale or rotation), the rects are kept here as numbers rather
+  // than added to its path. A long run closes as the kept geometry of
+  // [rectBatchGeometry] — the same paths as last frame when the same rects
+  // were drawn, and on Impeller a stroke drawn as the merged lines of the
+  // rects' edges ([RectOutlineRenderItem]). A short run, or one another
+  // shape joins, goes into the path in order, exactly as before.
+
+  /// True while the newest batch holds only kept rects.
+  bool _rectRunOpen = false;
+  Float64List _rectRun = Float64List(256);
+
+  /// Doubles used in [_rectRun]: left, top, right, bottom per rect.
+  int _rectRunLength = 0;
+
+  /// Runs shorter than this many rects go into the batch path as before: a
+  /// sketch of many colours closes thousands of one-rect batches a frame,
+  /// and keeping geometry for each would cost more than it saves.
+  static const int _minKeptRectRun = 16;
+
+  /// Whether the canvas sits upright on screen — see
+  /// `Flut5Engine.screenUpright`, which sets it.
+  bool screenUpright = true;
 
   // ── Circle runs (Skia only) ───────────────────────────────────────────
   //
@@ -1733,6 +1800,7 @@ class Flut5RenderQueue() {
         identical(_pendingShapeStroke, paint) &&
         (_activeShadow == null || _pendingShapeFill == null)) {
       _addCircleRunToPath();
+      _addRectRunToPath();
       _pendingShapePath!
         ..moveTo(x1, y1)
         ..lineTo(x2, y2);
@@ -1938,12 +2006,18 @@ class Flut5RenderQueue() {
       ).addRRect(rrect);
     } else {
       if (stroke == null) rect = _clockwise(rect);
-      _beginShape(
+      final path = _beginShape(
         fill,
         stroke,
         rect,
         oriented: !_backwards(rect),
-      ).addRect(rect);
+        plainRect: true,
+      );
+      if (_rectRunOpen && identical(path, _pendingShapePath)) {
+        _keepRunRect(rect);
+      } else {
+        path.addRect(rect);
+      }
     }
     _pendingShapeHasContent = true;
   }
@@ -4214,6 +4288,12 @@ class Flut5RenderQueue() {
     _pendingShapeShadow = null;
     _circleRunOpen = false;
     _circleRunLength = 0;
+    _rectRunOpen = false;
+    _rectRunLength = 0;
+    if (_rectBatchCount < _rectBatches.length) {
+      _rectBatches.length = _rectBatchCount;
+    }
+    _rectBatchCount = 0;
     _pendingShapeBoxes.clear();
     _pendingShapeTracked = false;
     _pendingMergesExactly = true;
@@ -4419,6 +4499,7 @@ class Flut5RenderQueue() {
     bool oriented = true,
     bool mergesExactly = true,
     double? circleRadius,
+    bool plainRect = false,
   }) {
     if (_pendingTextEntries.isNotEmpty) {
       _keepShapesBeneathText(fill, stroke, bounds, mergesExactly);
@@ -4519,7 +4600,67 @@ class Flut5RenderQueue() {
     // batch always matches the current shadow.
     _pendingShapeShadow = _activeShadow;
     _continueCircleRun(opening, fill, stroke, circleRadius);
+    if (opening) {
+      _rectRunLength = 0;
+      _rectRunOpen = plainRect;
+    } else if (_rectRunOpen && !plainRect) {
+      _addRectRunToPath();
+    }
     return path;
+  }
+
+  /// Keeps one rect of the open run.
+  void _keepRunRect(Rect rect) {
+    final offset = _rectRunLength;
+    if (offset + 4 > _rectRun.length) {
+      _rectRun = Float64List(_rectRun.length * 2)
+        ..setRange(0, offset, _rectRun);
+    }
+    _rectRun[offset] = rect.left;
+    _rectRun[offset + 1] = rect.top;
+    _rectRun[offset + 2] = rect.right;
+    _rectRun[offset + 3] = rect.bottom;
+    _rectRunLength = offset + 4;
+  }
+
+  /// Ends the open rect run by adding its rects to the newest batch's path,
+  /// in the order they were drawn.
+  void _addRectRunToPath() {
+    if (!_rectRunOpen) return;
+    _rectRunOpen = false;
+    final path = _pendingShapePath;
+    if (path != null) {
+      final run = _rectRun;
+      for (var i = 0; i < _rectRunLength; i += 4) {
+        path.addRect(Rect.fromLTRB(run[i], run[i + 1], run[i + 2], run[i + 3]));
+      }
+    }
+    _rectRunLength = 0;
+  }
+
+  /// Queues the open rect run from its kept geometry: as merged lines where
+  /// [RectOutlineRenderItem] allows them, as the rects' path otherwise.
+  Flut5RenderItem _takeRectRun() {
+    final fill = _pendingShapeFill;
+    final stroke = _pendingShapeStroke;
+    final shadow = _pendingShapeShadow;
+    final lines =
+        stroke != null &&
+        shadow == null &&
+        screenUpright &&
+        RectOutlineRenderItem.linesAllowed &&
+        RectOutlineRenderItem.strokes(stroke);
+    final geometry = rectBatchGeometry(
+      _rectRun,
+      _rectRunLength,
+      outline: lines,
+    );
+    _rectRunOpen = false;
+    _rectRunLength = 0;
+    if (lines && geometry.outline != null) {
+      return RectOutlineRenderItem(geometry, fill, stroke);
+    }
+    return PathRenderItem(geometry.rects, fill, stroke, shadow: shadow);
   }
 
   /// Opens, extends or ends the newest batch's circle run for a shape that
@@ -4690,6 +4831,7 @@ class Flut5RenderQueue() {
 
     // Leave the newest batch open, behind the one about to be opened.
     _addCircleRunToPath();
+    _addRectRunToPath();
     _openBatchOfPaint[_pendingShapeFill ?? _pendingShapeStroke!] = newest;
     _openBatches.add(
       PathRenderItem(
@@ -4823,6 +4965,8 @@ class Flut5RenderQueue() {
     if (!_pendingShapeHasContent) {
       _circleRunOpen = false;
       _circleRunLength = 0;
+      _rectRunOpen = false;
+      _rectRunLength = 0;
       _pendingShapePath = null;
       _pendingShapeFill = null;
       _pendingShapeStroke = null;
@@ -4831,8 +4975,11 @@ class Flut5RenderQueue() {
     }
     if (_circleRunOpen && _circleRunLength > 0) {
       _items.add(_takeCircleRun(_pendingShapeFill!));
+    } else if (_rectRunOpen && _rectRunLength >= _minKeptRectRun * 4) {
+      _items.add(_takeRectRun());
     } else {
       _addCircleRunToPath();
+      _addRectRunToPath();
       _items.add(
         PathRenderItem(
           _pendingShapePath!,

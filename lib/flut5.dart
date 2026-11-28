@@ -388,6 +388,9 @@ abstract class Flut5._(Flut5Engine? engine, bool listenEvents, bool root)
   List<double>? get batchPoints => flut5.batchPoints;
   set batchPoints(List<double>? l) => flut5.batchPoints = l;
   void markBatchDirty() => flut5.markBatchDirty();
+  bool get isBatching => flut5.isBatching;
+  void recordBatchRect(double x, double y, double width, double height) =>
+      flut5.recordBatchRect(x, y, width, height);
   void beginBatch() => flut5.beginBatch();
   void endBatch() => flut5.endBatch();
 

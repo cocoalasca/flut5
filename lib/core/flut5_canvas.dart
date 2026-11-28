@@ -147,11 +147,25 @@ class _Flut5CanvasState()
     if (widget.sketch.flut5.isLooping) {
       _ticker.start();
     }
-    _painter = Flut5Painter(sketch: widget.sketch, repaint: _repaint);
+    _painter = Flut5Painter(
+      sketch: widget.sketch,
+      repaint: _repaint,
+      screenTransform: _screenTransform,
+    );
     _trailPainter = _TrailPainter(widget.sketch.flut5);
     _keyboardFocusNode = FocusNode(debugLabel: 'Flut5Canvas');
     _liveCanvasCount++;
     _maybeWarnMultipleCanvases();
+  }
+
+  /// The canvas's transform to the screen, read by the painter each paint —
+  /// after layout, so it is the frame's own. The painters fill this widget
+  /// at its origin, so its render box stands for theirs.
+  Matrix4? _screenTransform() {
+    if (!mounted) return null;
+    final box = context.findRenderObject();
+    if (box is! RenderBox || !box.attached) return null;
+    return box.getTransformTo(null);
   }
 
   void _attachLoopControls(Flut5Engine engine) {
@@ -253,7 +267,11 @@ class _Flut5CanvasState()
       widget.sketch.flut5.updateEnvironmentProps(widget.props ?? const {});
       _attachLoopControls(widget.sketch.flut5);
       _handleLoopingChanged(widget.sketch.flut5.isLooping);
-      _painter = Flut5Painter(sketch: widget.sketch, repaint: _repaint);
+      _painter = Flut5Painter(
+        sketch: widget.sketch,
+        repaint: _repaint,
+        screenTransform: _screenTransform,
+      );
       _trailPainter = _TrailPainter(widget.sketch.flut5);
       _setupScheduled = false;
     } else if (!mapEquals(oldWidget.props, widget.props)) {
@@ -594,8 +612,14 @@ class _Flut5CanvasState()
 /// The internal [CustomPainter] that executes the sketch's drawing commands.
 ///
 /// Listens to the repaint notifier to draw continuously each frame.
-class Flut5Painter({required final Flut5Sketch sketch, super.repaint})
-    extends CustomPainter {
+class Flut5Painter({
+  required final Flut5Sketch sketch,
+  super.repaint,
+
+  /// The canvas's transform to the screen, when the host can tell —
+  /// [Flut5Engine.screenUpright] follows it each paint.
+  final Matrix4? Function()? screenTransform,
+}) extends CustomPainter {
   /// Reused for [Canvas.drawImageRect] of the trail snapshot. Quality is
   /// resolved per blit by [Flut5Engine.effectiveFrameSnapshotFilterQuality]:
   /// bilinear at 1:1 and mild upscales (calm on rotating thin shapes),
@@ -676,6 +700,8 @@ class Flut5Painter({required final Flut5Sketch sketch, super.repaint})
     if (width <= 0 || height <= 0) return;
 
     final engine = sketch.flut5;
+    final toScreen = screenTransform?.call();
+    if (toScreen != null) engine.screenUpright = _upright(toScreen);
     // Last frame's pictures have been composited by now; release them before
     // recording anything new so at most one frame's worth is ever alive.
     _flushDeferredDisposals();
@@ -1284,6 +1310,12 @@ class Flut5Painter({required final Flut5Sketch sketch, super.repaint})
   }
 
   static double _effectiveDevicePixelRatio(double dpr) => dpr > 0 ? dpr : 1.0;
+
+  /// Whether [m] keeps the canvas upright: no rotation, skew or perspective.
+  static bool _upright(Matrix4 m) {
+    final s = m.storage;
+    return s[1] == 0 && s[4] == 0 && s[3] == 0 && s[7] == 0 && s[15] == 1;
+  }
 
   /// Destination pixels per snapshot pixel when blitting [snapshot] onto a
   /// [logicalSize] × [destScale] rect — the larger of the two axis ratios.
